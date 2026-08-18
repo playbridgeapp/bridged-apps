@@ -1,0 +1,21 @@
+{
+  "name": "bridged-apps",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PlayBridge-enabled companion web apps and media clients",
+  "scripts": {
+    "dev:jellyfin": "pnpm --filter @bridged-apps/jellyfin dev",
+    "build:jellyfin": "pnpm --filter @bridged-apps/jellyfin build",
+    "check": "pnpm -r check",
+    "build": "pnpm -r build"
+  },
+  "keywords": [
+    "playbridge",
+    "casting",
+    "jellyfin",
+    "web-apps",
+    "media"
+  ],
+  "author": "PlayBridge",
+  "license": "GPL-3.0"
+}
