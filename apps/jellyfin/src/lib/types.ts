@@ -151,6 +151,7 @@ export interface PlayBridgeCastPayload {
   items?: PlayBridgeItem[];
   startIndex?: number;
   localNetwork?: boolean;
+  skipPreplay?: boolean;
   customData?: Record<string, any>;
 }
 
@@ -170,6 +171,7 @@ export interface PlayBridgeAPI {
     startIndex?: number;
     metadata?: VisualMetadata;
     localNetwork?: boolean;
+    skipPreplay?: boolean;
   }): Promise<PlayBridgeLinkSession>;
   capabilities?: {
     linkedCast?: boolean;
