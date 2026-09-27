@@ -89,7 +89,7 @@
 </script>
 
 <!-- Top Navbar -->
-<header class="navbar">
+<header class="navbar glass-header">
   {#if showMobileSearch}
     <!-- Expanded Mobile Search Bar -->
     <div class="mobile-search-bar">
@@ -114,26 +114,26 @@
     </div>
   {:else}
     <div class="nav-left">
-      <!-- Brand Logo -->
+      <!-- Brand Logo with Cinejoy Neon Accent -->
       <div class="brand" on:click={() => ($activeTab = 'home')}>
         <div class="logo-icon">
           <svg viewBox="0 0 100 100" fill="none" class="brand-svg">
-            <path d="M50 18 L82 74 L66 74 L50 44 L34 74 L18 74 Z" fill="url(#brand-grad)"/>
+            <path d="M50 16 L84 76 L66 76 L50 46 L34 76 L16 76 Z" fill="url(#brand-cine-grad)"/>
             <defs>
-              <linearGradient id="brand-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stop-color="#00A4DC"/>
-                <stop offset="100%" stop-color="#7A5AF8"/>
+              <linearGradient id="brand-cine-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#95FF50"/>
+                <stop offset="100%" stop-color="#43861E"/>
               </linearGradient>
             </defs>
           </svg>
         </div>
         <div class="brand-text">
           <span class="brand-name">PlayBridge</span>
-          <span class="brand-sub">Cast Suite</span>
+          <span class="brand-sub">Jellyfin Cast</span>
         </div>
       </div>
 
-      <!-- Desktop Navigation Tabs (Compact & Responsive) -->
+      <!-- Desktop Navigation Tabs (Cinejoy Floating Pill Design) -->
       <nav class="nav-links desktop-only">
         <button
           class="nav-link"
@@ -162,7 +162,7 @@
           <span>Shows</span>
         </button>
 
-        <!-- Dynamic Music Views (If any) -->
+        <!-- Dynamic Music Views -->
         {#each musicViews as mView (mView.Id)}
           <button
             class="nav-link"
@@ -174,7 +174,7 @@
           </button>
         {/each}
 
-        <!-- Other Folder Views in sleek "Libraries" Dropdown (Prevents Navbar Overflow) -->
+        <!-- Other Folder Views Dropdown -->
         {#if otherFolderViews.length > 0}
           <div class="more-views-container">
             <button
@@ -188,7 +188,7 @@
             </button>
 
             {#if showMoreViewsMenu}
-              <div class="more-views-dropdown" on:mouseleave={() => (showMoreViewsMenu = false)}>
+              <div class="more-views-dropdown glass-menu" on:mouseleave={() => (showMoreViewsMenu = false)}>
                 {#each otherFolderViews as view (view.Id)}
                   <button
                     class="dropdown-item"
@@ -221,14 +221,14 @@
       </nav>
     </div>
 
-    <!-- Right Controls: Always fixed and never pushed off screen -->
+    <!-- Right Controls -->
     <div class="nav-right">
       <!-- Desktop Search Bar -->
       <div class="search-box desktop-only">
         <Search size={16} class="search-icon" />
         <input
           type="text"
-          placeholder="Search media..."
+          placeholder="Search movies, shows..."
           bind:value={$searchQuery}
           on:input={() => {
             if ($searchQuery.trim().length > 0 && $activeTab !== 'search') {
@@ -250,16 +250,16 @@
         <Search size={18} />
       </button>
 
-      <!-- PlayBridge Cast Status Icon Pill (Uses sleek icon instead of text) -->
+      <!-- PlayBridge Cast Status Icon Pill -->
       <button
         class="cast-icon-pill"
         class:cast-active={$bridgeStatus.available}
         on:click={() => ($isDiagnosticsOpen = true)}
         title={$bridgeStatus.available
-          ? 'PlayBridge Bridge Active'
-          : 'PlayBridge Bridge not detected'}
+          ? 'PlayBridge Receiver Active'
+          : 'PlayBridge Receiver not detected'}
       >
-        <Cast size={17} class="cast-symbol" />
+        <Cast size={16} class="cast-symbol" />
         {#if $bridgeStatus.available}
           <span class="pulsing-dot-inline"></span>
         {/if}
@@ -278,7 +278,7 @@
       <div class="profile-container">
         <button class="profile-btn" on:click={toggleProfileMenu}>
           <div class="avatar">
-            <User size={15} />
+            <User size={14} />
           </div>
           <span class="server-badge desktop-only">
             {$serverConfig.username || 'User'}
@@ -286,10 +286,10 @@
         </button>
 
         {#if showProfileMenu}
-          <div class="profile-dropdown" on:mouseleave={closeProfileMenu}>
+          <div class="profile-dropdown glass-menu" on:mouseleave={closeProfileMenu}>
             <!-- Active Server / User Banner -->
             <div class="dropdown-header">
-              <div class="active-badge-tag">ACTIVE SESSION</div>
+              <div class="active-badge-tag">CONNECTED SERVER</div>
               <p class="user-title">{$serverConfig.username || 'Guest'}</p>
               <p class="server-subtitle">{$serverConfig.serverName || 'Jellyfin Server'}</p>
               {#if $serverConfig.url}
@@ -396,14 +396,14 @@
   {/if}
 </header>
 
-<!-- Mobile Bottom Navigation Bar (Thumb Friendly) -->
-<nav class="mobile-bottom-nav mobile-only">
+<!-- Cinejoy Style Mobile Bottom Floating Pill Dock -->
+<nav class="mobile-bottom-nav mobile-only glass-header">
   <button
     class="bottom-nav-item"
     class:active={$activeTab === 'home'}
     on:click={() => ($activeTab = 'home')}
   >
-    <Home size={20} />
+    <Home size={19} />
     <span>Home</span>
   </button>
 
@@ -412,7 +412,7 @@
     class:active={$activeTab === 'movies'}
     on:click={() => ($activeTab = 'movies')}
   >
-    <Film size={20} />
+    <Film size={19} />
     <span>Movies</span>
   </button>
 
@@ -421,7 +421,7 @@
     class:active={$activeTab === 'shows'}
     on:click={() => ($activeTab = 'shows')}
   >
-    <Clapperboard size={20} />
+    <Clapperboard size={19} />
     <span>Shows</span>
   </button>
 
@@ -432,7 +432,7 @@
       class:active={$activeTab === musicViews[0].Id}
       on:click={() => ($activeTab = musicViews[0].Id)}
     >
-      <Music size={20} />
+      <Music size={19} />
       <span>Music</span>
     </button>
   {/if}
@@ -442,7 +442,7 @@
     class:active={$activeTab === 'favorites'}
     on:click={() => ($activeTab = 'favorites')}
   >
-    <Sparkles size={20} />
+    <Sparkles size={19} />
     <span>Favs</span>
   </button>
 
@@ -454,7 +454,7 @@
       showMobileSearch = true;
     }}
   >
-    <Search size={20} />
+    <Search size={19} />
     <span>Search</span>
   </button>
 </nav>
@@ -467,19 +467,16 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 20px;
-    height: 64px;
-    background-color: rgba(10, 14, 20, 0.88);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border-bottom: 1px solid var(--border);
+    padding: 0 28px;
+    height: 68px;
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
     gap: 16px;
   }
 
   .nav-left {
     display: flex;
     align-items: center;
-    gap: 20px;
+    gap: 24px;
     min-width: 0;
     flex: 1;
     overflow: hidden;
@@ -495,11 +492,12 @@
   }
 
   .logo-icon {
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
     display: flex;
     align-items: center;
     justify-content: center;
+    filter: drop-shadow(0 0 10px rgba(149, 255, 80, 0.45));
   }
 
   .brand-svg {
@@ -513,7 +511,7 @@
   }
 
   .brand-name {
-    font-size: 1.05rem;
+    font-size: 1.1rem;
     font-weight: 800;
     letter-spacing: -0.02em;
     color: #ffffff;
@@ -522,9 +520,9 @@
 
   .brand-sub {
     font-size: 0.65rem;
-    color: var(--text-muted);
-    font-weight: 500;
-    letter-spacing: 0.04em;
+    color: var(--theme-primary-accent);
+    font-weight: 600;
+    letter-spacing: 0.06em;
     text-transform: uppercase;
   }
 
@@ -532,6 +530,10 @@
     display: flex;
     align-items: center;
     gap: 4px;
+    background: rgba(30, 23, 40, 0.6);
+    padding: 4px;
+    border-radius: var(--radius-full);
+    border: 1px solid rgba(122, 107, 174, 0.2);
     min-width: 0;
     overflow-x: auto;
     scrollbar-width: none;
@@ -545,25 +547,26 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 7px 12px;
-    font-size: 0.82rem;
+    padding: 7px 16px;
+    font-size: 0.84rem;
     font-weight: 500;
     color: var(--text-secondary);
     border-radius: var(--radius-full);
-    transition: all 0.15s ease;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
     white-space: nowrap;
     flex-shrink: 0;
   }
 
   .nav-link:hover {
     color: #ffffff;
-    background-color: rgba(255, 255, 255, 0.05);
+    background-color: rgba(255, 255, 255, 0.08);
   }
 
   .nav-link.active {
-    color: #ffffff;
-    background-color: rgba(255, 255, 255, 0.12);
-    font-weight: 600;
+    color: #050505;
+    background: var(--theme-primary-accent);
+    font-weight: 700;
+    box-shadow: 0 0 16px rgba(149, 255, 80, 0.35);
   }
 
   .more-views-container {
@@ -578,22 +581,21 @@
 
   .more-views-dropdown {
     position: absolute;
-    top: calc(100% + 6px);
+    top: calc(100% + 8px);
     left: 0;
-    width: 200px;
-    background-color: var(--bg-surface-elevated);
-    border: 1px solid var(--border);
+    width: 210px;
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg);
     padding: 6px;
     z-index: 60;
     animation: fadeIn 0.15s ease;
+    background: rgba(16, 11, 26, 0.94);
   }
 
   .nav-right {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     flex-shrink: 0;
     margin-left: auto;
   }
@@ -607,27 +609,28 @@
   :global(.search-icon) {
     position: absolute;
     left: 12px;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     pointer-events: none;
   }
 
   .search-box input {
-    width: 170px;
-    height: 36px;
+    width: 180px;
+    height: 38px;
     padding: 0 30px 0 34px;
-    font-size: 0.8rem;
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border);
+    font-size: 0.84rem;
+    background-color: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     border-radius: var(--radius-full);
     color: #ffffff;
     transition: all 0.2s ease;
   }
 
   .search-box input:focus {
-    width: 220px;
+    width: 240px;
     outline: none;
-    border-color: var(--jf-blue);
-    background-color: var(--bg-surface-elevated);
+    border-color: var(--theme-primary-accent);
+    box-shadow: 0 0 14px rgba(149, 255, 80, 0.25);
+    background-color: rgba(44, 34, 60, 0.85);
   }
 
   .clear-search {
@@ -640,34 +643,37 @@
   }
 
   .btn-icon {
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 38px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
     color: var(--text-secondary);
-    background: transparent;
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.2);
     transition: all 0.15s ease;
     flex-shrink: 0;
   }
 
   .btn-icon:hover {
     color: #ffffff;
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: rgba(60, 47, 82, 0.8);
+    border-color: var(--theme-pill-highlight);
+    transform: translateY(-1px);
   }
 
-  /* Sleek Cast Icon Button */
+  /* Cinejoy Cast Icon Button */
   .cast-icon-pill {
     position: relative;
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 38px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     color: var(--text-muted);
     cursor: pointer;
     transition: all 0.2s ease;
@@ -676,14 +682,15 @@
 
   .cast-icon-pill:hover {
     color: #fff;
-    background: var(--bg-surface-elevated);
+    border-color: var(--theme-primary-accent);
+    transform: translateY(-1px);
   }
 
   .cast-icon-pill.cast-active {
-    color: var(--jf-purple);
-    border-color: rgba(122, 90, 248, 0.4);
-    background: rgba(122, 90, 248, 0.12);
-    box-shadow: 0 0 12px rgba(122, 90, 248, 0.3);
+    color: #050505;
+    background: var(--theme-primary-accent);
+    border-color: var(--theme-primary-accent);
+    box-shadow: 0 0 16px rgba(149, 255, 80, 0.4);
   }
 
   .pulsing-dot-inline {
@@ -693,8 +700,8 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background-color: var(--jf-purple);
-    box-shadow: 0 0 8px var(--jf-purple);
+    background-color: #ffffff;
+    box-shadow: 0 0 8px #ffffff;
     animation: pulse 1.8s infinite;
   }
 
@@ -713,32 +720,34 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 10px 4px 4px;
+    padding: 4px 12px 4px 4px;
     border-radius: var(--radius-full);
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border);
+    background-color: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     transition: all 0.15s ease;
   }
 
   .profile-btn:hover {
-    background-color: var(--bg-surface-elevated);
+    background-color: rgba(44, 34, 60, 0.85);
+    border-color: var(--theme-pill-highlight);
+    transform: translateY(-1px);
   }
 
   .avatar {
     width: 28px;
     height: 28px;
     border-radius: 50%;
-    background: linear-gradient(135deg, var(--jf-blue), var(--jf-purple));
-    color: #ffffff;
+    background: var(--accent-gradient);
+    color: #050505;
     display: flex;
     align-items: center;
     justify-content: center;
     font-size: 0.75rem;
-    font-weight: 700;
+    font-weight: 800;
   }
 
   .server-badge {
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     font-weight: 600;
     color: var(--text-primary);
   }
@@ -748,13 +757,12 @@
     top: calc(100% + 8px);
     right: 0;
     width: 260px;
-    background-color: var(--bg-surface-elevated);
-    border: 1px solid var(--border);
     border-radius: var(--radius-lg);
     box-shadow: var(--shadow-lg);
     padding: 8px;
     z-index: 60;
     animation: fadeIn 0.15s ease;
+    background: rgba(16, 11, 26, 0.94);
   }
 
   @keyframes fadeIn {
@@ -769,7 +777,7 @@
   .active-badge-tag {
     font-size: 0.65rem;
     font-weight: 800;
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
     letter-spacing: 0.06em;
     margin-bottom: 4px;
   }
@@ -798,26 +806,27 @@
     font-size: 0.66rem;
     font-weight: 700;
     color: var(--text-muted);
-    padding: 6px 12px 2px;
     letter-spacing: 0.05em;
+    padding: 6px 12px 2px;
   }
 
   .saved-accounts-list {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
+    margin: 4px 0;
   }
 
   .account-item-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    padding: 4px 6px;
     border-radius: var(--radius-sm);
-    transition: background 0.15s ease;
   }
 
   .account-item-row:hover {
-    background: rgba(255, 255, 255, 0.06);
+    background-color: rgba(255, 255, 255, 0.06);
   }
 
   .account-switch-btn {
@@ -825,7 +834,6 @@
     align-items: center;
     gap: 8px;
     flex: 1;
-    padding: 6px 8px;
     text-align: left;
     min-width: 0;
   }
@@ -834,11 +842,10 @@
     width: 24px;
     height: 24px;
     border-radius: 50%;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    color: var(--jf-blue);
+    background: var(--accent-gradient);
+    color: #050505;
     font-size: 0.65rem;
-    font-weight: 700;
+    font-weight: 800;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -869,15 +876,14 @@
   }
 
   .account-del-btn {
-    padding: 6px;
+    padding: 4px;
     color: var(--text-muted);
-    border-radius: 50%;
-    margin-right: 4px;
+    border-radius: 4px;
   }
 
   .account-del-btn:hover {
-    color: #e74c3c;
-    background: rgba(231, 76, 60, 0.15);
+    color: var(--status-error);
+    background-color: rgba(248, 81, 73, 0.15);
   }
 
   .dropdown-divider {
@@ -887,12 +893,13 @@
   }
 
   .dropdown-item {
-    width: 100%;
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
     padding: 8px 12px;
     font-size: 0.82rem;
+    font-weight: 500;
     color: var(--text-secondary);
     border-radius: var(--radius-sm);
     transition: all 0.15s ease;
@@ -900,22 +907,22 @@
 
   .dropdown-item:hover {
     color: #ffffff;
-    background-color: rgba(255, 255, 255, 0.06);
+    background-color: rgba(255, 255, 255, 0.08);
   }
 
   .dropdown-item.active-item {
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
     font-weight: 600;
   }
 
   :global(.check-icon) {
     margin-left: auto;
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
   }
 
   .logout-item:hover {
     color: var(--status-error);
-    background-color: rgba(235, 87, 87, 0.1);
+    background-color: rgba(235, 87, 87, 0.15);
   }
 
   /* Mobile Search Bar */
@@ -933,11 +940,11 @@
 
   .mobile-search-bar input {
     flex: 1;
-    height: 38px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    height: 40px;
+    background: rgba(30, 23, 40, 0.8);
+    border: 1px solid rgba(122, 107, 174, 0.3);
     border-radius: var(--radius-full);
-    padding: 0 14px;
+    padding: 0 16px;
     color: #fff;
     font-size: 0.9rem;
   }
@@ -949,27 +956,28 @@
 
   .close-search-btn {
     font-size: 0.85rem;
-    font-weight: 600;
-    color: var(--jf-blue);
-    padding: 6px 8px;
+    font-weight: 700;
+    color: var(--theme-primary-accent);
+    padding: 6px 10px;
   }
 
-  /* Mobile Bottom Nav */
+  /* Cinejoy Mobile Floating Dock */
   .mobile-bottom-nav {
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    height: calc(56px + env(safe-area-inset-bottom, 0px));
-    padding-bottom: env(safe-area-inset-bottom, 0px);
-    background: rgba(10, 14, 20, 0.95);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border-top: 1px solid var(--border);
+    position: fixed !important;
+    top: auto !important;
+    bottom: max(16px, env(safe-area-inset-bottom, 16px)) !important;
+    left: 50% !important;
+    transform: translateX(-50%) !important;
+    width: calc(100% - 32px);
+    max-width: 440px;
+    height: 60px;
+    border-radius: var(--radius-full);
     display: flex;
     align-items: center;
     justify-content: space-around;
-    z-index: 40;
+    padding: 0 8px;
+    z-index: 90;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.8);
   }
 
   .bottom-nav-item {
@@ -977,17 +985,20 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 3px;
+    gap: 2px;
     flex: 1;
-    height: 100%;
+    height: 44px;
     color: var(--text-muted);
-    font-size: 0.68rem;
-    font-weight: 500;
+    font-size: 0.65rem;
+    font-weight: 600;
+    border-radius: var(--radius-full);
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .bottom-nav-item.active {
-    color: var(--jf-blue);
-    font-weight: 700;
+    color: #050505;
+    background: var(--theme-primary-accent);
+    box-shadow: 0 0 14px rgba(149, 255, 80, 0.35);
   }
 
   /* Responsive Rules */
@@ -1007,7 +1018,7 @@
     }
     .navbar {
       padding: 0 16px;
-      height: 56px;
+      height: 60px;
     }
   }
 </style>

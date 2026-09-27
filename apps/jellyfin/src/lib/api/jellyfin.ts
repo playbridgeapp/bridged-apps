@@ -24,6 +24,18 @@ export function getAuthHeader(token?: string): string {
   return auth;
 }
 
+export function getAuthHeaders(token?: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'X-Emby-Authorization': getAuthHeader(token),
+    'Accept': 'application/json'
+  };
+  if (token) {
+    headers['X-Emby-Token'] = token;
+    headers['X-MediaBrowser-Token'] = token;
+  }
+  return headers;
+}
+
 export function cleanServerUrl(url: string): string {
   let cleaned = url.trim();
   try {
@@ -97,7 +109,7 @@ export async function validateToken(serverUrl: string, userId: string, token: st
     const timeout = setTimeout(() => controller.abort(), 6000);
 
     const res = await fetch(url, {
-      headers: { 'X-Emby-Authorization': getAuthHeader(token) },
+      headers: getAuthHeaders(token),
       signal: controller.signal
     });
     clearTimeout(timeout);
@@ -132,7 +144,7 @@ export async function getUserViews(
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Views`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       const data = await res.json();
@@ -160,7 +172,7 @@ export async function getResumeItems(
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Items/Resume?Limit=12&Recursive=true&Fields=Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,Artists,Album,AlbumArtist`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       const data = await res.json();
@@ -184,7 +196,7 @@ export async function getNextUpEpisodes(
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Shows/NextUp?UserId=${userId}&Limit=16&Fields=Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,SeriesName,SeasonName,IndexNumber,ParentIndexNumber`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       const data = await res.json();
@@ -212,7 +224,7 @@ export async function getLatestMedia(
         url += `&ParentId=${parentId}`;
       }
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       return await res.json();
@@ -270,7 +282,7 @@ export async function getLibraryItems(
 
       const url = `${base}/Users/${userId}/Items?${params.toString()}`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return { items: [], totalRecordCount: 0 };
       const data = await res.json();
@@ -306,7 +318,7 @@ export async function getPlayableFolderItems(
         Fields: 'Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,SeriesName,SeasonName,IndexNumber,ParentIndexNumber,Artists,Album,AlbumArtist,AlbumId'
       });
       const res = await fetch(`${base}/Users/${userId}/Items?${params.toString()}`, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       const data = await res.json();
@@ -330,7 +342,7 @@ export async function getItemDetails(
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Items/${itemId}`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return null;
       return await res.json();
@@ -354,7 +366,7 @@ export async function getSeasons(
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Shows/${seriesId}/Seasons?userId=${userId}&Fields=Overview,PrimaryImageAspectRatio`;
       const res = await fetch(url, {
-        headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+          headers: getAuthHeaders(token)
       });
       if (!res.ok) return [];
       const data = await res.json();
@@ -364,7 +376,7 @@ export async function getSeasons(
         rawSeasons.map(async (s) => {
           const epUrl = `${base}/Shows/${seriesId}/Episodes?seasonId=${s.Id}&userId=${userId}&Fields=Overview,PrimaryImageAspectRatio,RunTimeTicks,MediaStreams,UserData,MediaSources`;
           const epRes = await fetch(epUrl, {
-            headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+              headers: getAuthHeaders(token)
           });
           const epData = epRes.ok ? await epRes.json() : { Items: [] };
           return {
@@ -528,7 +540,7 @@ export async function toggleFavoriteItem(
     const url = `${base}/Users/${userId}/FavoriteItems/${itemId}`;
     const res = await fetch(url, {
       method,
-      headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+        headers: getAuthHeaders(token)
     });
     return res.ok;
   } catch {
@@ -545,7 +557,7 @@ export async function getItemLyrics(
     const base = cleanServerUrl(serverUrl);
     const url = `${base}/Audio/${itemId}/Lyrics`;
     const res = await fetch(url, {
-      headers: { 'X-Emby-Authorization': getAuthHeader(token) }
+        headers: getAuthHeaders(token)
     });
     if (!res.ok) return null;
     return await res.json();

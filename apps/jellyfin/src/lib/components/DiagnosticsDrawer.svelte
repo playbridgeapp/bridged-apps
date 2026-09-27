@@ -163,22 +163,23 @@
   .drawer-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    backdrop-filter: blur(4px);
+    background: rgba(4, 18, 11, 0.8);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
     z-index: 250;
     display: flex;
     justify-content: flex-end;
   }
 
   .drawer-panel {
-    background: var(--bg-surface);
-    border-left: 1px solid var(--border);
+    background: #100b1a;
+    border-left: 1px solid rgba(122, 107, 174, 0.25);
     width: 100%;
     max-width: 460px;
     height: 100vh;
     display: flex;
     flex-direction: column;
-    box-shadow: var(--shadow-lg);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
     animation: slideIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
@@ -192,7 +193,7 @@
     align-items: center;
     justify-content: space-between;
     padding: 18px 20px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .header-title-row {
@@ -203,12 +204,12 @@
 
   .header-title-row h3 {
     font-size: 0.98rem;
-    font-weight: 700;
+    font-weight: 800;
     color: #fff;
   }
 
   :global(.accent-icon) {
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
   }
 
   .header-actions {
@@ -221,6 +222,7 @@
     color: var(--text-secondary);
     padding: 6px;
     border-radius: var(--radius-sm);
+    transition: all 0.15s ease;
   }
 
   .icon-btn:hover {
@@ -234,8 +236,8 @@
 
   .status-summary {
     padding: 16px 20px;
-    border-bottom: 1px solid var(--border);
-    background: var(--bg-surface-elevated);
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
+    background: rgba(29, 23, 40, 0.6);
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -245,7 +247,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    font-weight: 600;
+    font-weight: 700;
     font-size: 0.9rem;
     color: var(--status-ok);
   }
@@ -256,7 +258,7 @@
 
   .status-sub {
     font-size: 0.78rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     margin-top: 4px;
     line-height: 1.4;
   }
@@ -271,10 +273,10 @@
     align-items: center;
     gap: 6px;
     font-size: 0.75rem;
-    padding: 4px 10px;
+    padding: 5px 12px;
     border-radius: var(--radius-full);
-    background: rgba(255, 255, 255, 0.05);
-    border: 1px solid var(--border);
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     color: var(--text-muted);
   }
 
@@ -286,19 +288,20 @@
   }
 
   .cap-pill.active {
-    background: rgba(0, 164, 220, 0.12);
-    border-color: rgba(0, 164, 220, 0.3);
-    color: var(--jf-blue);
+    background: rgba(149, 255, 80, 0.12);
+    border-color: rgba(149, 255, 80, 0.35);
+    color: var(--theme-primary-accent);
   }
 
   .cap-pill.active .cap-dot {
-    background: var(--jf-blue);
+    background: var(--theme-primary-accent);
+    box-shadow: 0 0 6px var(--theme-primary-accent);
   }
 
   .payload-box {
     padding: 12px 20px;
-    border-bottom: 1px solid var(--border);
-    background: #06070a;
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
+    background: #050505;
   }
 
   .payload-header {
@@ -306,8 +309,8 @@
     align-items: center;
     gap: 6px;
     font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--jf-indigo);
+    font-weight: 700;
+    color: var(--theme-primary-accent);
     margin-bottom: 6px;
   }
 
@@ -319,16 +322,16 @@
     overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-all;
-    background: #0d1017;
+    background: #0c0a10;
     padding: 8px 10px;
     border-radius: var(--radius-sm);
-    border: 1px solid var(--border-subtle);
+    border: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .cache-box {
     padding: 12px 20px;
-    background: rgba(255, 255, 255, 0.02);
-    border-bottom: 1px solid var(--border);
+    background: rgba(29, 23, 40, 0.4);
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .cache-header {
@@ -336,14 +339,14 @@
     align-items: center;
     gap: 6px;
     font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--jf-blue);
+    font-weight: 700;
+    color: var(--theme-primary-accent);
     margin-bottom: 4px;
   }
 
   .cache-desc {
     font-size: 0.74rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     margin-bottom: 10px;
   }
 
@@ -359,17 +362,17 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-full);
   }
 
   .btn-danger-outline {
     background: transparent;
-    border: 1px solid rgba(235, 87, 87, 0.4);
+    border: 1px solid rgba(248, 81, 73, 0.4);
     color: var(--status-error);
   }
 
   .btn-danger-outline:hover {
-    background: rgba(235, 87, 87, 0.12);
+    background: rgba(248, 81, 73, 0.15);
   }
 
   .stream-container {
@@ -385,14 +388,14 @@
     gap: 6px;
     padding: 12px 20px;
     font-size: 0.82rem;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text-secondary);
-    border-bottom: 1px solid var(--border-subtle);
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .log-count {
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     font-weight: normal;
   }
 
@@ -405,7 +408,7 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    background: #08090d;
+    background: #050505;
   }
 
   .empty-logs {
@@ -421,13 +424,13 @@
     gap: 2px;
     padding: 6px 8px;
     border-radius: var(--radius-sm);
-    background: var(--bg-surface);
-    border-left: 3px solid var(--border);
+    background: rgba(29, 23, 40, 0.7);
+    border-left: 3px solid rgba(122, 107, 174, 0.3);
   }
 
   .log-row.log-success { border-left-color: var(--status-ok); }
-  .log-row.log-cast { border-left-color: var(--jf-blue); }
-  .log-row.log-feedback { border-left-color: var(--jf-purple); }
+  .log-row.log-cast { border-left-color: var(--theme-primary-accent); }
+  .log-row.log-feedback { border-left-color: var(--theme-pill-highlight); }
   .log-row.log-warn { border-left-color: var(--status-warn); }
   .log-row.log-error { border-left-color: var(--status-error); }
 
@@ -449,7 +452,7 @@
   .log-data-inline {
     font-size: 0.68rem;
     color: var(--text-muted);
-    background: rgba(0, 0, 0, 0.3);
+    background: rgba(0, 0, 0, 0.4);
     padding: 4px 6px;
     border-radius: 3px;
     margin-top: 4px;

@@ -58,90 +58,105 @@
 <style>
   .media-section {
     padding: 0 36px;
-    margin-bottom: 36px;
+    margin-bottom: 40px;
   }
 
   .section-header {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    margin-bottom: 14px;
+    margin-bottom: 16px;
   }
 
   .section-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    color: var(--text-primary);
+    font-size: 1.35rem;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
 
   .section-subtitle {
     font-size: 0.8rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     margin-top: 2px;
   }
 
   .scroll-controls {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
   }
 
   .see-all-btn {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: var(--jf-blue);
-    background: transparent;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    margin-right: 6px;
-    transition: all 0.15s ease;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--theme-primary-accent);
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    padding: 6px 14px;
+    border-radius: var(--radius-full);
+    margin-right: 4px;
+    transition: all 0.2s ease;
   }
 
   .see-all-btn:hover {
-    background: rgba(0, 164, 220, 0.12);
+    background: rgba(44, 34, 60, 0.85);
+    border-color: var(--theme-primary-accent);
+    box-shadow: 0 0 14px rgba(149, 255, 80, 0.25);
     color: #fff;
   }
 
   .control-btn {
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-sm);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    width: 34px;
+    height: 34px;
+    border-radius: 50%;
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     color: var(--text-secondary);
     display: flex;
     align-items: center;
     justify-content: center;
+    transition: all 0.2s ease;
   }
 
   .control-btn:hover {
-    background: var(--bg-surface-elevated);
+    background: rgba(44, 34, 60, 0.9);
     color: #fff;
-    border-color: var(--text-muted);
+    border-color: var(--theme-pill-highlight);
+    transform: scale(1.08);
   }
 
   .cards-carousel {
     display: flex;
-    gap: 16px;
+    gap: 18px;
     overflow-x: auto;
-    padding-bottom: 12px;
+    padding-bottom: 16px;
     scroll-behavior: smooth;
-    scrollbar-width: thin;
+    scrollbar-width: none;
+  }
+
+  .cards-carousel::-webkit-scrollbar {
+    display: none;
   }
 
   .carousel-item {
-    width: 175px;
+    width: 180px;
     flex-shrink: 0;
   }
 
   @media (max-width: 768px) {
     .media-section {
       padding: 0 16px;
-      margin-bottom: 24px;
+      margin-bottom: 28px;
     }
     .carousel-item {
-      width: 130px;
+      width: 135px;
+    }
+    .section-title {
+      font-size: 1.15rem;
     }
   }
 </style>

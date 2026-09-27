@@ -27,8 +27,13 @@
   $: currentItem = playerState.item;
   $: lyrics = $lyricsData;
 
+  $: if ($isLyricsOpen) {
+    activeTab = 'lyrics';
+  }
+
   function close() {
     $isQueueDrawerOpen = false;
+    $isLyricsOpen = false;
   }
 </script>
 
@@ -41,7 +46,10 @@
           <button
             class="tab-btn"
             class:active={activeTab === 'queue'}
-            on:click={() => (activeTab = 'queue')}
+            on:click={() => {
+              activeTab = 'queue';
+              $isLyricsOpen = false;
+            }}
           >
             <ListMusic size={16} />
             <span>Up Next ({playlist.length})</span>
@@ -51,7 +59,10 @@
             <button
               class="tab-btn"
               class:active={activeTab === 'lyrics'}
-              on:click={() => (activeTab = 'lyrics')}
+              on:click={() => {
+                activeTab = 'lyrics';
+                $isLyricsOpen = true;
+              }}
             >
               <Mic2 size={16} />
               <span>Lyrics</span>
@@ -147,23 +158,32 @@
   .drawer-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
-    backdrop-filter: blur(4px);
-    z-index: 95;
+    background: rgba(4, 18, 11, 0.85);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    z-index: 120;
     display: flex;
     justify-content: flex-end;
   }
 
   .drawer-panel {
-    width: 400px;
+    width: 420px;
     max-width: 90vw;
     height: 100%;
-    background: var(--bg-surface-elevated);
-    border-left: 1px solid var(--border);
+    background: #100b1a;
+    border-left: 1px solid rgba(122, 107, 174, 0.25);
     display: flex;
     flex-direction: column;
-    box-shadow: var(--shadow-lg);
+    box-shadow: 0 0 50px rgba(0, 0, 0, 0.9);
     animation: slideLeft 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  @media (max-width: 768px) {
+    .drawer-panel {
+      width: 100%;
+      max-width: 100vw;
+      border-left: none;
+    }
   }
 
   @keyframes slideLeft {
@@ -175,48 +195,54 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 18px;
-    border-bottom: 1px solid var(--border);
+    padding: 16px 20px;
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .tab-toggle-group {
     display: flex;
     gap: 6px;
-    background: var(--bg-surface);
-    padding: 3px;
+    background: rgba(30, 23, 40, 0.7);
+    padding: 4px;
     border-radius: var(--radius-full);
-    border: 1px solid var(--border);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .tab-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 12px;
+    padding: 6px 14px;
     border-radius: var(--radius-full);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--text-secondary);
+    transition: all 0.2s ease;
   }
 
   .tab-btn.active {
-    background: var(--jf-blue);
-    color: #fff;
+    background: var(--theme-primary-accent);
+    color: #050505;
+    font-weight: 700;
+    box-shadow: 0 0 12px rgba(149, 255, 80, 0.35);
   }
 
   .icon-close-btn {
-    width: 32px;
-    height: 32px;
+    width: 34px;
+    height: 34px;
     border-radius: 50%;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
+    background: rgba(30, 23, 40, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    transition: all 0.2s ease;
   }
 
   .icon-close-btn:hover {
     color: #fff;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(60, 47, 82, 0.8);
   }
 
   .drawer-body {
@@ -236,8 +262,8 @@
   }
 
   :global(.empty-icon) {
-    opacity: 0.4;
-    color: var(--jf-blue);
+    opacity: 0.5;
+    color: var(--theme-primary-accent);
   }
 
   .queue-list {
@@ -250,19 +276,19 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 10px;
+    padding: 8px 12px;
     border-radius: var(--radius-md);
     cursor: pointer;
     transition: background 0.15s ease;
   }
 
   .queue-row:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(48, 39, 65, 0.6);
   }
 
   .queue-row.active-track {
-    background: rgba(0, 164, 220, 0.15);
-    border: 1px solid rgba(0, 164, 220, 0.3);
+    background: rgba(149, 255, 80, 0.12);
+    border: 1px solid rgba(149, 255, 80, 0.35);
   }
 
   .queue-track-left {
@@ -275,7 +301,7 @@
 
   .track-idx {
     font-size: 0.75rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     width: 22px;
     text-align: center;
     flex-shrink: 0;
@@ -291,7 +317,7 @@
 
   .bar {
     width: 2px;
-    background: var(--jf-blue);
+    background: var(--theme-primary-accent);
     border-radius: 1px;
     animation: eqBounce 1s infinite alternate ease-in-out;
   }
@@ -306,12 +332,12 @@
   }
 
   .queue-thumb-wrapper {
-    width: 36px;
-    height: 36px;
+    width: 38px;
+    height: 38px;
     border-radius: var(--radius-xs);
     overflow: hidden;
     flex-shrink: 0;
-    background: var(--bg-card);
+    background: var(--theme-background-secondary);
   }
 
   .queue-thumb {
@@ -324,23 +350,29 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    flex: 1;
+    overflow: hidden;
   }
 
   .queue-title {
-    font-size: 0.85rem;
+    font-size: 0.88rem;
     font-weight: 600;
     color: #fff;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    display: block;
+    width: 100%;
   }
 
   .queue-artist {
     font-size: 0.72rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    display: block;
+    width: 100%;
   }
 
   .queue-actions {
@@ -360,7 +392,7 @@
   }
 
   .fav-icon-btn.active-fav {
-    color: #e74c3c;
+    color: #ff5252;
   }
 
   /* Lyrics View */
@@ -375,15 +407,15 @@
   }
 
   .lyrics-line {
-    font-size: 1.1rem;
-    font-weight: 600;
+    font-size: 1.15rem;
+    font-weight: 700;
     color: var(--text-secondary);
     line-height: 1.5;
     transition: color 0.2s ease;
   }
 
   .lyrics-line:hover {
-    color: #fff;
+    color: var(--theme-primary-accent);
   }
 
   .plain-lyrics {

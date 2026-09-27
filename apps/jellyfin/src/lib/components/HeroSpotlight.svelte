@@ -88,11 +88,11 @@
   .hero-banner {
     position: relative;
     width: 100%;
-    min-height: 440px;
+    min-height: 480px;
     display: flex;
     align-items: flex-end;
-    padding: 36px 32px;
-    margin-bottom: 24px;
+    padding: 44px 36px;
+    margin-bottom: 28px;
     overflow: hidden;
   }
 
@@ -110,7 +110,7 @@
     height: 100%;
     object-fit: cover;
     object-position: center 25%;
-    filter: brightness(0.65) saturate(1.1);
+    filter: brightness(0.65) saturate(1.15);
   }
 
   .backdrop-gradient-bottom {
@@ -118,108 +118,123 @@
     bottom: 0;
     left: 0;
     width: 100%;
-    height: 80%;
-    background: linear-gradient(to top, var(--bg-base) 0%, rgba(8, 9, 13, 0.85) 50%, transparent 100%);
+    height: 85%;
+    background: linear-gradient(to top, var(--bg-base) 0%, rgba(5, 5, 5, 0.85) 50%, transparent 100%);
   }
 
   .backdrop-gradient-left {
     position: absolute;
     top: 0;
     left: 0;
-    width: 60%;
+    width: 65%;
     height: 100%;
-    background: linear-gradient(to right, var(--bg-base) 0%, rgba(8, 9, 13, 0.7) 60%, transparent 100%);
+    background: linear-gradient(to right, var(--bg-base) 0%, rgba(5, 5, 5, 0.8) 60%, transparent 100%);
   }
 
   .hero-content {
     position: relative;
     z-index: 2;
-    max-width: 680px;
+    max-width: 720px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 12px;
   }
 
   .meta-pills {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     flex-wrap: wrap;
   }
 
   .pill {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: 5px;
     font-size: 0.75rem;
     font-weight: 600;
-    padding: 2px 7px;
-    border-radius: var(--radius-sm);
+    padding: 3px 9px;
+    border-radius: var(--radius-full);
+    backdrop-filter: blur(10px);
   }
 
   .pill-rating {
-    background: rgba(227, 179, 65, 0.15);
-    color: #f1c40f;
-    border: 1px solid rgba(227, 179, 65, 0.3);
+    background: rgba(227, 179, 65, 0.18);
+    color: #ffd043;
+    border: 1px solid rgba(227, 179, 65, 0.35);
   }
 
   .pill-muted {
-    background: rgba(255, 255, 255, 0.08);
+    background: rgba(30, 23, 40, 0.7);
     color: var(--text-secondary);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .hero-title {
-    font-size: 2.2rem;
+    font-size: 2.5rem;
     font-weight: 800;
     letter-spacing: -0.03em;
-    line-height: 1.15;
+    line-height: 1.12;
     color: #ffffff;
-    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.7);
+    text-shadow: 0 2px 16px rgba(0, 0, 0, 0.8);
   }
 
   .hero-tagline {
     font-size: 0.95rem;
     font-style: italic;
-    color: var(--jf-indigo);
-    font-weight: 400;
+    color: var(--theme-primary-accent-hover);
+    font-weight: 500;
   }
 
   .hero-overview {
-    font-size: 0.9rem;
-    color: var(--text-secondary);
-    line-height: 1.5;
+    font-size: 0.92rem;
+    color: #9da7b7;
+    line-height: 1.55;
     display: -webkit-box;
     -webkit-line-clamp: 3;
     -webkit-box-orient: vertical;
     overflow: hidden;
-    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
   }
 
   .hero-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 6px;
+    gap: 12px;
+    margin-top: 8px;
     flex-wrap: wrap;
   }
 
   .hero-btn {
-    padding: 10px 18px;
-    font-size: 0.9rem;
+    padding: 11px 22px;
+    font-size: 0.92rem;
+  }
+
+  .action-cast {
+    background: var(--theme-primary-accent);
+    color: #050505;
+    font-weight: 800;
+    box-shadow: 0 0 24px rgba(149, 255, 80, 0.35);
+  }
+
+  .action-play {
+    background: rgba(44, 34, 60, 0.85);
+    border: 1px solid rgba(122, 107, 174, 0.3);
+    color: #ffffff;
   }
 
   @media (max-width: 768px) {
     .hero-banner {
-      min-height: 320px;
-      padding: 20px 16px;
+      min-height: 340px;
+      padding: 24px 16px;
       margin-bottom: 16px;
     }
     .hero-title {
-      font-size: 1.5rem;
+      font-size: 1.6rem;
     }
     .hero-overview {
       -webkit-line-clamp: 2;
-      font-size: 0.82rem;
+      font-size: 0.84rem;
     }
     .hero-actions {
       display: grid;
