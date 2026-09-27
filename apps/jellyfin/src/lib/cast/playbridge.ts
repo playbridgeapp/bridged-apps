@@ -150,6 +150,7 @@ export function buildSingleCastPayload(item: JellyfinItem, streamUrl: string, po
     title,
     contentType,
     localNetwork: isLocal,
+    skipPreplay: item.Type === 'Audio',
     metadata: formatVisualMetadata(item, posterUrl, backdropUrl)
   };
 }
@@ -186,10 +187,12 @@ export function buildPlaylistCastPayload(
   });
 
   const hasLocal = items.some(({ streamUrl }) => isLocalNetworkUrl(streamUrl));
+  const safeStartIndex = Math.max(0, Math.min(startIndex, castItems.length - 1));
 
   return {
-    startIndex: Math.max(0, Math.min(startIndex, castItems.length - 1)),
+    startIndex: safeStartIndex,
     localNetwork: hasLocal,
+    skipPreplay: castItems[safeStartIndex]?.contentType?.toLowerCase().startsWith('audio/') === true,
     metadata: {
       title: playlistTitle,
       posterUrl: playlistPosterUrl || items[0]?.posterUrl
@@ -234,6 +237,7 @@ export async function castLinkedQueue(
         items: initialItems,
         startIndex,
         metadata: metadata || items[startIndex]?.metadata,
+        skipPreplay: items[startIndex]?.contentType?.toLowerCase().startsWith('audio/') === true,
         localNetwork: items.some((i) => isLocalNetworkUrl(i.url))
       });
 
