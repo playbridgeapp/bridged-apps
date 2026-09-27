@@ -11,6 +11,7 @@ This monorepo contains modern, fast, zero-telemetry web applications tailored fo
 | Application | Path | Framework | Description |
 | :--- | :--- | :--- | :--- |
 | **Jellyfin Web Client** | `apps/jellyfin` | Svelte 5 + Vite | Multi-server/multi-user Jellyfin client with direct & linked PlayBridge casting, hierarchical library navigation, and offline SWR caching. |
+| **Bridged Streams** | `apps/streams` | Svelte 5 + Vite | Addon browsing, web playback, Stremio and Nuvio sync, and optional PlayBridge casting. |
 
 ---
 

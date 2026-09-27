@@ -5,7 +5,9 @@
   "description": "PlayBridge-enabled companion web apps and media clients",
   "scripts": {
     "dev:jellyfin": "pnpm --filter @bridged-apps/jellyfin dev",
+    "dev:streams": "pnpm --filter @bridged-apps/streams dev",
     "build:jellyfin": "pnpm --filter @bridged-apps/jellyfin build",
+    "build:streams": "pnpm --filter @bridged-apps/streams build",
     "check": "pnpm -r check",
     "build": "pnpm -r build"
   },
