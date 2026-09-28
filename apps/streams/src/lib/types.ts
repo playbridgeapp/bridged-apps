@@ -95,6 +95,7 @@ export interface CastItem {
   contentType: string;
   metadata: Record<string, unknown>;
   headers?: Record<string, string>;
+  startPositionMs?: number;
 }
 
 export interface PluginScraper {

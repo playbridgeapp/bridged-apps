@@ -68,20 +68,22 @@ test.beforeEach(async ({ page }) => {
   await manager.getByRole('button', { name: 'Close' }).click();
 });
 
-test('casts a selected movie as one direct item', async ({ page }) => {
+test('casts a selected movie as one tracked item', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
   await expect(page.getByText('Film Source')).toBeVisible();
   await page.getByRole('button', { name: 'Cast' }).click();
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls).toHaveLength(1);
-  expect(calls[0].method).toBe('cast');
-  expect(calls[0].payload.url).toBe('https://media.test/movie.mp4');
+  expect(calls[0].method).toBe('linkCast');
+  expect(calls[0].payload.items[0].url).toBe('https://media.test/movie.mp4');
 });
 
 test('opens a movie in MoviPlayer without starting a cast', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await page.locator('.detail-play').click();
   await expect(page.getByText('Film Source')).toBeVisible();
-  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.locator('.stream-overlay .watch-button').click();
   await expect(page.getByRole('dialog', { name: 'Now playing Sample Film' })).toBeVisible();
   await expect(page.locator('movi-player')).toBeVisible();
   expect(await page.evaluate(() => (window as any).__streamTest.calls)).toEqual([]);
@@ -153,6 +155,7 @@ test('loads required year catalogs and browses and casts sport titles', async ({
   await expect(page.getByRole('heading', { name: 'New Shows' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Live Now' })).toBeVisible();
   await page.getByRole('button', { name: 'View details for Live Match' }).click();
+  await page.locator('.detail-play').click();
   await expect(page.getByText('Live Feed')).toBeVisible();
   await page.getByRole('button', { name: 'Cast' }).click();
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
@@ -175,6 +178,7 @@ test('uses a browser-compatible Nuvio scraper for an IMDb movie', async ({ page 
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
   await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await page.locator('.detail-play').click();
   await expect(page.getByText('Plugin Source 321')).toBeVisible();
 });
 
@@ -211,7 +215,7 @@ test('imports Stremio account addons, library, and progress without removing loc
   await openAccounts(page);
   await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
   await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('status').getByText('Synced 1 addons and 1 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Sync now' }).click();
   await expect.poll(() => syncCount).toBe(2);
@@ -269,7 +273,7 @@ test('writes account addon changes, library membership, and linked TV progress t
   await openAccounts(page);
   await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
   await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('status').getByText('Synced 1 addons and 0 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Close account' }).click();
 

@@ -31,7 +31,7 @@ function contentType(url: string): string {
   return 'video/mp4';
 }
 
-function castItem(meta: Meta, stream: Stream & { url: string }, video?: Video): CastItem {
+function castItem(meta: Meta, stream: Stream & { url: string }, video?: Video, startPositionMs = 0): CastItem {
   const title = video
     ? `${meta.name} · S${video.season ?? 0}E${video.episode ?? 0}${video.title ? ` · ${video.title}` : ''}`
     : meta.name;
@@ -41,14 +41,16 @@ function castItem(meta: Meta, stream: Stream & { url: string }, video?: Video): 
     title,
     contentType: contentType(stream.url),
     metadata: metadata(meta, video),
-    ...(stream.headers ? { headers: stream.headers } : {})
+    ...(stream.headers ? { headers: stream.headers } : {}),
+    ...(Number.isFinite(startPositionMs) && startPositionMs > 0
+      ? { startPositionMs: Math.min(604_800_000, Math.floor(startPositionMs)) } : {})
   };
 }
 
-export function directCast(meta: Meta, stream: Stream): void {
+export function directCast(meta: Meta, stream: Stream, startPositionMs = 0): void {
   if (!playableStream(stream)) throw new Error('This stream needs a native resolver or proxy before it can be cast.');
   if (!bridgeAvailable()) throw new Error('Open Bridged Streams in PlayBridge to cast.');
-  window.playbridge!.cast(castItem(meta, stream));
+  window.playbridge!.cast(castItem(meta, stream, undefined, startPositionMs));
 }
 
 export async function stopLinkedCast(): Promise<void> {
@@ -67,6 +69,61 @@ function matchingStream(streams: Stream[], selected: Stream): (Stream & { url: s
     || playable[0];
 }
 
+function trackSessionProgress(session: LinkedSession,
+  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void): void {
+  let latest: { videoId: string; positionMs: number; durationMs: number; state: string } | null = null;
+  session.addEventListener('statechange', (event) => {
+    const detail = event.detail || {};
+    const index = Number(detail.currentIndex);
+    const item = Array.isArray(detail.items) ? detail.items[index] : undefined;
+    const videoId = typeof item?.id === 'string' ? item.id : undefined;
+    const positionMs = Number(detail.positionMs);
+    const durationMs = Number(detail.durationMs);
+    if (activeSession === session && videoId && Number.isFinite(positionMs) && Number.isFinite(durationMs)
+      && positionMs > 0 && durationMs > 0) {
+      latest = { videoId, positionMs, durationMs, state: String(detail.state || '') };
+      onProgress?.(latest);
+    }
+  });
+  session.addEventListener('ended', () => {
+    if (latest) onProgress?.({ ...latest, state: 'stopped' });
+  });
+}
+
+export async function castMovie(meta: Meta, stream: Stream, startPositionMs: number,
+  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void): Promise<boolean> {
+  if (!playableStream(stream)) throw new Error('Choose a direct HTTP stream for casting.');
+  await stopLinkedCast();
+  if (!window.playbridge?.linkCast || !window.playbridge.capabilities?.linkedCast) {
+    directCast(meta, stream, startPositionMs);
+    return false;
+  }
+  const thisGeneration = generation;
+  const item = castItem(meta, stream, undefined, startPositionMs);
+  let session: LinkedSession;
+  try {
+    session = await window.playbridge.linkCast({ items: [item], startIndex: 0, metadata: metadata(meta) });
+  } catch (error) {
+    if ((error as { code?: string })?.code !== 'unsupported_target') throw error;
+    directCast(meta, stream, startPositionMs);
+    return false;
+  }
+  if (thisGeneration !== generation) {
+    await session.unlink();
+    return true;
+  }
+  activeSession = session;
+  session.addEventListener('needitems', (event) => {
+    const requestId = event.detail?.requestId;
+    if (activeSession === session && typeof requestId === 'string') {
+      void session.provideItems(requestId, { items: [], endOfList: true }).catch(() => {});
+    }
+  });
+  session.addEventListener('ended', () => { if (activeSession === session) activeSession = null; });
+  trackSessionProgress(session, onProgress);
+  return true;
+}
+
 export async function lazyCastSeries(
   meta: Meta,
   videos: Video[],
@@ -75,6 +132,7 @@ export async function lazyCastSeries(
   addons: InstalledAddon[],
   plugins: PluginRepository[],
   tmdbKey: string,
+  startPositionMs: number,
   onStatus: (message: string) => void,
   onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void
 ): Promise<void> {
@@ -89,7 +147,7 @@ export async function lazyCastSeries(
   if (start < 0) throw new Error('Episode is missing from the series metadata.');
   await stopLinkedCast();
   const thisGeneration = generation;
-  const first = castItem(meta, selectedStream, selectedVideo);
+  const first = castItem(meta, selectedStream, selectedVideo, startPositionMs);
   const session = await window.playbridge.linkCast({ items: [first], startIndex: 0, metadata: metadata(meta) });
   if (thisGeneration !== generation) {
     await session.unlink();
@@ -139,16 +197,5 @@ export async function lazyCastSeries(
       onStatus('Linked cast ended.');
     }
   });
-  session.addEventListener('statechange', (event) => {
-    const detail = event.detail || {};
-    const index = Number(detail.currentIndex);
-    const item = Array.isArray(detail.items) ? detail.items[index] : undefined;
-    const videoId = typeof item?.id === 'string' ? item.id : undefined;
-    const positionMs = Number(detail.positionMs);
-    const durationMs = Number(detail.durationMs);
-    if (activeSession === session && videoId && Number.isFinite(positionMs) && Number.isFinite(durationMs)
-      && positionMs > 0 && durationMs > 0) {
-      onProgress?.({ videoId, positionMs, durationMs, state: String(detail.state || '') });
-    }
-  });
+  trackSessionProgress(session, onProgress);
 }

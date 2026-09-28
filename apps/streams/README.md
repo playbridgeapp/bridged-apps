@@ -21,7 +21,7 @@ Open **Settings → Accounts and profiles → Stremio** and sign in with your St
 
 The app imports your Stremio addons, library, and Continue Watching progress on sign-in and every 10 minutes. **Sync now** refreshes them immediately. Install an addon with **Stremio account** selected, remove an account addon, or change a Stremio library entry to write it back. Addons saved directly in Bridged Streams remain local. Nuvio plugin repositories and the TMDB key are separate from Stremio's addon collection.
 
-Linked TV casts report episode watch position to Stremio when PlayBridge sends playback state updates. Direct movie casts currently have no playback state callback, so movie watch progress is imported but is not reported back from a cast. Browser playback reports progress for both. Catalog and stream requests still depend on each addon's browser CORS support.
+Linked TV casts report movie and episode watch position to Stremio when PlayBridge sends playback state updates. On older PlayBridge versions without linked casting, movies use a direct cast without progress callbacks. Browser playback reports progress for both. Catalog and stream requests still depend on each addon's browser CORS support.
 
 ## Nuvio account sync
 
@@ -29,7 +29,7 @@ Open **Settings → Accounts and profiles → Nuvio** and sign in with your Nuvi
 
 Choose a Nuvio profile after signing in. If the account has no profiles, create a primary profile here or in Nuvio Mobile; if the profile request fails, use **Retry profiles** to see the error and try again. PIN-protected profiles must be unlocked in this tab before their data loads. The app imports addons, enabled plugin repositories, library titles, and watch progress on sign-in and every 10 minutes. Disabled addons remain visible in Manage addons. The Nuvio **Sync now** button refreshes them immediately. Imported sources are combined with local and Stremio sources for browsing. Browser CORS and scraper runtime limitations still apply.
 
-Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV episode casts report watch progress to both connected accounts; each account keeps its own library actions. Direct movie casts do not currently provide playback callbacks.
+Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV movie and episode casts report watch progress to both connected accounts; each account keeps its own library actions. Direct movie casts on older PlayBridge versions do not provide playback callbacks.
 
 ## Addon controls
 
@@ -41,7 +41,7 @@ Local addon order and switches stay in this browser. Stremio addon order syncs t
 
 - Choose **Play** on a stream to watch in the website with MoviPlayer. It is loaded only when playback starts and supports MKV, MP4, HLS, DASH, and other formats supported by the player. The source must allow browser requests, including media segments and required headers. A native video fallback is used if MoviPlayer cannot load.
 - Browser playback reports movie and TV watch progress to connected accounts. TV playback looks for the next episode from the same source when the current episode ends.
-- Movies use `window.playbridge.cast()` with the chosen direct HTTP stream.
+- Movies use `window.playbridge.linkCast()` with one item when available so watch progress can sync. Older PlayBridge versions fall back to `cast()`.
 - Series use `window.playbridge.linkCast()` with the chosen first episode. The client fetches further episode streams only after a `needitems` event, then supplies them through `provideItems()`.
 - **Cast** is an additional action shown for each stream when the PlayBridge bridge is available. Linked casting needs a PlayBridge version with `capabilities.linkedCast`.
 - Streams requiring a torrent engine, local debrid resolution, or proxy headers are shown as unavailable for direct casting.

@@ -1,7 +1,9 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { fade } from 'svelte/transition';
+  import { cubicIn, cubicOut } from 'svelte/easing';
   import { ArrowLeft, ArrowRight, Bookmark, Cast, Check, ChevronDown, Clapperboard, Film, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
-  import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls } from './lib/addons';
+  import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
@@ -9,7 +11,8 @@
   import { readPersistentSession, writePersistentSession } from './lib/persistent-session';
   import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveStremioLibrary } from './lib/startup-cache';
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
-  import { bridgeAvailable, directCast, lazyCastSeries, stopLinkedCast } from './lib/cast';
+  import { bridgeAvailable, castMovie, directCast, lazyCastSeries, stopLinkedCast } from './lib/cast';
+  import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
   import { browserCompatible, installPlugin, platformCompatible, savedPluginUrls, savedTmdbKey, savePluginUrls, saveTmdbKey, toggleScraper } from './lib/plugins';
   import { addAccountAddon, fetchAccountAddons, fetchAccountLibrary, login, loginWithKey, moveAccountAddon, refreshUser, removeAccountAddon, savedSession, saveSession, saveWatchProgress, setLibraryMembership } from './lib/stremio';
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioProgress, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, pushNuvioProgress, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
@@ -18,10 +21,13 @@
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
 
   type CatalogRow = { key: string; title: string; addon: InstalledAddon; catalog: AddonCatalog; items: MetaPreview[]; loading?: boolean; error?: string };
+  type StreamSource = { key: string; name: string; addon?: InstalledAddon; plugin?: PluginRepository };
   type Tab = 'home' | 'search' | 'library' | 'settings';
   type DiscoverDropdown = 'type' | 'catalog' | 'genre';
   const NUVIO_PROFILE_KEY = 'bridged-streams.nuvio-profile.v1';
   const DISCOVER_CATALOG_KEY = 'bridged-streams.discover-catalog.v1';
+  const motionDuration = (milliseconds: number) => typeof window !== 'undefined'
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : milliseconds;
   function savedDiscoverCatalogKey(): string {
     try { return localStorage.getItem(DISCOVER_CATALOG_KEY) || ''; } catch { return ''; }
   }
@@ -61,7 +67,9 @@
   let nuvioSyncRequest = 0;
   let nuvioLibraryBusy = false;
   const nuvioProgressLastWrite = new Map<string, number>();
+  const nuvioProgressLastPosition = new Map<string, number>();
   const nuvioProgressInFlight = new Set<string>();
+  const nuvioProgressPending = new Map<string, { meta: Meta; progress: WatchProgress }>();
   let account: StremioSession | null = initialStremioSession;
   let startupLoading = !!(initialStremioSession || initialNuvioSession || initialLocalUrls.length)
     && !initialLocalAddons.length && !initialAccountAddons.length;
@@ -81,7 +89,10 @@
   let syncNewPlugin = false;
   let libraryBusy = false;
   const progressLastWrite = new Map<string, number>();
+  const progressLastPosition = new Map<string, number>();
   const progressInFlight = new Set<string>();
+  const progressPending = new Map<string, { meta: Meta; progress: WatchProgress }>();
+  type WatchProgress = { videoId: string; positionMs: number; durationMs: number; state: string };
   let plugins: PluginRepository[] = [];
   let localPlugins: PluginRepository[] = [];
   let nuvioPlugins: PluginRepository[] = [];
@@ -124,6 +135,8 @@
   let catalogRefreshInterval: 15 | 30 | 60 = 30;
   let lastCatalogRefresh = 0;
   let selected: Meta | null = null;
+  let streamScreen = false;
+  let streamBackToDetail = false;
   let loadingDetail = false;
   let detailError = '';
   let season = 1;
@@ -131,12 +144,18 @@
   let seasonWheel: HTMLDivElement | null = null;
   let seasonWheelTimer: number | undefined;
   let episode: Video | null = null;
+  let episodeListElement: HTMLDivElement | null = null;
   let streams: Stream[] = [];
+  let activeStreamSources: StreamSource[] = [];
+  let selectedStreamSource = '';
+  let sourceStreams: Record<string, Stream[]> = {};
+  let sourceLoading: Record<string, boolean> = {};
+  let sourceWarnings: Record<string, string> = {};
   let loadingStreams = false;
   let sourceError = '';
   let status = '';
   let bridge = false;
-  let playing: { meta: Meta; stream: Stream; video: Video | null } | null = null;
+  let playing: { meta: Meta; stream: Stream; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
   let playerReady = false;
   let playerLoading = false;
   let playerError = '';
@@ -212,6 +231,10 @@
   $: episodes = (selected?.videos || []).filter((video) => video.season === season)
     .sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
   $: playable = streams.filter(playableStream);
+  $: visiblePlayable = playable.filter((stream) => !selectedStreamSource ||
+    sourceStreams[selectedStreamSource]?.includes(stream));
+  $: visibleSourcesLoading = selectedStreamSource ? !!sourceLoading[selectedStreamSource] : loadingStreams;
+  $: detailResumeMs = selected ? resumePositionMs(selected, episode, accountLibrary, nuvioProgress) : 0;
   $: unavailable = streams.length - playable.length;
   $: browserUncertain = playable.filter((stream) => stream.behaviorHints?.notWebReady).length;
   $: if (tab) void tick().then(updateDockIndicator);
@@ -355,7 +378,9 @@
     accountAddons = [];
     accountLibrary = [];
     progressLastWrite.clear();
+    progressLastPosition.clear();
     progressInFlight.clear();
+    progressPending.clear();
     accountSyncing = false;
     accountMessage = '';
     saveSession(null);
@@ -468,7 +493,9 @@
     nuvioLibrary = [];
     nuvioProgress = [];
     nuvioProgressLastWrite.clear();
+    nuvioProgressLastPosition.clear();
     nuvioProgressInFlight.clear();
+    nuvioProgressPending.clear();
     nuvioBusy = false;
     nuvioSyncing = false;
     nuvioMessage = '';
@@ -557,7 +584,9 @@
     nuvioLibrary = [];
     nuvioProgress = [];
     nuvioProgressLastWrite.clear();
+    nuvioProgressLastPosition.clear();
     nuvioProgressInFlight.clear();
+    nuvioProgressPending.clear();
     nuvioBusy = false;
     nuvioSyncing = false;
     nuvioMessage = '';
@@ -912,16 +941,32 @@
     finally { nuvioLibraryBusy = false; }
   }
 
-  function reportWatchProgress(meta: Meta, progress: { videoId: string; positionMs: number; durationMs: number; state: string }) {
-    const current = account;
+  function finalProgress(state: string): boolean {
+    return ['paused', 'stopped', 'ended', 'complete', 'completed'].includes(state.toLowerCase());
+  }
+
+  function reportWatchProgress(meta: Meta, progress: WatchProgress) {
+    if ((meta.type !== 'movie' && meta.type !== 'series') || !Number.isFinite(progress.positionMs)
+      || !Number.isFinite(progress.durationMs) || progress.positionMs <= 0 || progress.durationMs <= 0) return;
     reportNuvioProgress(meta, progress);
+    reportStremioProgress(meta, progress);
+  }
+
+  function reportStremioProgress(meta: Meta, progress: WatchProgress) {
+    const current = account;
     if (!current) return;
     const key = `${meta.id}:${progress.videoId}`;
     const now = Date.now();
-    if (progressInFlight.has(meta.id) || now - (progressLastWrite.get(key) || 0) < 30_000) return;
+    if (progressInFlight.has(meta.id)) {
+      progressPending.set(meta.id, { meta, progress });
+      return;
+    }
+    if (now - (progressLastWrite.get(key) || 0) < 30_000 &&
+      (!finalProgress(progress.state) || progressLastPosition.get(key) === Math.floor(progress.positionMs))) return;
     const generation = accountGeneration;
     progressInFlight.add(meta.id);
     progressLastWrite.set(key, now);
+    progressLastPosition.set(key, Math.floor(progress.positionMs));
     void saveWatchProgress(current.authKey, meta, accountLibrary.find((item) => item.id === meta.id),
       progress.videoId, progress.positionMs, progress.durationMs)
       .then((updated) => {
@@ -932,22 +977,38 @@
       })
       .catch((error) => {
         progressLastWrite.delete(key);
+        progressLastPosition.delete(key);
         if (generation === accountGeneration) accountError = `Watch progress sync failed: ${message(error)}`;
       })
-      .finally(() => progressInFlight.delete(meta.id));
+      .finally(() => {
+        if (generation !== accountGeneration || account?.authKey !== current.authKey) return;
+        progressInFlight.delete(meta.id);
+        const pending = progressPending.get(meta.id);
+        if (pending) {
+          progressPending.delete(meta.id);
+          reportStremioProgress(pending.meta, pending.progress);
+        }
+      });
   }
 
-  function reportNuvioProgress(meta: Meta, progress: { videoId: string; positionMs: number; durationMs: number; state: string }) {
+  function reportNuvioProgress(meta: Meta, progress: WatchProgress) {
     const current = nuvioSession;
     if (!current || !nuvioProfileReady || (meta.type !== 'movie' && meta.type !== 'series')) return;
     const key = `${meta.id}:${progress.videoId}`;
     const now = Date.now();
-    if (nuvioProgressInFlight.has(key) || now - (nuvioProgressLastWrite.get(key) || 0) < 30_000) return;
+    if (nuvioProgressInFlight.has(key)) {
+      nuvioProgressPending.set(key, { meta, progress });
+      return;
+    }
+    if (now - (nuvioProgressLastWrite.get(key) || 0) < 30_000 &&
+      (!finalProgress(progress.state) || nuvioProgressLastPosition.get(key) === Math.floor(progress.positionMs))) return;
     const generation = nuvioGeneration;
     const index = nuvioProfileIndex;
-    const video = meta.videos?.find((item) => item.id === progress.videoId) || null;
+    const video = meta.videos?.find((item) => item.id === progress.videoId)
+      || (episode?.id === progress.videoId ? episode : null);
     nuvioProgressInFlight.add(key);
     nuvioProgressLastWrite.set(key, now);
+    nuvioProgressLastPosition.set(key, Math.floor(progress.positionMs));
     void pushNuvioProgress(current, index, meta, video, progress.positionMs, progress.durationMs)
       .then(() => {
         if (generation !== nuvioGeneration || index !== nuvioProfileIndex) return;
@@ -960,9 +1021,18 @@
       })
       .catch((error) => {
         nuvioProgressLastWrite.delete(key);
+        nuvioProgressLastPosition.delete(key);
         if (generation === nuvioGeneration) nuvioError = `Watch progress sync failed: ${message(error)}`;
       })
-      .finally(() => nuvioProgressInFlight.delete(key));
+      .finally(() => {
+        if (generation !== nuvioGeneration || index !== nuvioProfileIndex || nuvioSession?.user.id !== current.user.id) return;
+        nuvioProgressInFlight.delete(key);
+        const pending = nuvioProgressPending.get(key);
+        if (pending) {
+          nuvioProgressPending.delete(key);
+          reportNuvioProgress(pending.meta, pending.progress);
+        }
+      });
   }
 
   async function addPlugin() {
@@ -1131,11 +1201,15 @@
     return { destroy: () => observer.disconnect() };
   }
 
-  async function openDetail(preview: MetaPreview) {
+  async function openDetail(preview: MetaPreview, fromContinue = false) {
     const request = ++detailRequest;
     selected = preview;
+    streamScreen = fromContinue;
+    streamBackToDetail = false;
     detailError = '';
     streams = [];
+    activeStreamSources = [];
+    selectedStreamSource = '';
     episode = null;
     seasonPickerOpen = false;
     detailExpanded = false;
@@ -1144,15 +1218,32 @@
       const meta = await fetchMeta(addons, preview);
       if (request !== detailRequest) return;
       selected = meta;
-      season = meta.videos?.find((video) => video.season != null)?.season ?? 1;
-      const resume = accountLibrary.find((item) => item.id === meta.id)?.lastVideoId
-        || nuvioLibrary.find((item) => item.id === meta.id)?.lastVideoId;
-      const resumeVideo = meta.videos?.find((video) => video.id === resume);
+      season = defaultSeason(meta.videos);
+      const recentProgress = nuvioProgress.filter((entry) => entry.content_id === meta.id && entry.content_type === meta.type
+        && entry.position > 0 && entry.duration > 0 && entry.position < entry.duration * .95)
+        .sort((a, b) => b.last_watched - a.last_watched)[0];
+      const fallbackId = recentProgress?.video_id || accountLibrary.find((item) => item.id === meta.id)?.lastVideoId
+        || (preview as MetaPreview & { lastVideoId?: string }).lastVideoId;
+      const fallbackCoordinates = fallbackId?.match(/:(\d+):(\d+)$/);
+      const resumeVideo = resumeEpisode(meta, accountLibrary, nuvioLibrary, nuvioProgress)
+        || (fromContinue && meta.type === 'series' && fallbackId
+          ? { id: fallbackId, season: recentProgress?.season ?? (fallbackCoordinates ? Number(fallbackCoordinates[1]) : undefined),
+            episode: recentProgress?.episode ?? (fallbackCoordinates ? Number(fallbackCoordinates[2]) : undefined) } : null);
       if (meta.type === 'series' && resumeVideo) {
         season = resumeVideo.season ?? season;
-        await chooseEpisode(resumeVideo);
+        episode = resumeVideo;
+        await tick();
+        if (request !== detailRequest) return;
+        if (fromContinue) {
+          loadingDetail = false;
+          await loadStreams('series', resumeVideo.id);
+        }
+        else revealSelectedEpisode();
       }
-      if (meta.type !== 'series') await loadStreams(meta.type, meta.id);
+      if (fromContinue && meta.type !== 'series') {
+        loadingDetail = false;
+        await loadStreams(meta.type, meta.id);
+      }
     } catch (error) {
       if (request === detailRequest) detailError = message(error);
     } finally {
@@ -1164,6 +1255,7 @@
     detailRequest += 1;
     streamRequest += 1;
     selected = null;
+    streamScreen = false;
     seasonPickerOpen = false;
     episode = null;
     streams = [];
@@ -1189,17 +1281,59 @@
   async function detailPlay() {
     if (!selected || loadingDetail) return;
     if (selected.type === 'series') {
-      if (!episode && episodes.length) await chooseEpisode(episodes[0]);
+      if (episode && detailResumeMs > 0) {
+        openStreamScreen(episode);
+        return;
+      }
       detailJump('detail-episodes');
       return;
     }
-    if (playable.length) await playInBrowser(playable[0]);
-    else detailJump('detail-streams');
+    openStreamScreen(null);
   }
 
-  async function chooseEpisode(video: Video) {
+  function openStreamScreen(video: Video | null) {
+    if (!selected) return;
     episode = video;
-    await loadStreams('series', video.id);
+    streamBackToDetail = true;
+    streamScreen = true;
+    selectedStreamSource = '';
+    void loadStreams(selected.type, video?.id || selected.id);
+  }
+
+  function closeStreamScreen() {
+    if (!streamBackToDetail) { closeDetail(); return; }
+    streamScreen = false;
+    streamRequest += 1;
+    loadingStreams = false;
+    void tick().then(revealSelectedEpisode);
+  }
+
+  function playbackClock(positionMs: number): string {
+    const seconds = Math.floor(positionMs / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const display = `${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+    return minutes >= 60 ? `${Math.floor(minutes / 60)}:${display}` : display;
+  }
+
+  function streamHeading(stream: Stream, index: number): string {
+    const name = stream.name?.trim();
+    const title = stream.title?.trim();
+    if (title && title !== stream.addonName) return title;
+    if (name && name !== stream.addonName) return name;
+    return stream.description?.trim().split('\n')[0] || `Stream ${index + 1}`;
+  }
+
+  function streamDetails(stream: Stream, heading: string): string {
+    return [stream.name, stream.description].map((value) => value?.trim() || '')
+      .filter((value) => value && value !== heading && value !== stream.addonName).join(' · ');
+  }
+
+  function revealSelectedEpisode() {
+    const list = episodeListElement;
+    const selectedEpisode = list?.querySelector<HTMLElement>('.episode-row.selected');
+    if (!list || !selectedEpisode) return;
+    const left = list.scrollLeft + selectedEpisode.getBoundingClientRect().left - list.getBoundingClientRect().left;
+    list.scrollLeft = Math.max(0, left - (list.clientWidth - selectedEpisode.clientWidth) / 2);
   }
 
   async function openSeasonPicker() {
@@ -1230,19 +1364,58 @@
     }, 110);
   }
 
-  async function loadStreams(type: MediaType, id: string) {
+  function streamSources(type: MediaType, id: string): StreamSource[] {
+    const addonSources = addons.filter((addon) => supports(addon, 'stream', type, id))
+      .map((addon) => ({ key: `addon:${addon.manifestUrl}`, name: addon.manifest.name, addon }));
+    const pluginSources = (type === 'movie' || type === 'series' ? plugins : []).flatMap((repo) => repo.scrapers
+      .filter((scraper) => browserCompatible(scraper) && scraper.supportedTypes?.some((value) =>
+        value === (type === 'series' ? 'tv' : 'movie') || value === type))
+      .map((scraper) => ({ key: `plugin:${repo.manifestUrl}:${scraper.id}`, name: scraper.name,
+        plugin: { ...repo, scrapers: [scraper] } })));
+    return [...addonSources, ...pluginSources];
+  }
+
+  async function refreshStreamSource(source: StreamSource, type: MediaType, id: string, request: number, forceRefresh = false) {
+    sourceLoading = { ...sourceLoading, [source.key]: true };
+    let warning = '';
+    try {
+      const result = await fetchStreams(source.addon ? [source.addon] : [], type, id,
+        source.plugin ? [source.plugin] : [], tmdbKey, (value) => { warning = warning ? `${warning} ${value}` : value; }, undefined, forceRefresh);
+      if (request !== streamRequest) return;
+      sourceStreams = { ...sourceStreams, [source.key]: result };
+      sourceWarnings = { ...sourceWarnings, [source.key]: warning };
+      streams = activeStreamSources.flatMap((item) => sourceStreams[item.key] || []);
+    } catch (error) {
+      if (request === streamRequest) sourceWarnings = { ...sourceWarnings, [source.key]: message(error) };
+    } finally {
+      if (request === streamRequest) {
+        sourceLoading = { ...sourceLoading, [source.key]: false };
+        loadingStreams = Object.values(sourceLoading).some(Boolean);
+      }
+    }
+  }
+
+  async function loadStreams(type: MediaType, id: string, forceRefresh = false) {
     const request = ++streamRequest;
+    const previousFilter = forceRefresh ? selectedStreamSource : '';
     streams = [];
     sourceError = '';
-    loadingStreams = true;
-    try {
-      const result = await fetchStreams(addons, type, id, plugins, tmdbKey, (warning) => { if (request === streamRequest) sourceError = sourceError ? `${sourceError} ${warning}` : warning; });
-      if (request === streamRequest) streams = result;
-    } catch (error) {
-      if (request === streamRequest) sourceError = message(error);
-    } finally {
-      if (request === streamRequest) loadingStreams = false;
-    }
+    activeStreamSources = streamSources(type, id);
+    selectedStreamSource = activeStreamSources.some((source) => source.key === previousFilter) ? previousFilter : '';
+    sourceStreams = {};
+    sourceWarnings = {};
+    sourceLoading = Object.fromEntries(activeStreamSources.map((source) => [source.key, true]));
+    loadingStreams = activeStreamSources.length > 0;
+    await Promise.all(activeStreamSources.map((source) => refreshStreamSource(source, type, id, request, forceRefresh)));
+  }
+
+  function refreshAllStreams() {
+    if (selected) void loadStreams(selected.type, episode?.id || selected.id, true);
+  }
+
+  function refreshOneStreamSource(source: StreamSource) {
+    if (selected && !sourceLoading[source.key]) void refreshStreamSource(source, selected.type,
+      episode?.id || selected.id, streamRequest, true);
   }
 
   async function cast(stream: Stream) {
@@ -1251,8 +1424,15 @@
       if (selected.type === 'series') {
         if (!episode) throw new Error('Choose an episode first.');
         const meta = selected;
-        await lazyCastSeries(meta, meta.videos || [], episode, stream, addons, plugins, tmdbKey,
+        await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [episode], episode, stream, addons, plugins, tmdbKey,
+          resumePositionMs(meta, episode, accountLibrary, nuvioProgress),
           (value) => { status = value; }, (progress) => reportWatchProgress(meta, progress));
+      } else if (selected.type === 'movie') {
+        const meta = selected;
+        const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress),
+          (progress) => reportWatchProgress(meta, progress));
+        status = tracked ? `Casting ${meta.name} · watch progress sync is on.`
+          : `Casting ${meta.name} · progress sync is unavailable for this target.`;
       } else {
         await stopLinkedCast();
         directCast(selected, stream);
@@ -1283,8 +1463,8 @@
     }
     playerLoading = false;
     if (request !== detailRequest || selected !== meta) return;
-    playing = { meta, stream, video: meta.type === 'series' ? chosenEpisode : null };
-    closeDetail();
+    const video = meta.type === 'series' ? chosenEpisode : null;
+    playing = { meta, stream, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress), resumeApplied: false };
   }
 
   async function castPlaying() {
@@ -1293,8 +1473,15 @@
     try {
       if (current.meta.type === 'series') {
         if (!current.video) throw new Error('Choose an episode first.');
-        await lazyCastSeries(current.meta, current.meta.videos || [], current.video, current.stream, addons, plugins, tmdbKey,
+        await lazyCastSeries(current.meta, current.meta.videos?.length ? current.meta.videos : [current.video], current.video, current.stream, addons, plugins, tmdbKey,
+          browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress),
           (value) => { status = value; }, (progress) => reportWatchProgress(current.meta, progress));
+      } else if (current.meta.type === 'movie') {
+        const tracked = await castMovie(current.meta, current.stream,
+          browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress),
+          (progress) => reportWatchProgress(current.meta, progress));
+        status = tracked ? `Casting ${current.meta.name} · watch progress sync is on.`
+          : `Casting ${current.meta.name} · progress sync is unavailable for this target.`;
       } else {
         await stopLinkedCast();
         directCast(current.meta, current.stream);
@@ -1305,19 +1492,64 @@
   }
 
   function closePlayer() {
+    if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
     playerElement?.removeAttribute('src');
     playing = null;
     playerError = '';
   }
 
+  function browserPositionMs(): number {
+    const seconds = Number((playerElement as HTMLMediaElement | null)?.currentTime);
+    return Number.isFinite(seconds) && seconds > 0 ? Math.floor(seconds * 1000) : 0;
+  }
+
+  function applyBrowserResume(event: Event) {
+    if (!playing || playing.resumeApplied || playing.resumePositionMs <= 0) return;
+    const media = event.currentTarget as HTMLMediaElement;
+    if (media.getAttribute('src') !== playing.stream.url) return;
+    const duration = Number(media.duration);
+    const seconds = playing.resumePositionMs / 1000;
+    if (Number.isFinite(duration) && duration > 0 && seconds >= duration * .95) {
+      playing.resumeApplied = true;
+      return;
+    }
+    try {
+      media.currentTime = seconds;
+      playing.resumeApplied = true;
+    } catch { /* Retry when the player becomes ready to seek. */ }
+  }
+
   function browserTimeUpdate(event: Event) {
-    if (!playing) return;
-    const element = event.currentTarget as HTMLMediaElement;
+    browserWatchState(event, 'playing');
+  }
+
+  function browserPlaybackError(event: Event) {
+    const detail = (event as CustomEvent<unknown>).detail;
+    const reason = detail instanceof Error ? detail.message : '';
+    playerError = reason && !/https?:\/\//i.test(reason) ? `Playback failed: ${reason}. Try another source or cast with PlayBridge.`
+      : 'This source could not play in the browser. Its host may block browser requests or require headers the browser cannot send. Try another source or cast with PlayBridge.';
+  }
+
+  function browserPaused(event: Event) {
+    browserWatchState(event, 'paused');
+  }
+
+  function browserPlaybackEnded(event: Event) {
+    browserWatchState(event, 'ended');
+    void browserEnded();
+  }
+
+  function browserWatchState(event: Event, state: string) {
+    reportBrowserPosition(event.currentTarget as HTMLMediaElement, state);
+  }
+
+  function reportBrowserPosition(element: HTMLMediaElement, state: string) {
+    if (!playing || element.getAttribute('src') !== playing.stream.url) return;
     const positionMs = Number(element.currentTime) * 1000;
     const durationMs = Number(element.duration) * 1000;
     if (Number.isFinite(positionMs) && Number.isFinite(durationMs) && positionMs > 0 && durationMs > 0) {
       reportWatchProgress(playing.meta, {
-        videoId: playing.video?.id || playing.meta.id, positionMs, durationMs, state: 'playing'
+        videoId: playing.video?.id || playing.meta.id, positionMs, durationMs, state
       });
     }
   }
@@ -1338,7 +1570,10 @@
         || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl && candidate.name === current.stream.name)
         || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl);
       if (stream) {
-        playing = { meta: current.meta, video: next, stream };
+        playing = { meta: current.meta, video: next, stream,
+          resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress), resumeApplied: false };
+        episode = next;
+        void loadStreams('series', next.id);
         playerError = '';
       } else playerError = `No matching browser stream for ${next.title || `S${next.season}E${next.episode}`}.`;
     } catch { playerError = 'Could not load the next episode.'; }
@@ -1441,7 +1676,7 @@
         </section>
       {/if}
       <section class="browse">
-        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={`${item.progress}% watched`} onSelect={() => void openDetail(item)} />{/each}</div></section>{/if}
+        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={`${item.progress}% watched`} onSelect={() => void openDetail(item, true)} />{/each}</div></section>{/if}
         {#if browsableAddons.length}
           <section class="provider-section" aria-label="Browse by addon"><div class="section-heading"><div><h2>Browse by Addon</h2><p>Explore catalogs from your connected sources</p></div></div><div class="provider-rail"><button class:active={!effectiveAddonFilter} class="provider-tile" aria-pressed={!effectiveAddonFilter} onclick={() => activeAddonFilter = ''}><span class="provider-mark all-mark"><Clapperboard size={27} /></span><strong>All sources</strong></button>{#each browsableAddons as addon (addon.manifestUrl)}<button class:active={effectiveAddonFilter === addon.manifestUrl} class="provider-tile" aria-pressed={effectiveAddonFilter === addon.manifestUrl} onclick={() => activeAddonFilter = addon.manifestUrl}><span class="provider-mark">{#if addon.manifest.logo}<img src={addon.manifest.logo} alt="" loading="lazy" />{:else}{addon.manifest.name.slice(0, 2).toUpperCase()}{/if}</span><strong>{addon.manifest.name}</strong></button>{/each}</div></section>
         {/if}
@@ -1460,7 +1695,7 @@
   </main>
 
   {#if openDiscoverDropdown}
-    <div class="discover-sheet-layer">
+    <div class="discover-sheet-layer" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}>
       <button class="discover-sheet-scrim" aria-label="Close discover options" onclick={closeDiscoverMenu}></button>
       <div class="discover-sheet" role="dialog" aria-modal="true" aria-label={`Select ${openDiscoverDropdown}`}>
         <div class="discover-sheet-handle" aria-hidden="true"></div>
@@ -1481,10 +1716,10 @@
   </nav>
 </div>
 
-{#if status}<div class="toast" role="status"><Cast size={17} /> {status}<button onclick={() => status = ''} aria-label="Dismiss"><X size={16} /></button></div>{/if}
+{#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => status = ''} aria-label="Dismiss"><X size={16} /></button></div>{/if}
 
 {#if accountPanel}
-  <div class="overlay" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) accountPanel = false; }}>
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) accountPanel = false; }}>
     <div class="manage-panel account-panel" role="dialog" aria-modal="true" aria-label="Accounts">
       <div class="panel-header"><div><div class="eyebrow">ACCOUNT SYNC</div><h2>Connected accounts</h2></div><button class="icon-button" onclick={() => accountPanel = false} aria-label="Close account"><X size={22} /></button></div>
       <h3 class="account-section-title">Stremio</h3>
@@ -1555,7 +1790,7 @@
 {/if}
 
 {#if managing}
-  <div class="overlay" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) managing = false; }}>
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) managing = false; }}>
     <div class="manage-panel" role="dialog" aria-modal="true" aria-label="Manage addons"><div class="panel-header"><div><div class="eyebrow">YOUR SOURCES</div><h2>Manage addons</h2></div><button class="icon-button" onclick={() => managing = false} aria-label="Close"><X size={22} /></button></div>
       <p class="panel-copy">Set addon priority, enable the resources each addon provides, refresh its manifest, or open its configuration page. Nuvio plugin repositories add browser-compatible stream scrapers.</p>
       <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
@@ -1587,13 +1822,56 @@
 {/if}
 
 {#if addonPendingRemoval}
-  <div class="overlay confirm-overlay" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) addonPendingRemoval = null; }}>
+  <div class="overlay confirm-overlay" role="presentation" in:fade={{ duration: motionDuration(150) }} out:fade={{ duration: motionDuration(120) }} onclick={(event) => { if (event.target === event.currentTarget) addonPendingRemoval = null; }}>
     <div class="confirm-panel" role="dialog" aria-modal="true" aria-label="Remove addon"><h2>Remove addon?</h2><p>{addonPendingRemoval.name} will be removed from {addonPendingRemoval.source === 'local' ? 'this browser' : addonPendingRemoval.source === 'stremio' ? 'your Stremio account' : 'your Nuvio profile'}.</p><div><button class="outline-button" onclick={() => addonPendingRemoval = null}>Cancel</button><button class="confirm-delete" onclick={() => void confirmRemoveAddon()}>Remove</button></div></div>
   </div>
 {/if}
 
-{#if selected}
-  <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
+{#if selected && streamScreen}
+  <div class="overlay stream-overlay" role="presentation" in:fade={{ duration: motionDuration(240), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeStreamScreen(); }}>
+    <div class="stream-panel" role="dialog" aria-modal="true" aria-label={`Streams for ${selected.name}`}>
+      <div class="stream-screen-hero" class:without-art={!episode?.thumbnail && !selected.background && !selected.poster} style:background-image={(episode?.thumbnail || selected.background || selected.poster) ? `linear-gradient(0deg, #090b0f 0%, #090b0f5c 100%), url('${(episode?.thumbnail || selected.background || selected.poster || '').replaceAll("'", '%27')}')` : ''}>
+        <button class="stream-back" onclick={closeStreamScreen}><ArrowLeft size={20} /> {streamBackToDetail ? 'Details' : 'Back'}</button>
+        <div class="stream-hero-copy"><span class="section-type">CHOOSE A STREAM</span><h1>{selected.name}</h1>{#if episode}<p>S{episode.season ?? '?'} E{episode.episode ?? '?'} · {episode.title || `Episode ${episode.episode ?? '?'}`}</p>{/if}</div>
+      </div>
+      <div class="stream-screen-body">
+        {#if detailResumeMs > 0}<div class="stream-resume-banner"><Play size={17} fill="currentColor" /> Resume from {playbackClock(detailResumeMs)}</div>{/if}
+        {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding your {selected.type === 'series' ? 'episode' : 'streams'}…</div>{/if}
+        {#if detailError}<div class="error-message" role="alert">{detailError}</div>{/if}
+        {#if selected.type === 'series' && !episode && !loadingDetail}<button class="stream-choose-episode" onclick={() => { streamBackToDetail = true; closeStreamScreen(); }}>Choose an episode <ArrowRight size={17} /></button>{/if}
+        {#if selected.type !== 'series' || episode}
+          <div class="stream-screen-heading"><div><span class="section-type">AVAILABLE SOURCES</span><h2>Streams <small>{visiblePlayable.length}</small></h2></div></div>
+          <div class="stream-provider-row" role="group" aria-label="Filter and refresh stream sources">
+            <button class="stream-refresh-all" onclick={refreshAllStreams} disabled={loadingDetail} aria-label="Refresh all streams" title="Refresh all streams"><RefreshCw size={17} class={loadingStreams ? 'spin' : ''} /></button>
+            <button class:active={!selectedStreamSource} class="stream-provider-chip" onclick={() => selectedStreamSource = ''}>All <small>{playable.length}</small></button>
+            {#each activeStreamSources as source, index (source.key)}
+              <div class:active={selectedStreamSource === source.key} class="stream-provider" style:--reveal-index={Math.min(index, 8)}>
+                <button class="stream-provider-chip" onclick={() => selectedStreamSource = source.key}>{source.name} <small>{(sourceStreams[source.key] || []).filter(playableStream).length}</small>{#if sourceLoading[source.key]}<LoaderCircle size={13} class="spin" />{/if}</button>
+                <button class="stream-provider-refresh" onclick={() => refreshOneStreamSource(source)} disabled={sourceLoading[source.key]} aria-label={`Refresh ${source.name} streams`} title={`Refresh ${source.name}`}><RefreshCw size={14} /></button>
+              </div>
+            {/each}
+          </div>
+          {#if sourceError}<div class="error-message" role="alert">{sourceError}</div>{/if}
+          {#each activeStreamSources.filter((source) => !selectedStreamSource || selectedStreamSource === source.key) as source (source.key)}
+            {#if sourceWarnings[source.key]}<p class="stream-source-warning">{sourceWarnings[source.key]}</p>{/if}
+          {/each}
+          {#if visibleSourcesLoading && !visiblePlayable.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding streams…</div>{/if}
+          <div class="stream-results">
+            {#each visiblePlayable as stream, index (`${stream.addonUrl}:${stream.url}:${index}`)}
+              <div class="stream-result" style:--reveal-index={Math.min(index, 8)}><div class="stream-result-copy"><strong>{streamHeading(stream, index)}</strong>{#if streamDetails(stream, streamHeading(stream, index))}<p>{streamDetails(stream, streamHeading(stream, index))}</p>{/if}<small>{stream.addonName}</small></div><div class="source-actions"><button class="watch-button" onclick={() => void playInBrowser(stream)} disabled={playerLoading}>{#if playerLoading}<LoaderCircle size={17} class="spin" /> Opening…{:else}<Play size={17} fill="currentColor" /> {stream.behaviorHints?.notWebReady ? 'Try in browser' : 'Play'}{/if}</button><button class="cast-button" onclick={() => void cast(stream)} disabled={!bridge} title={bridge ? 'Cast with PlayBridge' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast</button></div></div>
+            {/each}
+          </div>
+          {#if !visibleSourcesLoading && !visiblePlayable.length}<div class="row-empty">No direct HTTP streams found{selectedStreamSource ? ' from this source' : ''}. Try refreshing or choose another source.</div>{/if}
+          {#if unavailable && !selectedStreamSource}<p class="stream-note">{unavailable} source{unavailable === 1 ? '' : 's'} need torrent, debrid, or proxy resolution before browser playback or casting.</p>{/if}
+          {#if browserUncertain && !selectedStreamSource}<p class="stream-note">{browserUncertain} source{browserUncertain === 1 ? ' is' : 's are'} marked as not web ready. Browser playback may fail.</p>{/if}
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if selected && !streamScreen}
+  <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:fade={{ duration: motionDuration(260), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
     <div class="detail-panel" role="dialog" aria-modal="true" aria-label={selected.name}>
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>
       <div class="detail-hero" style:background-image={selected.background ? `linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%), linear-gradient(0deg, #090b0f 0%, transparent 55%), url('${selected.background.replaceAll("'", '%27')}')` : selected.poster ? `linear-gradient(90deg, #090b0ff2, #090b0f99), linear-gradient(0deg, #090b0f, transparent), url('${selected.poster.replaceAll("'", '%27')}')` : ''}>
@@ -1601,7 +1879,7 @@
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}><Play size={21} fill="currentColor" /> {selected.type === 'series' ? 'Choose episode' : 'Play now'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}><Play size={21} fill="currentColor" /> {selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
         </div>
@@ -1612,18 +1890,7 @@
         {#if detailError}<div class="error-message">{detailError}</div>{/if}
         {#if selected.type === 'series'}
           <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2></div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
-          {#if episodes.length}<div class="episode-list">{#each episodes as video (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" onclick={() => { void chooseEpisode(video); detailJump('detail-streams'); }}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
-        {/if}
-        {#if selected.type !== 'series' || episode}
-          <section id="detail-streams" class="detail-section"><div class="section-heading sources-heading"><div><span class="section-type">WATCH IN YOUR BROWSER OR CAST</span><h2>{episode ? `Watch ${episode.title || `Episode ${episode.episode}`}` : 'Available streams'}</h2></div><span class="stream-count">{playable.length} direct streams</span></div>
-          {#if loadingStreams}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding streams…</div>{/if}
-          {#if sourceError}<div class="error-message" role="alert">{sourceError}</div>{/if}
-          {#each playable as stream, index (`${stream.addonUrl}:${stream.url}:${index}`)}<div class="stream-row"><div class="stream-icon"><Play size={21} /></div><div class="stream-info"><strong>{stream.name || stream.title || `Stream ${index + 1}`}</strong><small>{stream.addonName}{stream.description ? ` · ${stream.description}` : ''}</small></div><div class="source-actions"><button class="watch-button" onclick={() => void playInBrowser(stream)} disabled={playerLoading}><Play size={17} fill="currentColor" /> {stream.behaviorHints?.notWebReady ? 'Try in browser' : 'Play'}</button><button class="cast-button" onclick={() => void cast(stream)} disabled={!bridge} title={bridge ? 'Cast with PlayBridge' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast</button></div></div>{/each}
-          {#if !loadingStreams && !playable.length}<div class="row-empty">No direct HTTP streams found for this title. Try another addon or source.</div>{/if}
-          {#if unavailable}<div class="stream-note">{unavailable} source{unavailable === 1 ? '' : 's'} need torrent, debrid, or proxy resolution before browser playback or casting.</div>{/if}
-          {#if browserUncertain}<div class="stream-note">{browserUncertain} source{browserUncertain === 1 ? ' is' : 's are'} marked by the addon as not web ready. Browser playback may fail even when the stream URL loads; PlayBridge casting can be tried separately.</div>{/if}
-          {#if playable.length}<p class="source-hint">Browser playback needs the source to allow browser requests. Cast is available when this page is open in PlayBridge.</p>{/if}
-          </section>
+          {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
         {#if selected.cast?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
         {#if relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
@@ -1640,14 +1907,14 @@
 {/if}
 
 {#if playing}
-  <div class="player-overlay" role="dialog" aria-modal="true" aria-label={`Now playing ${playing.meta.name}`}>
-    <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Back to browsing</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
+  <div class="player-overlay" role="dialog" aria-modal="true" aria-label={`Now playing ${playing.meta.name}`} in:fade={{ duration: motionDuration(220), easing: cubicOut }} out:fade={{ duration: motionDuration(160), easing: cubicIn }}>
+    <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Back to streams</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
     <div class="player-stage">
       {#if playerReady}
-        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} controls autoplay playsinline theme="dark" ontimeupdate={browserTimeUpdate} onended={() => void browserEnded()} onerror={() => playerError = 'This source could not play in the browser. It may block browser requests or require another source.'}></movi-player>
+        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} controls autoplay playsinline theme="dark" sw="auto" fallback="native" onloadedmetadata={applyBrowserResume} oncanplay={applyBrowserResume} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => playerError = ''}></movi-player>
       {:else}
         <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
-        <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline ontimeupdate={browserTimeUpdate} onended={() => void browserEnded()} onerror={() => playerError = 'This source could not play in the browser. Try another source.'}></video>
+        <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={applyBrowserResume} oncanplay={applyBrowserResume} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={() => playerError = 'This source could not play in the browser. Try another source.'}></video>
       {/if}
     </div>
     <div class="player-bottom"><div><span class="eyebrow">PLAYING IN YOUR BROWSER</span><h2>{playing.video?.title || playing.meta.name}</h2><p>{playing.stream.name || playing.stream.title || playing.stream.addonName} · {playing.stream.addonName}</p></div>{#if bridge}<button class="cast-button" onclick={() => void castPlaying()}><Cast size={17} /> Cast to PlayBridge</button>{/if}</div>

@@ -1,5 +1,6 @@
 import type { AddonCatalog, AddonManifest, AddonResource, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream } from './types';
-import { fetchPluginStreams } from './plugins';
+import { browserCompatible, fetchPluginStreams } from './plugins';
+import { cachedStreamLookup } from './stream-cache';
 
 const STORAGE_KEY = 'bridged-streams.addons.v1';
 
@@ -123,11 +124,14 @@ export async function fetchMeta(addons: InstalledAddon[], preview: MetaPreview, 
   return { ...preview, videos: [] };
 }
 
-export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id: string, plugins: PluginRepository[] = [], tmdbKey = '', onWarning?: (message: string) => void, signal?: AbortSignal): Promise<Stream[]> {
+export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id: string, plugins: PluginRepository[] = [], tmdbKey = '', onWarning?: (message: string) => void, signal?: AbortSignal, forceRefresh = false): Promise<Stream[]> {
   const candidates = addons.filter((addon) => supports(addon, 'stream', type, id));
-  const results = await Promise.allSettled(candidates.map(async (addon) => {
-    const data = await getJson<{ streams?: Omit<Stream, 'addonName' | 'addonUrl'>[] }>(resourceUrl(addon, 'stream', type, id), signal);
-    return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl }));
+  const results = await Promise.allSettled(candidates.map((addon) => {
+    const url = resourceUrl(addon, 'stream', type, id);
+    return cachedStreamLookup(`addon:${url}:${addon.manifest.version}`, async () => {
+      const data = await getJson<{ streams?: Omit<Stream, 'addonName' | 'addonUrl'>[] }>(url, signal);
+      return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl }));
+    }, forceRefresh || !!signal);
   }));
   results.forEach((result, index) => {
     if (result.status === 'rejected' && !signal?.aborted) {
@@ -137,9 +141,20 @@ export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id
   const addonStreams = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   const parts = id.match(/^(tt\d+|tmdb:\d+):(\d+):(\d+)$/);
   const pluginId = parts?.[1] || id;
-  const pluginStreams = type === 'movie' || type === 'series'
-    ? await fetchPluginStreams(plugins, type, pluginId, tmdbKey, parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined, onWarning).catch(() => [])
-    : [];
+  const scrapers = type === 'movie' || type === 'series' ? plugins.flatMap((repo) => repo.scrapers
+    .filter((scraper) => browserCompatible(scraper) &&
+      scraper.supportedTypes?.some((value) => value === (type === 'series' ? 'tv' : 'movie') || value === type))
+    .map((scraper) => ({ repo, scraper }))) : [];
+  const pluginResults = await Promise.allSettled(scrapers.map(({ repo, scraper }) => {
+    let warned = false;
+    return cachedStreamLookup(
+      JSON.stringify(['plugin', repo.manifestUrl, scraper.id, scraper.filename, scraper.enabled, scraper.supportedPlatforms,
+        type, pluginId, parts?.[2], parts?.[3], tmdbKey]),
+      () => fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
+        parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined,
+        (warning) => { warned = true; onWarning?.(warning); }), forceRefresh || !!signal, () => !warned);
+  }));
+  const pluginStreams = pluginResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   return [...addonStreams, ...pluginStreams];
 }
 
