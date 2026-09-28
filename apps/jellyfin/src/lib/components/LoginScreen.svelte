@@ -26,7 +26,7 @@
     Layers
   } from 'lucide-svelte';
 
-  let serverUrl = 'http://10.8.0.6:8096';
+  let serverUrl = '';
   let username = '';
   let password = '';
   let rememberMe = true;
@@ -81,15 +81,15 @@
     <div class="glow-sphere sphere-2"></div>
   </div>
 
-  <div class="login-card">
+  <div class="login-card glass-card">
     <div class="brand-header">
       <div class="logo-box">
         <svg viewBox="0 0 100 100" fill="none" class="brand-svg">
-          <path d="M50 18 L82 74 L66 74 L50 44 L34 74 L18 74 Z" fill="url(#login-brand-grad)"/>
+          <path d="M50 16 L84 76 L66 76 L50 46 L34 76 L16 76 Z" fill="url(#login-brand-cine-grad)"/>
           <defs>
-            <linearGradient id="login-brand-grad" x1="0%" y1="0%" x2="100%" y2="100%">
-              <stop offset="0%" stop-color="#00A4DC"/>
-              <stop offset="100%" stop-color="#7A5AF8"/>
+            <linearGradient id="login-brand-cine-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#95FF50"/>
+              <stop offset="100%" stop-color="#43861E"/>
             </linearGradient>
           </defs>
         </svg>
@@ -120,7 +120,7 @@
     {/if}
 
     {#if currentStep === 'saved' && $savedAccounts.length > 0}
-      <!-- Screen 0: Saved Profiles & Servers Picker (Netflix/Jellyfin Style) -->
+      <!-- Screen 0: Saved Profiles & Servers Picker -->
       <div class="saved-profiles-section">
         <h3 class="section-title">Select Server & Profile</h3>
         <p class="section-sub">Choose a saved server account to sign in instantly</p>
@@ -170,7 +170,7 @@
             <input
               id="server-address"
               type="text"
-              placeholder="http://10.8.0.6:8096"
+            placeholder="http://your-server:8096"
               bind:value={serverUrl}
               required
               autofocus
@@ -264,7 +264,7 @@
     justify-content: center;
     padding: 24px 16px;
     position: relative;
-    background-color: var(--bg-base);
+    background-color: var(--theme-root-bg);
     overflow: hidden;
   }
 
@@ -277,22 +277,22 @@
   .glow-sphere {
     position: absolute;
     border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.25;
+    filter: blur(90px);
+    opacity: 0.22;
   }
 
   .sphere-1 {
-    width: 400px;
-    height: 400px;
-    background: #00a4dc;
+    width: 420px;
+    height: 420px;
+    background: var(--theme-primary-accent);
     top: -100px;
-    right: -50px;
+    right: -60px;
   }
 
   .sphere-2 {
-    width: 450px;
-    height: 450px;
-    background: #7a5af8;
+    width: 480px;
+    height: 480px;
+    background: var(--theme-global-accent-b);
     bottom: -150px;
     left: -100px;
   }
@@ -302,13 +302,9 @@
     z-index: 10;
     width: 100%;
     max-width: 480px;
-    background-color: var(--bg-surface-elevated);
-    border: 1px solid var(--border);
     border-radius: var(--radius-xl);
-    padding: 40px 36px;
-    box-shadow: var(--shadow-lg);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    padding: 44px 38px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.85);
     animation: fadeIn 0.3s ease;
   }
 
@@ -326,9 +322,10 @@
   }
 
   .logo-box {
-    width: 56px;
-    height: 56px;
+    width: 58px;
+    height: 58px;
     margin-bottom: 12px;
+    filter: drop-shadow(0 0 14px rgba(149, 255, 80, 0.4));
   }
 
   .brand-svg {
@@ -337,7 +334,7 @@
   }
 
   .login-title {
-    font-size: 1.6rem;
+    font-size: 1.65rem;
     font-weight: 800;
     letter-spacing: -0.02em;
     color: #ffffff;
@@ -348,11 +345,11 @@
     align-items: center;
     gap: 6px;
     font-size: 0.76rem;
-    font-weight: 600;
-    color: var(--jf-indigo);
-    background-color: rgba(122, 90, 248, 0.12);
-    border: 1px solid rgba(122, 90, 248, 0.25);
-    padding: 3px 10px;
+    font-weight: 700;
+    color: var(--theme-primary-accent);
+    background-color: rgba(149, 255, 80, 0.12);
+    border: 1px solid rgba(149, 255, 80, 0.3);
+    padding: 3px 12px;
     border-radius: var(--radius-full);
     margin-top: 6px;
   }
@@ -363,8 +360,8 @@
     gap: 10px;
     padding: 10px 14px;
     border-radius: var(--radius-md);
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border);
+    background-color: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     font-size: 0.75rem;
     color: var(--text-secondary);
     margin-bottom: 24px;
@@ -372,8 +369,8 @@
   }
 
   .bridge-banner.bridge-active {
-    background-color: rgba(122, 90, 248, 0.08);
-    border-color: rgba(122, 90, 248, 0.3);
+    background-color: rgba(149, 255, 80, 0.08);
+    border-color: rgba(149, 255, 80, 0.3);
     color: #ffffff;
   }
 
@@ -389,8 +386,8 @@
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background-color: var(--jf-purple);
-    box-shadow: 0 0 8px var(--jf-purple);
+    background-color: var(--theme-primary-accent);
+    box-shadow: 0 0 8px var(--theme-primary-accent);
     animation: pulse 1.8s infinite;
     flex-shrink: 0;
   }
@@ -405,8 +402,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    background-color: rgba(235, 87, 87, 0.12);
-    border: 1px solid rgba(235, 87, 87, 0.3);
+    background-color: rgba(248, 81, 73, 0.15);
+    border: 1px solid rgba(248, 81, 73, 0.35);
     color: var(--status-error);
     padding: 10px 14px;
     border-radius: var(--radius-md);
@@ -423,15 +420,15 @@
   }
 
   .section-title {
-    font-size: 1.1rem;
-    font-weight: 700;
+    font-size: 1.15rem;
+    font-weight: 800;
     color: #fff;
     text-align: center;
   }
 
   .section-sub {
     font-size: 0.78rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     text-align: center;
     margin-top: -10px;
   }
@@ -449,28 +446,28 @@
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 12px 14px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    padding: 12px 16px;
+    background: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     border-radius: var(--radius-lg);
     cursor: pointer;
-    transition: all 0.15s ease;
+    transition: all 0.2s ease;
   }
 
   .profile-card:hover {
-    background: var(--bg-surface-elevated);
-    border-color: var(--jf-blue);
+    background: rgba(48, 39, 65, 0.85);
+    border-color: var(--theme-primary-accent);
     transform: translateY(-2px);
-    box-shadow: var(--shadow-sm);
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
   }
 
   .profile-avatar {
     width: 44px;
     height: 44px;
     border-radius: 50%;
-    background: linear-gradient(135deg, var(--jf-blue), var(--jf-purple));
-    color: #fff;
-    font-weight: 700;
+    background: var(--accent-gradient);
+    color: #050505;
+    font-weight: 800;
     font-size: 1.05rem;
     display: flex;
     align-items: center;
@@ -493,7 +490,7 @@
 
   .profile-server {
     font-size: 0.78rem;
-    color: var(--jf-indigo);
+    color: var(--theme-primary-accent-hover);
     font-weight: 500;
   }
 
@@ -522,26 +519,26 @@
   }
 
   .del-profile-btn:hover {
-    color: #e74c3c;
-    background: rgba(231, 76, 60, 0.15);
+    color: var(--status-error);
+    background: rgba(248, 81, 73, 0.15);
   }
 
   .add-server-btn {
     width: 100%;
-    padding: 10px;
-    font-size: 0.85rem;
+    padding: 11px;
+    font-size: 0.88rem;
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 8px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-full);
   }
 
   .back-to-profiles {
     background: transparent;
-    color: var(--jf-blue);
-    font-size: 0.8rem;
-    font-weight: 600;
+    color: var(--theme-primary-accent);
+    font-size: 0.82rem;
+    font-weight: 700;
     text-align: left;
     margin-bottom: 6px;
     cursor: pointer;
@@ -578,7 +575,7 @@
   :global(.input-icon) {
     position: absolute;
     left: 14px;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     pointer-events: none;
   }
 
@@ -586,19 +583,19 @@
     width: 100%;
     height: 44px;
     padding: 0 16px 0 42px;
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border);
+    background-color: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     border-radius: var(--radius-md);
     color: #ffffff;
     font-size: 0.9rem;
-    transition: all 0.15s ease;
+    transition: all 0.2s ease;
   }
 
   .input-field input:focus {
     outline: none;
-    border-color: var(--jf-blue);
-    background-color: rgba(255, 255, 255, 0.05);
-    box-shadow: 0 0 0 3px rgba(0, 164, 220, 0.15);
+    border-color: var(--theme-primary-accent);
+    background-color: rgba(44, 34, 60, 0.9);
+    box-shadow: 0 0 14px rgba(149, 255, 80, 0.25);
   }
 
   .input-hint {
@@ -612,8 +609,8 @@
     align-items: center;
     justify-content: space-between;
     padding: 10px 14px;
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border);
+    background-color: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     border-radius: var(--radius-md);
   }
 
@@ -627,13 +624,13 @@
   }
 
   :global(.pill-check) {
-    color: var(--status-success);
+    color: var(--status-ok);
   }
 
   .change-server-btn {
-    font-size: 0.76rem;
-    color: var(--jf-blue);
-    font-weight: 600;
+    font-size: 0.78rem;
+    color: var(--theme-primary-accent);
+    font-weight: 700;
   }
 
   .change-server-btn:hover {
@@ -651,9 +648,9 @@
 
   .submit-btn {
     width: 100%;
-    height: 44px;
-    font-size: 0.92rem;
-    border-radius: var(--radius-md);
+    height: 46px;
+    font-size: 0.94rem;
+    border-radius: var(--radius-full);
     margin-top: 6px;
     display: flex;
     align-items: center;
@@ -681,7 +678,7 @@
   .or-divider::after {
     content: '';
     flex: 1;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid rgba(122, 107, 174, 0.2);
   }
 
   .or-divider span {
@@ -690,9 +687,9 @@
 
   .demo-btn {
     width: 100%;
-    height: 40px;
-    font-size: 0.86rem;
-    border-radius: var(--radius-md);
+    height: 42px;
+    font-size: 0.88rem;
+    border-radius: var(--radius-full);
   }
 
   @media (max-width: 480px) {

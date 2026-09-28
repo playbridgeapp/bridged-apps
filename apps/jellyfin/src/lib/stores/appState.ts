@@ -76,7 +76,7 @@ export interface ActivePlayerState {
   currentIndex?: number;
 }
 
-export const activePlayer = writable<ActivePlayerState>({
+const IDLE_PLAYER: ActivePlayerState = {
   isOpen: false,
   isExpanded: false,
   item: null,
@@ -86,7 +86,18 @@ export const activePlayer = writable<ActivePlayerState>({
   title: '',
   playlist: [],
   currentIndex: 0
-});
+};
+
+export const activePlayer = writable<ActivePlayerState>({ ...IDLE_PLAYER });
+
+/** Stop in-browser / cast playback and close player chrome. Used on server switch, logout, and demo load. */
+export function stopPlayback() {
+  activePlayer.set({ ...IDLE_PLAYER });
+  isQueueDrawerOpen.set(false);
+  isLyricsOpen.set(false);
+  lyricsData.set(null);
+  detailModalItem.set(null);
+}
 
 // Library State
 export const latestMedia = writable<JellyfinItem[]>([]);
@@ -150,6 +161,7 @@ export function removeSavedAccount(accountId: string) {
 }
 
 export async function switchAccount(account: SavedAccount) {
+  stopPlayback();
   isLoadingLibrary.set(true);
   serverError.set(null);
 
@@ -264,6 +276,7 @@ export async function initializeSession() {
 
 // Initialize demo mode
 export function loadDemoMode() {
+  stopPlayback();
   const config: ServerConfig = {
     url: '',
     token: '',
@@ -312,6 +325,7 @@ export function loadDemoMode() {
 
 // Connect to live Jellyfin Server
 export async function connectToJellyfinServer(serverUrl: string, username: string, password = '', rememberMe = true) {
+  stopPlayback();
   isLoadingLibrary.set(true);
   serverError.set(null);
   try {
@@ -363,6 +377,7 @@ export async function connectToJellyfinServer(serverUrl: string, username: strin
 }
 
 export function logout() {
+  stopPlayback();
   serverConfig.set(INITIAL_SERVER);
   userViews.set([]);
   latestMedia.set([]);
@@ -400,7 +415,7 @@ export async function refreshServerLibrary(config: ServerConfig) {
     nextUpMedia.set(nextUp);
     moviesList.set(moviesRes.items);
     showsList.set(showsRes.items);
-    allLibraryItems.set([...moviesRes.items, ...showsRes.items]);
+    allLibraryItems.set([...moviesRes.items, ...showsRes.items, ...(latest || [])]);
 
     // Fetch per-library recently added in parallel for each library view
     if (views.length > 0) {

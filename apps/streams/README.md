@@ -57,4 +57,5 @@ For IMDb-based catalog IDs, enter your own TMDB API key in Addons. The key stays
 ```bash
 pnpm --filter @bridged-apps/streams check
 pnpm --filter @bridged-apps/streams build
+pnpm test:e2e:streams
 ```

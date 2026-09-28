@@ -9,7 +9,10 @@
     "build:jellyfin": "pnpm --filter @bridged-apps/jellyfin build",
     "build:streams": "pnpm --filter @bridged-apps/streams build",
     "check": "pnpm -r check",
-    "build": "pnpm -r build"
+    "build": "pnpm -r build",
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "test:e2e:streams": "playwright test -c e2e/streams.config.ts",
+    "test:e2e:obscura": "USE_OBSCURA=1 playwright test -c e2e/playwright.config.ts"
   },
   "keywords": [
     "playbridge",
@@ -19,5 +22,8 @@
     "media"
   ],
   "author": "PlayBridge",
-  "license": "GPL-3.0"
+  "license": "GPL-3.0",
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
 }

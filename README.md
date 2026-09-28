@@ -11,7 +11,7 @@ This monorepo contains modern, fast, zero-telemetry web applications tailored fo
 | Application | Path | Framework | Description |
 | :--- | :--- | :--- | :--- |
 | **Jellyfin Web Client** | `apps/jellyfin` | Svelte 5 + Vite | Multi-server/multi-user Jellyfin client with direct & linked PlayBridge casting, hierarchical library navigation, and offline SWR caching. |
-| **Bridged Streams** | `apps/streams` | Svelte 5 + Vite | Addon browsing, web playback, Stremio and Nuvio sync, and optional PlayBridge casting. |
+| **Bridged Streams** | `apps/streams` | Svelte 5 + Vite | Cinematic web browsing, MoviPlayer playback, Stremio and Nuvio account sync, browser-compatible Nuvio plugins, and optional PlayBridge casting. |
 
 ---
 
@@ -36,6 +36,16 @@ The client will start locally at `http://localhost:5180` (or `5181`).
 ```bash
 pnpm build
 ```
+
+### End-to-end tests
+```bash
+pnpm exec playwright install chromium
+pnpm test:e2e                 # Chromium + demo library
+pnpm test:e2e:obscura         # optional Obscura CDP backend
+```
+Demo/design specs always run. Live Jellyfin smoke tests skip unless `JELLYFIN_URL`, `JELLYFIN_TOKEN`, and `JELLYFIN_USER_ID` are set. See [`e2e/README.md`](e2e/README.md).
+
+Agent harnesses: load skill `bridged-apps-jellyfin` (`.agents/skills/bridged-apps-jellyfin/SKILL.md`, listed in `AGENTS.md`).
 
 ---
 

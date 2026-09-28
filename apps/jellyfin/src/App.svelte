@@ -56,9 +56,15 @@
   } from 'lucide-svelte';
 
   let customViewItems: JellyfinItem[] = [];
+  let customViewLimit = 48;
   let isLoadingCustomView = false;
   let activeLibraryViewId: string | null = null;
   let folderStack: Array<{ id: string; name: string }> = [];
+
+  $: visibleCustomItems = customViewItems.slice(0, customViewLimit);
+  $: if ($activeTab) {
+    customViewLimit = 48;
+  }
 
   onMount(() => {
     initPlayBridgeDetector();
@@ -99,7 +105,7 @@
     if (isTypedRoot) {
       if (collectionType === 'movies') queryOptions.includeItemTypes = 'Movie';
       else if (collectionType === 'tvshows') queryOptions.includeItemTypes = 'Series';
-      else if (collectionType === 'music') queryOptions.includeItemTypes = 'MusicAlbum';
+      else if (collectionType === 'music') queryOptions.includeItemTypes = 'Audio,MusicAlbum,MusicArtist,Folder';
     }
 
     const cacheKey = `lib_${$serverConfig.userId}_${folderId}_${queryOptions.includeItemTypes || 'direct'}_${queryOptions.recursive}`;
@@ -517,10 +523,18 @@
               </div>
             {:else}
               <div class="media-grid">
-                {#each customViewItems as item (item.Id)}
+                {#each visibleCustomItems as item (item.Id)}
                   <MediaCard {item} onOpenFolder={handleNavigateIntoFolder} />
                 {/each}
               </div>
+
+              {#if customViewItems.length > customViewLimit}
+                <div class="load-more-row">
+                  <button class="btn-secondary load-more-btn" on:click={() => (customViewLimit += 48)}>
+                    <span>Load More ({customViewItems.length - customViewLimit} remaining)</span>
+                  </button>
+                </div>
+              {/if}
             {/if}
           </div>
 
@@ -606,19 +620,19 @@
   /* Floating Toast Notification */
   .toast-notification {
     position: fixed;
-    top: 74px;
+    top: 80px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(18, 22, 30, 0.95);
-    backdrop-filter: blur(16px);
-    -webkit-backdrop-filter: blur(16px);
-    border: 1px solid rgba(122, 90, 248, 0.4);
-    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
-    padding: 8px 16px;
+    background: rgba(29, 23, 40, 0.9);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(122, 107, 174, 0.4);
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.8), 0 0 20px rgba(149, 255, 80, 0.2);
+    padding: 8px 18px;
     border-radius: var(--radius-full);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 12px;
     z-index: 80;
     animation: toastSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1);
     max-width: 90vw;
@@ -630,20 +644,20 @@
   }
 
   .toast-badge {
-    width: 26px;
-    height: 26px;
+    width: 28px;
+    height: 28px;
     border-radius: 50%;
     background: var(--accent-gradient);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: #fff;
+    color: #050505;
     flex-shrink: 0;
   }
 
   .toast-text {
-    font-size: 0.86rem;
-    font-weight: 600;
+    font-size: 0.88rem;
+    font-weight: 700;
     color: #fff;
     white-space: nowrap;
     overflow: hidden;
@@ -669,7 +683,7 @@
 
   .spinner {
     animation: spin 1s linear infinite;
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
   }
 
   @keyframes spin {
@@ -680,12 +694,12 @@
   .sections-wrapper {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
   }
 
   /* My Media (Library Tiles) Section */
   .my-media-section {
-    padding: 16px 32px 8px;
+    padding: 16px 36px 8px;
     max-width: 1440px;
     margin: 0 auto;
     width: 100%;
@@ -695,54 +709,56 @@
     display: flex;
     align-items: baseline;
     justify-content: space-between;
-    margin-bottom: 14px;
+    margin-bottom: 16px;
   }
 
   .section-title {
-    font-size: 1.25rem;
-    font-weight: 700;
+    font-size: 1.35rem;
+    font-weight: 800;
     color: #ffffff;
-    letter-spacing: -0.01em;
+    letter-spacing: -0.02em;
   }
 
   .section-sub {
-    font-size: 0.78rem;
-    color: var(--text-muted);
+    font-size: 0.8rem;
+    color: var(--theme-type-muted);
   }
 
   .library-tiles-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 14px;
   }
 
   .library-tile-card {
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 14px 16px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    padding: 14px 18px;
+    background: rgba(29, 23, 40, 0.65);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid rgba(122, 107, 174, 0.22);
     border-radius: var(--radius-lg);
     cursor: pointer;
     text-align: left;
-    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   .library-tile-card:hover {
-    background: var(--bg-surface-elevated);
-    border-color: var(--jf-blue);
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-md);
+    background: rgba(48, 39, 65, 0.85);
+    border-color: var(--theme-primary-accent);
+    transform: translateY(-3px);
+    box-shadow: 0 10px 24px rgba(13, 10, 18, 0.8), 0 0 16px rgba(149, 255, 80, 0.2);
   }
 
   .tile-icon-box {
     width: 44px;
     height: 44px;
     border-radius: var(--radius-md);
-    background: linear-gradient(135deg, rgba(0, 164, 220, 0.15), rgba(122, 90, 248, 0.15));
-    border: 1px solid rgba(0, 164, 220, 0.25);
-    color: var(--jf-blue);
+    background: rgba(43, 36, 80, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.3);
+    color: var(--theme-primary-accent);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -751,8 +767,9 @@
   }
 
   .library-tile-card:hover .tile-icon-box {
-    background: linear-gradient(135deg, var(--jf-blue), var(--jf-purple));
-    color: #fff;
+    background: var(--accent-gradient);
+    color: #050505;
+    box-shadow: 0 0 16px rgba(149, 255, 80, 0.4);
   }
 
   .tile-info {
@@ -772,15 +789,15 @@
 
   .tile-kind {
     font-size: 0.72rem;
-    color: var(--text-muted);
-    font-weight: 500;
+    color: var(--theme-type-muted);
+    font-weight: 600;
     text-transform: uppercase;
-    letter-spacing: 0.04em;
+    letter-spacing: 0.05em;
     margin-top: 2px;
   }
 
   .library-view {
-    padding: 28px 32px 64px;
+    padding: 28px 36px 64px;
     max-width: 1440px;
     margin: 0 auto;
     width: 100%;
@@ -806,7 +823,7 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
     flex-wrap: wrap;
   }
 
@@ -814,18 +831,18 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 5px 12px;
     border-radius: var(--radius-full);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    color: var(--jf-blue);
+    background: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    color: var(--theme-primary-accent);
     font-size: 0.78rem;
-    font-weight: 600;
+    font-weight: 700;
   }
 
   .back-folder-btn:hover {
-    background: var(--bg-surface-elevated);
-    border-color: var(--jf-blue);
+    background: rgba(44, 34, 60, 0.9);
+    border-color: var(--theme-primary-accent);
     color: #fff;
   }
 
@@ -833,7 +850,7 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     flex-wrap: wrap;
   }
 
@@ -844,24 +861,24 @@
   .crumb-link {
     background: transparent;
     color: var(--text-secondary);
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     font-weight: 500;
-    padding: 2px 4px;
+    padding: 2px 6px;
   }
 
   .crumb-link:hover {
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
     text-decoration: underline;
   }
 
   .crumb-current {
     color: #ffffff;
     font-weight: 700;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
   }
 
   .view-title {
-    font-size: 1.75rem;
+    font-size: 2rem;
     font-weight: 800;
     color: #fff;
     letter-spacing: -0.02em;
@@ -869,57 +886,60 @@
 
   .view-subtitle {
     font-size: 0.85rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     margin-top: 3px;
   }
 
   .batch-cast-actions {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     flex-wrap: wrap;
   }
 
   .batch-btn {
-    padding: 8px 14px;
-    font-size: 0.85rem;
+    padding: 9px 16px;
+    font-size: 0.88rem;
   }
 
   .genre-filter-bar {
     display: flex;
-    gap: 6px;
+    gap: 8px;
     overflow-x: auto;
     padding-bottom: 4px;
     scrollbar-width: none;
   }
 
   .genre-chip {
-    padding: 5px 12px;
+    padding: 6px 14px;
     border-radius: var(--radius-full);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    background: rgba(30, 23, 40, 0.65);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     color: var(--text-secondary);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     font-weight: 500;
     white-space: nowrap;
+    transition: all 0.2s ease;
   }
 
   .genre-chip:hover {
-    background: var(--bg-surface-elevated);
+    background: rgba(44, 34, 60, 0.85);
     color: #fff;
+    border-color: var(--theme-pill-highlight);
   }
 
   .genre-chip.active {
-    background: var(--jf-blue);
-    border-color: transparent;
-    color: #fff;
-    font-weight: 600;
+    background: var(--theme-primary-accent);
+    border-color: var(--theme-primary-accent);
+    color: #050505;
+    font-weight: 700;
+    box-shadow: 0 0 14px rgba(149, 255, 80, 0.35);
   }
 
   .media-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-    gap: 20px 16px;
+    grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+    gap: 24px 18px;
   }
 
   .empty-state {
@@ -928,19 +948,19 @@
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 60px 20px;
+    padding: 80px 20px;
     color: var(--text-muted);
-    gap: 10px;
+    gap: 12px;
   }
 
   :global(.empty-icon) {
-    opacity: 0.4;
-    color: var(--jf-blue);
+    opacity: 0.5;
+    color: var(--theme-primary-accent);
   }
 
   .empty-sub {
-    font-size: 0.8rem;
-    color: var(--text-muted);
+    font-size: 0.82rem;
+    color: var(--theme-type-muted);
   }
 
   @media (max-width: 768px) {
@@ -949,32 +969,32 @@
     }
     .library-tiles-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
+      gap: 10px;
     }
     .library-tile-card {
-      padding: 10px 12px;
+      padding: 12px;
       gap: 10px;
     }
     .tile-icon-box {
-      width: 36px;
-      height: 36px;
+      width: 38px;
+      height: 38px;
     }
     .tile-title {
-      font-size: 0.85rem;
+      font-size: 0.86rem;
     }
     .library-view {
-      padding: 14px 12px 28px;
+      padding: 16px 14px 28px;
     }
     .view-header {
-      margin-bottom: 14px;
-      gap: 10px;
+      margin-bottom: 16px;
+      gap: 12px;
     }
     .view-title {
-      font-size: 1.35rem;
+      font-size: 1.45rem;
     }
     .media-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px 10px;
+      gap: 14px 10px;
     }
     .batch-cast-actions {
       width: 100%;
@@ -987,7 +1007,7 @@
   @media (min-width: 480px) and (max-width: 768px) {
     .media-grid {
       grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 14px 12px;
+      gap: 16px 12px;
     }
   }
 </style>

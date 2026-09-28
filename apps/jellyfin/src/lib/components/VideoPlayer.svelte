@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte';
   import {
     activePlayer,
+    stopPlayback,
     playWithDirectCast,
     serverConfig,
     skipNextTrack,
@@ -12,6 +13,7 @@
     isShuffle,
     repeatMode,
     isQueueDrawerOpen,
+    isLyricsOpen,
     toggleShuffle,
     cycleRepeatMode,
     toggleFavorite
@@ -42,6 +44,7 @@
     Repeat,
     Repeat1,
     ListMusic,
+    Mic2,
     Heart,
     Loader2,
     Zap
@@ -49,14 +52,22 @@
 
   let moviEl: any;
   let videoEl: HTMLVideoElement;
-  let audioEl: HTMLAudioElement;
-  let prebufferAudioEl: HTMLAudioElement;
+  let audioElA: HTMLAudioElement;
+  let audioElB: HTMLAudioElement;
+  let activeAudioIndex = 0; // 0: audioElA, 1: audioElB
   let playerContainer: HTMLDivElement;
+
+  function getActiveAudioEl(): HTMLAudioElement | undefined {
+    return activeAudioIndex === 0 ? audioElA : audioElB;
+  }
+
+  function getStandbyAudioEl(): HTMLAudioElement | undefined {
+    return activeAudioIndex === 0 ? audioElB : audioElA;
+  }
 
   let isMoviLoaded = false;
   let isMoviLoading = false;
   let moviSupported = true;
-  let warmedUrl = '';
 
   let isPlaying = false;
   let currentTime = 0;
@@ -74,17 +85,144 @@
   $: hasPlaylist = (playerState.playlist?.length ?? 0) > 1;
   $: isFavorite = !!playerState.item?.UserData?.IsFavorite;
   $: posterUrl = playerState.item ? resolveItemPosterUrl(playerState.item) : '';
-  $: backdropUrl = playerState.item ? resolveItemBackdropUrl(playerState.item) : '';
+  $: backdropUrl = isAudio ? posterUrl : (playerState.item ? resolveItemBackdropUrl(playerState.item) : '');
   $: authHeadersJson = JSON.stringify({
     'X-Emby-Authorization': jfApi.getAuthHeader($serverConfig.token)
   });
 
-  // Next Track / Item in playlist queue for pre-buffering
+  // Next Track in playlist queue for pre-buffering
   $: nextItem = (hasPlaylist && playerState.playlist && playerState.currentIndex != null)
     ? playerState.playlist[playerState.currentIndex + 1]
     : null;
   $: nextStreamUrl = nextItem ? resolveItemStreamUrl(nextItem) : '';
   $: nextPosterUrl = nextItem ? resolveItemPosterUrl(nextItem) : '';
+
+  let currentPlayingUrl = '';
+  let prebufferedNextUrl = '';
+
+  function audioHasUrl(el: HTMLAudioElement | undefined, url: string): boolean {
+    if (!el || !url) return false;
+    const attr = el.getAttribute('src') || '';
+    return attr === url || el.src === url;
+  }
+
+  function playAudioElement(el: HTMLAudioElement) {
+    const pending = el.play();
+    if (pending && typeof pending.then === 'function') {
+      pending
+        .then(() => {
+          isPlaying = true;
+        })
+        .catch((err) => {
+          isPlaying = false;
+          addDiagnosticLog(
+            'error',
+            `Audio play() failed: ${err?.name || ''} ${err?.message || err}`
+          );
+        });
+    } else {
+      isPlaying = true;
+    }
+  }
+
+  function applyAudioUrl(url: string): boolean {
+    const standby = getStandbyAudioEl();
+    const currentActive = getActiveAudioEl();
+    if (!currentActive) return false;
+
+    if (standby && audioHasUrl(standby, url) && standby.readyState >= 2) {
+      currentActive.pause();
+      currentActive.currentTime = 0;
+      activeAudioIndex = activeAudioIndex === 0 ? 1 : 0;
+      const newActive = getActiveAudioEl();
+      if (newActive) {
+        newActive.volume = volume;
+        newActive.muted = isMuted;
+        playAudioElement(newActive);
+      }
+    } else {
+      if (!audioHasUrl(currentActive, url)) {
+        currentActive.src = url;
+      }
+      currentActive.volume = volume;
+      currentActive.muted = isMuted;
+      playAudioElement(currentActive);
+    }
+    currentPlayingUrl = url;
+    return true;
+  }
+
+  // Keep audio nodes mounted (see template) so the first Play after refresh can
+  // call play() on a live element. Do not mark the URL current until bind:this exists;
+  // otherwise the reactive block never retries and the track is silent.
+  $: if (
+    audioElA &&
+    playerState.isOpen &&
+    isAudio &&
+    !playerState.isCasting &&
+    playerState.streamUrl &&
+    playerState.streamUrl !== currentPlayingUrl
+  ) {
+    applyAudioUrl(playerState.streamUrl);
+  }
+
+  let sessionItemId: string | null = null;
+  let stopReported = false;
+
+  $: if (playerState.isOpen && playerState.item) {
+    sessionItemId = playerState.item.Id;
+    stopReported = false;
+  }
+
+  function notifyPlaybackStopped() {
+    if (stopReported || $serverConfig.isDemo || !sessionItemId || !$serverConfig.url) {
+      sessionItemId = playerState.isOpen ? sessionItemId : null;
+      return;
+    }
+    stopReported = true;
+    const ticks = Math.round(currentTime * 1000 * 10000);
+    jfApi.reportPlaybackStopped($serverConfig.url, $serverConfig.token, sessionItemId, ticks);
+    sessionItemId = null;
+  }
+
+  $: if (!playerState.isOpen || playerState.isCasting) {
+    audioElA?.pause();
+    audioElB?.pause();
+    if (!playerState.isOpen) {
+      notifyPlaybackStopped();
+      if (currentPlayingUrl || audioElA?.getAttribute('src')) {
+        if (audioElA) {
+          audioElA.removeAttribute('src');
+          audioElA.load();
+        }
+        if (audioElB) {
+          audioElB.removeAttribute('src');
+          audioElB.load();
+        }
+        currentPlayingUrl = '';
+        prebufferedNextUrl = '';
+        isPlaying = false;
+      }
+    }
+  }
+
+  // Pre-buffer next track into standby audio element ahead of time
+  $: if (isAudio && nextStreamUrl) {
+    const standby = getStandbyAudioEl();
+    if (standby && nextStreamUrl !== prebufferedNextUrl && nextStreamUrl !== currentPlayingUrl) {
+      prebufferedNextUrl = nextStreamUrl;
+      standby.src = nextStreamUrl;
+      standby.preload = 'auto';
+      standby.load();
+      addDiagnosticLog('info', `Pre-buffered next audio track: ${nextItem?.Name || ''}`);
+    }
+  } else if (!nextStreamUrl) {
+    const standby = getStandbyAudioEl();
+    prebufferedNextUrl = '';
+    if (standby && standby.src) {
+      standby.src = '';
+    }
+  }
 
   // Pre-load next artwork image into browser cache
   $: if (nextPosterUrl && typeof Image !== 'undefined') {
@@ -118,21 +256,6 @@
     }
   }
 
-  // Pre-buffer next media stream headers & first 1MB chunk into browser HTTP cache
-  function warmNextMedia(url: string) {
-    if (!url || warmedUrl === url || typeof fetch === 'undefined') return;
-    warmedUrl = url;
-    try {
-      fetch(url, {
-        method: 'GET',
-        headers: {
-          Range: 'bytes=0-1048576',
-          'X-Emby-Authorization': jfApi.getAuthHeader($serverConfig.token)
-        }
-      }).catch(() => {});
-    } catch {}
-  }
-
   onMount(() => {
     document.addEventListener('fullscreenchange', handleFullscreenChange);
   });
@@ -153,9 +276,10 @@
       addDiagnosticLog('info', `Cast Remote: Toggle Play (${isPlaying ? 'Playing' : 'Paused'})`);
       return;
     }
-    if (isAudio && audioEl) {
-      if (audioEl.paused) audioEl.play().catch(() => {});
-      else audioEl.pause();
+    const currentActive = getActiveAudioEl();
+    if (isAudio && currentActive) {
+      if (currentActive.paused) currentActive.play().catch(() => {});
+      else currentActive.pause();
       return;
     }
     if (moviEl) {
@@ -175,9 +299,10 @@
   }
 
   function handleTimeUpdate() {
-    if (isAudio && audioEl) {
-      currentTime = audioEl.currentTime;
-      duration = audioEl.duration || 0;
+    const currentActive = getActiveAudioEl();
+    if (isAudio && currentActive) {
+      currentTime = currentActive.currentTime;
+      duration = currentActive.duration || 0;
     } else if (moviEl) {
       currentTime = moviEl.currentTime || 0;
       duration = moviEl.duration || 0;
@@ -185,19 +310,15 @@
       currentTime = videoEl.currentTime || 0;
       duration = videoEl.duration || 0;
     }
-
-    // Pre-buffer next playlist item when approaching the end of current track or after 5 seconds of stable playback
-    if (nextStreamUrl && (currentTime > 5 || (duration > 0 && duration - currentTime <= 20))) {
-      warmNextMedia(nextStreamUrl);
-    }
   }
 
   function handleSeek(e: Event) {
     const target = e.target as HTMLInputElement;
     const seekTime = parseFloat(target.value);
     currentTime = seekTime;
-    if (isAudio && audioEl) {
-      audioEl.currentTime = seekTime;
+    const currentActive = getActiveAudioEl();
+    if (isAudio && currentActive) {
+      currentActive.currentTime = seekTime;
     } else if (moviEl) {
       moviEl.currentTime = seekTime;
     } else if (videoEl) {
@@ -206,8 +327,9 @@
   }
 
   function skip(seconds: number) {
-    if (isAudio && audioEl) {
-      audioEl.currentTime = Math.max(0, Math.min(duration, audioEl.currentTime + seconds));
+    const currentActive = getActiveAudioEl();
+    if (isAudio && currentActive) {
+      currentActive.currentTime = Math.max(0, Math.min(duration, currentActive.currentTime + seconds));
     } else if (moviEl) {
       moviEl.currentTime = Math.max(0, Math.min(duration, moviEl.currentTime + seconds));
     } else if (videoEl) {
@@ -216,9 +338,12 @@
   }
 
   function toggleMute() {
-    if (isAudio && audioEl) {
-      audioEl.muted = !audioEl.muted;
-      isMuted = audioEl.muted;
+    const currentActive = getActiveAudioEl();
+    const standby = getStandbyAudioEl();
+    if (isAudio && currentActive) {
+      currentActive.muted = !currentActive.muted;
+      isMuted = currentActive.muted;
+      if (standby) standby.muted = isMuted;
     } else if (moviEl) {
       moviEl.muted = !moviEl.muted;
       isMuted = moviEl.muted;
@@ -231,10 +356,16 @@
   function handleVolumeChange(e: Event) {
     const target = e.target as HTMLInputElement;
     volume = parseFloat(target.value);
-    if (isAudio && audioEl) {
-      audioEl.volume = volume;
-      audioEl.muted = volume === 0;
-      isMuted = audioEl.muted;
+    const currentActive = getActiveAudioEl();
+    const standby = getStandbyAudioEl();
+    if (isAudio && currentActive) {
+      currentActive.volume = volume;
+      currentActive.muted = volume === 0;
+      isMuted = currentActive.muted;
+      if (standby) {
+        standby.volume = volume;
+        standby.muted = isMuted;
+      }
     } else if (moviEl) {
       moviEl.volume = volume;
       moviEl.muted = volume === 0;
@@ -274,35 +405,36 @@
   }
 
   function openQueue() {
+    $isLyricsOpen = false;
+    $isQueueDrawerOpen = true;
+  }
+
+  function openLyrics() {
+    $isLyricsOpen = true;
     $isQueueDrawerOpen = true;
   }
 
   function closePlayer() {
-    if (audioEl) audioEl.pause();
+    if (audioElA) {
+      audioElA.pause();
+      audioElA.src = '';
+    }
+    if (audioElB) {
+      audioElB.pause();
+      audioElB.src = '';
+    }
     if (moviEl) moviEl.pause();
     if (videoEl) videoEl.pause();
-
-    if (!$serverConfig.isDemo && playerState.item && $serverConfig.url) {
-      const ticks = Math.round(currentTime * 1000 * 10000);
-      jfApi.reportPlaybackStopped($serverConfig.url, $serverConfig.token, playerState.item.Id, ticks);
-    }
-
-    activePlayer.set({
-      isOpen: false,
-      isExpanded: false,
-      item: null,
-      streamUrl: '',
-      isCasting: false,
-      isLinkedCast: false,
-      title: '',
-      playlist: [],
-      currentIndex: 0
-    });
+    currentPlayingUrl = '';
+    prebufferedNextUrl = '';
+    isPlaying = false;
+    notifyPlaybackStopped();
+    stopPlayback();
   }
 
   function triggerDirectCast() {
     if (playerState.item) {
-      if (audioEl) audioEl.pause();
+      getActiveAudioEl()?.pause();
       if (moviEl) moviEl.pause();
       if (videoEl) videoEl.pause();
       playWithDirectCast(playerState.item);
@@ -319,8 +451,9 @@
       isCasting: false,
       isLinkedCast: false
     }));
-    if (isAudio && audioEl) {
-      audioEl.play().catch(() => {});
+    const currentActive = getActiveAudioEl();
+    if (isAudio && currentActive) {
+      currentActive.play().catch(() => {});
     } else if (moviEl) {
       moviEl.play().catch(() => {});
     } else if (videoEl) {
@@ -340,31 +473,27 @@
   }
 </script>
 
+<!-- Always mounted so the first Play after a refresh is not racing bind:this. -->
+<audio
+  bind:this={audioElA}
+  on:play={() => { if (activeAudioIndex === 0) isPlaying = true; }}
+  on:pause={() => { if (activeAudioIndex === 0) isPlaying = false; }}
+  on:timeupdate={() => { if (activeAudioIndex === 0) handleTimeUpdate(); }}
+  on:ended={() => { if (activeAudioIndex === 0) handleMediaEnded(); }}
+  class="hidden-audio-el"
+  preload="auto"
+></audio>
+<audio
+  bind:this={audioElB}
+  on:play={() => { if (activeAudioIndex === 1) isPlaying = true; }}
+  on:pause={() => { if (activeAudioIndex === 1) isPlaying = false; }}
+  on:timeupdate={() => { if (activeAudioIndex === 1) handleTimeUpdate(); }}
+  on:ended={() => { if (activeAudioIndex === 1) handleMediaEnded(); }}
+  class="hidden-audio-el"
+  preload="auto"
+></audio>
+
 {#if playerState.isOpen}
-  <!-- ==================== ACTIVE & PRE-BUFFER AUDIO ELEMENTS ==================== -->
-  {#if isAudio && !isCastingActive}
-    <audio
-      bind:this={audioEl}
-      src={playerState.streamUrl}
-      autoplay
-      on:play={() => (isPlaying = true)}
-      on:pause={() => (isPlaying = false)}
-      on:timeupdate={handleTimeUpdate}
-      on:ended={handleMediaEnded}
-      class="hidden-audio-el"
-    ></audio>
-
-    <!-- Background Pre-Buffer Audio Element for Gapless Next Track Transition -->
-    {#if nextStreamUrl}
-      <audio
-        bind:this={prebufferAudioEl}
-        src={nextStreamUrl}
-        preload="auto"
-        class="hidden-audio-el"
-      ></audio>
-    {/if}
-  {/if}
-
   <!-- ==================== MINI PLAYER BAR (Bottom Floating Dock) ==================== -->
   {#if !playerState.isExpanded}
     <div class="mini-player-bar" on:click={expandPlayer}>
@@ -386,6 +515,9 @@
         <div class="mini-meta">
           <div class="mini-title-row">
             <span class="mini-title">{playerState.title}</span>
+            <span class="mini-expand-hint" title="Expand player">
+              <ChevronUp size={14} />
+            </span>
             {#if isCastingActive}
               <div class="mini-cast-indicator" title="Casting to PlayBridge">
                 <Cast size={15} class="cast-glow-icon" />
@@ -460,13 +592,13 @@
       on:mousemove={handleMouseMove}
     >
       <!-- Top Header Bar Overlay -->
-      <div class="player-top-bar" class:visible={showControls || !isPlaying || isCastingActive}>
+      <div class="player-top-bar" class:visible={showControls || !isPlaying || isCastingActive || isAudio}>
         <button class="icon-btn-large" on:click={minimizePlayer} title="Minimize to mini-player (keep browsing)">
           <ChevronDown size={22} />
         </button>
 
         <div class="title-group">
-          <h3 class="playing-title">{playerState.title}</h3>
+          <h3 class="playing-title" title={playerState.title}>{playerState.title}</h3>
           {#if playerState.season && playerState.episode}
             <span class="playing-sub">Season {playerState.season} &bull; Episode {playerState.episode}</span>
           {:else if playerState.item?.AlbumArtist || (playerState.item?.Artists && playerState.item.Artists.length > 0)}
@@ -485,12 +617,12 @@
           {#if !isCastingActive}
             <button class="cast-btn" on:click={triggerDirectCast} title="Switch to PlayBridge Casting">
               <Cast size={16} />
-              <span>Cast to TV</span>
+              <span class="cast-text">Cast</span>
             </button>
           {:else}
             <button class="cast-btn active-cast" on:click={disconnectCast} title="Disconnect cast">
               <Cast size={16} />
-              <span>Casting Active</span>
+              <span class="cast-text">Casting</span>
             </button>
           {/if}
 
@@ -539,6 +671,7 @@
           {#if backdropUrl}
             <div class="audio-bg-blur" style="background-image: url('{backdropUrl}')"></div>
           {/if}
+          <div class="audio-hud-overlay-gradient"></div>
 
           <div class="audio-card">
             <div class="audio-artwork-wrapper">
@@ -553,7 +686,7 @@
 
             <div class="audio-meta">
               <div class="audio-title-fav-row">
-                <h2 class="audio-title">{playerState.title}</h2>
+                <h2 class="audio-title" title={playerState.title}>{playerState.title}</h2>
                 {#if playerState.item}
                   <button
                     class="fav-btn-round"
@@ -641,6 +774,26 @@
                 {/if}
               </button>
             </div>
+
+            <!-- Quick Actions Bar for mobile/desktop: Queue & Lyrics, Direct Cast -->
+            <div class="audio-quick-bar">
+              <button class="quick-bar-btn" on:click={openQueue} title="Queue & Playlist">
+                <ListMusic size={15} />
+                <span>Up Next ({playerState.playlist?.length ?? 1})</span>
+              </button>
+
+              <button class="quick-bar-btn" on:click={openLyrics} title="Lyrics">
+                <Mic2 size={15} />
+                <span>Lyrics</span>
+              </button>
+
+              {#if !isCastingActive}
+                <button class="quick-bar-btn" on:click={triggerDirectCast} title="Direct Cast">
+                  <Cast size={15} />
+                  <span>Cast</span>
+                </button>
+              {/if}
+            </div>
           </div>
         </div>
       {:else}
@@ -661,7 +814,7 @@
               autoplay
               playsinline
               theme="dark"
-              themecolor="#00A4DC #7A5AF8"
+              themecolor="#95FF50 #7A6BAE"
               ambientmode
               headers={authHeadersJson}
               on:play={() => (isPlaying = true)}
@@ -707,17 +860,17 @@
     left: 0;
     right: 0;
     height: 64px;
-    background: rgba(14, 17, 24, 0.95);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border-top: 1px solid var(--border);
+    background: rgba(29, 23, 40, 0.88);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border-top: 1px solid rgba(122, 107, 174, 0.25);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 18px;
+    padding: 0 24px;
     z-index: 45;
     cursor: pointer;
-    box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.6);
     transition: transform 0.2s ease;
   }
 
@@ -732,7 +885,8 @@
 
   .mini-progress-fill {
     height: 100%;
-    background: var(--jf-blue);
+    background: var(--theme-progress-filled);
+    box-shadow: 0 0 6px rgba(95, 184, 44, 0.8);
   }
 
   .mini-left {
@@ -745,13 +899,13 @@
 
   .mini-thumb-wrapper {
     position: relative;
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     border-radius: var(--radius-sm);
     overflow: hidden;
     flex-shrink: 0;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
+    background: var(--theme-background-secondary);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .mini-thumb {
@@ -772,9 +926,15 @@
     gap: 8px;
   }
 
+  .mini-expand-hint {
+    display: none;
+    line-height: 0;
+    color: var(--text-muted);
+  }
+
   .mini-title {
-    font-size: 0.88rem;
-    font-weight: 600;
+    font-size: 0.9rem;
+    font-weight: 700;
     color: #fff;
     white-space: nowrap;
     overflow: hidden;
@@ -785,8 +945,8 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    color: var(--jf-purple);
-    filter: drop-shadow(0 0 6px rgba(122, 90, 248, 0.8));
+    color: var(--theme-primary-accent);
+    filter: drop-shadow(0 0 6px rgba(149, 255, 80, 0.8));
     animation: pulseCast 2s infinite ease-in-out;
   }
 
@@ -798,7 +958,7 @@
 
   .mini-sub {
     font-size: 0.74rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -819,24 +979,26 @@
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    background: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    transition: all 0.15s ease;
   }
 
   .mini-btn:hover {
     color: #fff;
-    background: var(--bg-surface-elevated);
+    background: rgba(60, 47, 82, 0.85);
   }
 
   .mini-btn.active-fav {
-    color: #e74c3c;
-    border-color: rgba(231, 76, 60, 0.3);
+    color: #ff5252;
+    border-color: rgba(255, 82, 82, 0.4);
   }
 
   .mini-play-btn {
-    background: var(--jf-blue);
-    color: #fff;
+    background: var(--theme-primary-accent);
+    color: #050505;
     border-color: transparent;
+    box-shadow: 0 0 12px rgba(149, 255, 80, 0.35);
   }
 
   .mini-play-btn:hover {
@@ -844,36 +1006,53 @@
   }
 
   .mini-close-btn:hover {
-    background: var(--status-error);
-    border-color: transparent;
-    color: #fff;
+    background: rgba(248, 81, 73, 0.2);
+    border-color: var(--status-error);
+    color: var(--status-error);
   }
 
   @media (max-width: 768px) {
     .mini-player-bar {
-      bottom: calc(56px + env(safe-area-inset-bottom, 0px));
-      height: 56px;
-      padding: 0 12px;
+      bottom: calc(86px + env(safe-area-inset-bottom, 16px));
+      height: 58px;
+      padding: 0 14px;
+      margin: 0 12px;
+      border-radius: var(--radius-full);
+      border: 1px solid rgba(122, 107, 174, 0.3);
+      z-index: 92;
+      box-shadow: 0 8px 30px rgba(0, 0, 0, 0.85);
     }
     .mini-thumb-wrapper {
-      width: 36px;
-      height: 36px;
+      width: 38px;
+      height: 38px;
     }
     .mini-expand-btn {
       display: none;
+    }
+    .mini-expand-hint {
+      display: flex;
+      flex-shrink: 0;
+      color: var(--text-muted);
+      opacity: 0.85;
     }
   }
 
   /* ==================== FULL EXPANDED PLAYER OVERLAY ==================== */
   .player-overlay {
-    position: fixed;
-    inset: 0;
-    background: #000000;
-    z-index: 100;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-    overflow: hidden;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    height: 100dvh !important;
+    background: #09060f !important;
+    z-index: 100 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    justify-content: space-between !important;
+    overflow: hidden !important;
   }
 
   .player-top-bar {
@@ -882,10 +1061,11 @@
     left: 0;
     right: 0;
     padding: 16px 20px;
-    display: flex;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
     align-items: center;
-    justify-content: space-between;
-    background: linear-gradient(to bottom, rgba(0, 0, 0, 0.85) 0%, transparent 100%);
+    gap: 12px;
+    background: linear-gradient(to bottom, rgba(9, 6, 15, 0.95) 0%, rgba(9, 6, 15, 0.6) 70%, transparent 100%);
     z-index: 30;
     opacity: 0;
     transition: opacity 0.3s ease;
@@ -902,24 +1082,29 @@
     flex-direction: column;
     align-items: center;
     text-align: center;
-    max-width: 50%;
+    min-width: 0;
+    overflow: hidden;
   }
 
   .playing-title {
     font-size: 1.05rem;
-    font-weight: 700;
+    font-weight: 800;
     color: #fff;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    width: 100%;
+    text-align: center;
   }
 
   .playing-sub {
     font-size: 0.76rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    width: 100%;
+    text-align: center;
   }
 
   .top-actions {
@@ -932,53 +1117,56 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    background: rgba(255, 255, 255, 0.1);
+    background: rgba(30, 23, 40, 0.7);
     color: var(--text-secondary);
-    padding: 6px 10px;
+    padding: 6px 12px;
     border-radius: var(--radius-full);
-    font-size: 0.75rem;
+    font-size: 0.78rem;
     font-weight: 600;
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .queue-counter-btn:hover {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(60, 47, 82, 0.85);
     color: #fff;
   }
 
   .icon-btn-large {
-    width: 38px;
-    height: 38px;
+    width: 40px;
+    height: 40px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.12);
+    background: rgba(30, 23, 40, 0.7);
     color: #fff;
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    transition: all 0.2s ease;
   }
 
   .icon-btn-large:hover {
-    background: rgba(255, 255, 255, 0.25);
+    background: rgba(60, 47, 82, 0.85);
+    transform: scale(1.08);
   }
 
   .cast-btn {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 7px 12px;
+    padding: 8px 14px;
     border-radius: var(--radius-full);
-    font-size: 0.8rem;
-    font-weight: 600;
-    background: rgba(255, 255, 255, 0.12);
+    font-size: 0.82rem;
+    font-weight: 700;
+    background: rgba(30, 23, 40, 0.7);
     color: #fff;
-    border: 1px solid rgba(255, 255, 255, 0.18);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .cast-btn.active-cast {
-    background: rgba(122, 90, 248, 0.25);
-    border-color: var(--jf-purple);
-    color: var(--jf-indigo);
+    background: var(--theme-primary-accent);
+    border-color: var(--theme-primary-accent);
+    color: #050505;
+    box-shadow: 0 0 16px rgba(149, 255, 80, 0.4);
   }
 
   /* Movi Player Element Container */
@@ -1012,7 +1200,7 @@
 
   .spinner {
     animation: spin 1s linear infinite;
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
   }
 
   @keyframes spin {
@@ -1038,7 +1226,6 @@
     object-fit: contain;
   }
 
-  /* Audio HUD Fullscreen Player */
   .audio-hud-container {
     position: relative;
     width: 100%;
@@ -1048,42 +1235,51 @@
     justify-content: center;
     padding: 40px 20px;
     overflow: hidden;
+    background: #09060f;
   }
 
   .audio-bg-blur {
     position: absolute;
-    inset: -40px;
+    inset: -60px;
     background-size: cover;
     background-position: center;
-    filter: blur(50px) brightness(0.25);
-    transform: scale(1.1);
+    -webkit-filter: blur(80px) brightness(0.18) saturate(1.4);
+    filter: blur(80px) brightness(0.18) saturate(1.4);
+    transform: scale(1.15);
+    opacity: 0.7;
+  }
+
+  .audio-hud-overlay-gradient {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at center, rgba(149, 255, 80, 0.04) 0%, rgba(9, 6, 15, 0.95) 60%, #09060f 100%);
+    pointer-events: none;
+    z-index: 2;
   }
 
   .audio-card {
     position: relative;
     z-index: 10;
-    max-width: 420px;
+    max-width: 440px;
     width: 100%;
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 20px;
-    background: rgba(20, 24, 33, 0.85);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid var(--border);
+    gap: 22px;
+    background: #191424;
+    border: 1px solid rgba(122, 107, 174, 0.35);
     border-radius: var(--radius-xl);
-    padding: 30px 28px;
-    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.7);
+    padding: 32px 28px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.95);
   }
 
   .audio-artwork-wrapper {
-    width: 200px;
-    height: 200px;
+    width: 220px;
+    height: 220px;
     border-radius: var(--radius-lg);
     overflow: hidden;
-    border: 1px solid var(--border);
-    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.7);
   }
 
   .audio-artwork {
@@ -1095,11 +1291,11 @@
   .audio-placeholder {
     width: 100%;
     height: 100%;
-    background: var(--bg-surface);
+    background: var(--theme-background-secondary);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
   }
 
   .audio-meta {
@@ -1114,22 +1310,28 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 10px;
+    gap: 8px;
+    width: 100%;
+    min-width: 0;
   }
 
   .audio-title {
-    font-size: 1.25rem;
-    font-weight: 700;
+    font-size: 1.35rem;
+    font-weight: 800;
     color: #fff;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    min-width: 0;
+    flex: 1;
+    text-align: center;
   }
 
   .fav-btn-round {
     padding: 6px;
     border-radius: 50%;
     color: var(--text-muted);
+    transition: all 0.15s ease;
   }
 
   .fav-btn-round:hover {
@@ -1137,31 +1339,31 @@
   }
 
   .fav-btn-round.active-fav {
-    color: #e74c3c;
+    color: #ff5252;
   }
 
   .audio-artist {
-    font-size: 0.92rem;
-    color: var(--jf-indigo);
+    font-size: 0.95rem;
+    color: var(--theme-primary-accent-hover);
     font-weight: 600;
   }
 
   .audio-album {
-    font-size: 0.78rem;
-    color: var(--text-muted);
+    font-size: 0.8rem;
+    color: var(--theme-type-muted);
   }
 
   .next-up-indicator {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 5px;
-    font-size: 0.72rem;
-    font-weight: 600;
-    color: var(--jf-blue);
-    background: rgba(0, 164, 220, 0.12);
-    border: 1px solid rgba(0, 164, 220, 0.25);
-    padding: 3px 10px;
+    gap: 6px;
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: var(--theme-primary-accent);
+    background: rgba(149, 255, 80, 0.12);
+    border: 1px solid rgba(149, 255, 80, 0.3);
+    padding: 4px 12px;
     border-radius: var(--radius-full);
     margin-top: 4px;
     align-self: center;
@@ -1190,13 +1392,14 @@
     border-radius: var(--radius-full);
     outline: none;
     cursor: pointer;
+    accent-color: var(--theme-primary-accent);
   }
 
   .time-display {
     display: flex;
     justify-content: space-between;
     font-size: 0.75rem;
-    color: var(--text-secondary);
+    color: var(--theme-type-muted);
     font-family: var(--font-mono);
   }
 
@@ -1213,6 +1416,7 @@
     border-radius: 50%;
     color: var(--text-muted);
     background: transparent;
+    transition: all 0.15s ease;
   }
 
   .mode-icon-btn:hover {
@@ -1221,32 +1425,33 @@
   }
 
   .mode-icon-btn.active-mode {
-    color: var(--jf-blue);
-    background: rgba(0, 164, 220, 0.15);
+    color: var(--theme-primary-accent);
+    background: rgba(149, 255, 80, 0.15);
   }
 
   .control-icon-btn {
     color: #fff;
-    padding: 8px;
+    padding: 10px;
     border-radius: 50%;
     background: rgba(255, 255, 255, 0.08);
+    transition: all 0.15s ease;
   }
 
   .control-icon-btn:hover {
-    color: var(--jf-blue);
+    color: var(--theme-primary-accent);
     background: rgba(255, 255, 255, 0.15);
   }
 
   .play-toggle-btn-large {
-    width: 56px;
-    height: 56px;
+    width: 58px;
+    height: 58px;
     border-radius: 50%;
-    background: var(--jf-blue);
-    color: #fff;
+    background: var(--theme-primary-accent);
+    color: #050505;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 16px rgba(0, 164, 220, 0.4);
+    box-shadow: 0 0 24px rgba(149, 255, 80, 0.4);
     transition: transform 0.15s ease;
   }
 
@@ -1267,12 +1472,12 @@
 
   .cast-poster-card {
     position: relative;
-    width: 180px;
+    width: 190px;
     aspect-ratio: 2 / 3;
     border-radius: var(--radius-lg);
     overflow: hidden;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.8);
-    border: 1px solid var(--border);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.85);
+    border: 1px solid rgba(122, 107, 174, 0.25);
   }
 
   .cast-hud-poster {
@@ -1282,10 +1487,10 @@
   }
 
   .cast-status-card {
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
+    background: rgba(29, 23, 40, 0.85);
+    border: 1px solid rgba(122, 107, 174, 0.25);
     border-radius: var(--radius-lg);
-    padding: 24px 28px;
+    padding: 26px 30px;
     max-width: 480px;
     width: 100%;
     display: flex;
@@ -1301,22 +1506,22 @@
 
   .tv-icon-wrapper {
     position: relative;
-    width: 54px;
-    height: 54px;
+    width: 56px;
+    height: 56px;
     border-radius: var(--radius-md);
-    background: rgba(122, 90, 248, 0.15);
-    border: 1px solid rgba(122, 90, 248, 0.3);
+    background: rgba(149, 255, 80, 0.15);
+    border: 1px solid rgba(149, 255, 80, 0.3);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--jf-purple);
+    color: var(--theme-primary-accent);
   }
 
   .radar-pulse {
     position: absolute;
     inset: -6px;
     border-radius: var(--radius-md);
-    border: 2px solid var(--jf-purple);
+    border: 2px solid var(--theme-primary-accent);
     animation: radarPulse 2s infinite;
     opacity: 0;
   }
@@ -1327,14 +1532,14 @@
   }
 
   .signal-details h4 {
-    font-size: 1rem;
-    font-weight: 700;
+    font-size: 1.05rem;
+    font-weight: 800;
     color: #fff;
   }
 
   .signal-url {
     font-size: 0.74rem;
-    color: var(--text-muted);
+    color: var(--theme-type-muted);
     font-family: var(--font-mono);
     word-break: break-all;
     margin-top: 2px;
@@ -1347,5 +1552,86 @@
 
   .cast-actions-row button {
     flex: 1;
+  }
+
+  /* Audio Quick Action Bar */
+  .audio-quick-bar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    width: 100%;
+    margin-top: 4px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(122, 107, 174, 0.2);
+  }
+
+  .quick-bar-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 14px;
+    border-radius: var(--radius-full);
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: rgba(30, 23, 40, 0.7);
+    border: 1px solid rgba(122, 107, 174, 0.25);
+    transition: all 0.15s ease;
+  }
+
+  .quick-bar-btn:hover {
+    color: #fff;
+    background: rgba(60, 47, 82, 0.85);
+    border-color: var(--theme-primary-accent);
+  }
+
+  .quick-bar-btn:active {
+    transform: scale(0.96);
+  }
+
+  @media (max-width: 768px) {
+    .player-top-bar {
+      padding: 12px 14px;
+      gap: 8px;
+    }
+    .playing-title {
+      font-size: 0.88rem;
+    }
+    .playing-sub {
+      font-size: 0.68rem;
+    }
+    .cast-text {
+      display: none;
+    }
+    .audio-hud-container {
+      padding: 68px 14px 24px;
+    }
+    .audio-card {
+      max-width: 100%;
+      padding: 18px 14px;
+      gap: 12px;
+    }
+    .audio-artwork-wrapper {
+      width: 150px;
+      height: 150px;
+    }
+    .audio-title {
+      font-size: 1.05rem;
+    }
+    .audio-artist {
+      font-size: 0.82rem;
+    }
+    .audio-album {
+      font-size: 0.70rem;
+    }
+    .play-toggle-btn-large {
+      width: 48px;
+      height: 48px;
+    }
+    .quick-bar-btn {
+      padding: 6px 10px;
+      font-size: 0.72rem;
+    }
   }
 </style>
