@@ -311,3 +311,67 @@ test('writes account addon changes, library membership, and linked TV progress t
     _id: 'tt200', state: { video_id: 'tt200:1:1', timeOffset: 30_000, duration: 100_000 }
   });
 });
+
+test('loads more titles in a catalog row and its dedicated page', async ({ page }) => {
+  const firstPage = Array.from({ length: 25 }, (_, index) => ({
+    id: `tt9${String(index).padStart(3, '0')}`, type: 'movie', name: `Paged Film ${index + 1}`, poster: ''
+  }));
+  const secondPage = [26, 27].map((index) => ({
+    id: `tt9${String(index).padStart(3, '0')}`, type: 'movie', name: `Paged Film ${index}`, poster: ''
+  }));
+  let secondPageRequests = 0;
+  await page.route('https://paging.test/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const data = path === '/manifest.json' ? {
+      id: 'paging', name: 'Paged Addon', version: '1.0.0', types: ['movie'],
+      resources: ['catalog', 'meta'],
+      catalogs: [{ type: 'movie', id: 'paged', name: 'Paged Movies', extra: [{ name: 'skip' }] }]
+    } : path.includes('/skip=25.json') ? (secondPageRequests++, { metas: secondPage })
+      : path.includes('/skip=27.json') ? { metas: [] } : { metas: firstPage };
+    await route.fulfill({ json: data, headers: { 'access-control-allow-origin': '*' } });
+  });
+
+  await openAddons(page);
+  await page.getByLabel('Addon manifest URL').fill('https://paging.test/manifest.json');
+  await page.getByRole('button', { name: 'Install' }).first().click();
+  await expect(page.getByRole('dialog', { name: 'Manage addons' }).getByText('Paged Addon', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
+  await goTab(page, 'Home');
+  await expect(page.getByRole('button', { name: 'View all Paged Movies from Paged Addon' })).toBeVisible();
+  expect(secondPageRequests).toBe(0);
+  await page.getByRole('button', { name: 'View all Paged Movies from Paged Addon' }).click();
+  const catalog = page.getByRole('dialog', { name: 'Paged Movies catalog' });
+  await expect(catalog.getByRole('button', { name: 'View details for Paged Film 1', exact: true })).toBeVisible();
+  await expect(catalog.getByRole('button', { name: 'View details for Sample Film', exact: true })).toHaveCount(0);
+  await expect(page).toHaveTitle('Paged Movies · Bridged Streams');
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeHidden();
+  await catalog.getByRole('button', { name: 'View details for Paged Film 1', exact: true }).click();
+  await expect(page).toHaveTitle('Paged Film 1 · Bridged Streams');
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await expect(page).toHaveTitle('Paged Movies · Bridged Streams');
+  await catalog.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await expect(catalog.getByRole('button', { name: 'View details for Paged Film 27', exact: true })).toBeVisible();
+  await catalog.getByRole('button', { name: 'Back to home' }).click();
+  await expect(page).toHaveTitle('Bridged Streams · PlayBridge');
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+
+  const row = page.locator('.catalog-section').filter({ has: page.getByRole('heading', { name: 'Paged Movies' }) });
+  await row.locator('.media-row').evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  await expect(row.getByRole('button', { name: 'View details for Paged Film 27', exact: true })).toBeVisible();
+  expect(secondPageRequests).toBeGreaterThanOrEqual(2);
+});
+
+test('keeps the dock expanded when returning to a scrolled tab', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 780 });
+  const dock = page.getByRole('navigation', { name: 'Main navigation' });
+  await page.mouse.move(195, 450);
+  await page.mouse.wheel(0, 900);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
+  await page.mouse.wheel(0, 300);
+  await expect(dock).toHaveClass(/compact/);
+  await goTab(page, 'Settings');
+  await expect(dock).not.toHaveClass(/compact/);
+  await goTab(page, 'Home');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
+  await expect(dock).not.toHaveClass(/compact/);
+});

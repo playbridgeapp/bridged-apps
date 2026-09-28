@@ -20,7 +20,7 @@
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
 
-  type CatalogRow = { key: string; title: string; addon: InstalledAddon; catalog: AddonCatalog; items: MetaPreview[]; loading?: boolean; error?: string };
+  type CatalogRow = { key: string; title: string; addon: InstalledAddon; catalog: AddonCatalog; items: MetaPreview[]; loading?: boolean; error?: string; nextSkip?: number | null; loadingMore?: boolean; duplicatePages?: number; pageError?: string };
   type StreamSource = { key: string; name: string; addon?: InstalledAddon; plugin?: PluginRepository };
   type Tab = 'home' | 'search' | 'library' | 'settings';
   type DiscoverDropdown = 'type' | 'catalog' | 'genre';
@@ -101,13 +101,33 @@
   let addingPlugin = false;
   let tmdbKey = '';
   let rows: CatalogRow[] = [];
+  let catalogPage: CatalogRow | null = null;
+  let catalogPageItems: MetaPreview[] = [];
+  let catalogPageNextSkip: number | null = null;
+  let catalogPageLoading = false;
+  let catalogPageError = '';
+  let catalogPageDuplicatePages = 0;
+  let catalogPageRequest = 0;
   let tab: Tab = 'home';
   const tabScrollPositions: Record<Tab, number> = { home: 0, search: 0, library: 0, settings: 0 };
   let navigationRequest = 0;
   let dockElement: HTMLElement | null = null;
   let dockIndicatorX = 0;
   let dockIndicatorWidth = 0;
+  let dockPosition = 0;
   let dockReady = false;
+  let dockCompact = false;
+  let dockRestoringScroll = false;
+  let dockInteracting = false;
+  let dockPointerStartX = 0;
+  let dockPointerStartY = 0;
+  let dockPointerMoved = false;
+  let dockStretch = 1;
+  let suppressDockClick = false;
+  let heroPointerStartX = 0;
+  let heroPointerStartY = 0;
+  let suppressHeroClick = false;
+  let featureLastInteraction = 0;
   let discoverType = '';
   let discoverCatalogKey = savedDiscoverCatalogKey();
   let discoverGenre = '';
@@ -202,8 +222,9 @@
     void loadDiscoverFeed(true);
   }
   $: featureCandidates = [...new Map(rows.flatMap((row) => row.items)
-    .filter((item) => item.background && (item.type === 'movie' || item.type === 'series'))
+    .filter((item) => (item.background || item.poster) && (item.type === 'movie' || item.type === 'series'))
     .map((item) => [`${item.type}:${item.id}`, item])).values()].slice(0, 5);
+  $: if (featureIndex >= featureCandidates.length && featureIndex !== 0) featureIndex = 0;
   $: featured = featureCandidates[featureIndex] || featureCandidates[0];
   $: relatedTitles = selected ? [...new Map(rows.flatMap((row) => row.items)
     .filter((item) => item.type === selected?.type && item.id !== selected?.id)
@@ -240,11 +261,106 @@
   $: if (tab) void tick().then(updateDockIndicator);
 
   function updateDockIndicator() {
-    const selectedButton = dockElement?.querySelector<HTMLButtonElement>('button.active');
+    const buttons = [...(dockElement?.querySelectorAll<HTMLButtonElement>('button') || [])];
+    const selectedIndex = buttons.findIndex((button) => button.classList.contains('active'));
+    const selectedButton = buttons[selectedIndex];
     if (!selectedButton) return;
-    dockIndicatorX = selectedButton.offsetLeft;
-    dockIndicatorWidth = selectedButton.offsetWidth;
+    if (!window.matchMedia('(max-width: 800px)').matches) {
+      dockIndicatorX = selectedButton.offsetLeft;
+      dockIndicatorWidth = selectedButton.offsetWidth;
+    }
+    if (!dockInteracting) dockPosition = selectedIndex;
     dockReady = true;
+  }
+
+  function selectFeature(index: number) {
+    featureIndex = (index + featureCandidates.length) % featureCandidates.length;
+    featureLastInteraction = Date.now();
+  }
+
+  function onHeroPointerDown(event: PointerEvent) {
+    if (event.pointerType === 'mouse') return;
+    heroPointerStartX = event.clientX;
+    heroPointerStartY = event.clientY;
+  }
+
+  function onHeroPointerUp(event: PointerEvent) {
+    if (event.pointerType === 'mouse' || featureCandidates.length < 2) return;
+    const dx = event.clientX - heroPointerStartX;
+    const dy = event.clientY - heroPointerStartY;
+    if (Math.abs(dx) < 45 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+    selectFeature(featureIndex + (dx < 0 ? 1 : -1));
+    suppressHeroClick = true;
+    window.setTimeout(() => { suppressHeroClick = false; }, 400);
+  }
+
+  function heroGestures(node: HTMLElement) {
+    const onClickCapture = (event: MouseEvent) => {
+      if (!suppressHeroClick) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressHeroClick = false;
+    };
+    node.addEventListener('pointerdown', onHeroPointerDown);
+    node.addEventListener('pointerup', onHeroPointerUp);
+    node.addEventListener('click', onClickCapture, true);
+    return {
+      destroy() {
+        node.removeEventListener('pointerdown', onHeroPointerDown);
+        node.removeEventListener('pointerup', onHeroPointerUp);
+        node.removeEventListener('click', onClickCapture, true);
+      }
+    };
+  }
+
+  function onDockPointerDown(event: PointerEvent) {
+    if (event.pointerType === 'mouse' || !window.matchMedia('(max-width: 800px)').matches) return;
+    dockPointerStartX = event.clientX;
+    dockPointerStartY = event.clientY;
+    dockPointerMoved = false;
+    dockStretch = 1.06;
+    dockInteracting = true;
+    moveDockIndicatorToPointer(event.clientX);
+  }
+
+  function moveDockIndicatorToPointer(clientX: number) {
+    if (!dockElement) return;
+    const bounds = dockElement.getBoundingClientRect();
+    const pointerX = (clientX - bounds.left) * dockElement.offsetWidth / bounds.width;
+    const buttons = dockElement.querySelectorAll('button');
+    if (!buttons.length) return;
+    const padding = Number.parseFloat(getComputedStyle(dockElement).paddingLeft) || 0;
+    const slotWidth = (dockElement.offsetWidth - padding * 2) / buttons.length;
+    if (slotWidth > 0) dockPosition = Math.max(0, Math.min(buttons.length - 1,
+      (pointerX - padding - slotWidth / 2) / slotWidth));
+  }
+
+  function onDockPointerMove(event: PointerEvent) {
+    if (!dockInteracting) return;
+    const dx = event.clientX - dockPointerStartX;
+    const dy = event.clientY - dockPointerStartY;
+    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) { dockInteracting = false; dockStretch = 1; updateDockIndicator(); return; }
+    if (Math.abs(dx) < 8 && !dockPointerMoved) return;
+    dockPointerMoved = true;
+    dockStretch = 1.06 + Math.min(.14, Math.abs(dx) / 450);
+    moveDockIndicatorToPointer(event.clientX);
+  }
+
+  function onDockPointerUp(event: PointerEvent) {
+    if (!dockInteracting) return;
+    dockInteracting = false;
+    dockStretch = 1;
+    if (!dockPointerMoved) return;
+    const buttons = [...(dockElement?.querySelectorAll<HTMLButtonElement>('button') || [])];
+    const targetIndex = buttons.findIndex((button) => {
+      const bounds = button.getBoundingClientRect();
+      return event.clientX >= bounds.left && event.clientX <= bounds.right;
+    });
+    if (targetIndex >= 0) {
+      suppressDockClick = true;
+      navigate((['home', 'search', 'library', 'settings'] as Tab[])[targetIndex]);
+      window.setTimeout(() => { suppressDockClick = false; }, 0);
+    } else updateDockIndicator();
   }
 
   onMount(() => {
@@ -256,7 +372,23 @@
       dockElement.querySelectorAll('button').forEach((button) => dockObserver?.observe(button));
     }
     window.addEventListener('resize', updateDockIndicator);
-    const updateScroll = () => { pageScrolled = window.scrollY > 24; };
+    let lastScrollY = window.scrollY;
+    let dockScrollDelta = 0;
+    let lastScrollGesture = 0;
+    const markScrollGesture = () => { lastScrollGesture = Date.now(); };
+    const updateScroll = () => {
+      const nextY = window.scrollY;
+      const delta = nextY - lastScrollY;
+      pageScrolled = nextY > 24;
+      if (dockRestoringScroll) { lastScrollY = nextY; dockScrollDelta = 0; return; }
+      if (nextY < 48) { dockCompact = false; dockScrollDelta = 0; }
+      else if (Date.now() - lastScrollGesture < 300 && Math.abs(delta) > 1) {
+        dockScrollDelta = Math.sign(delta) === Math.sign(dockScrollDelta) ? dockScrollDelta + delta : delta;
+        if (dockScrollDelta > 60) { dockCompact = true; dockScrollDelta = 0; }
+        else if (dockScrollDelta < -60) { dockCompact = false; dockScrollDelta = 0; }
+      } else dockScrollDelta = 0;
+      lastScrollY = nextY;
+    };
     const closeSeasonOnEscape = (event: KeyboardEvent) => {
       if (openDiscoverDropdown && event.key === 'Tab') {
         const controls = [...document.querySelectorAll<HTMLButtonElement>('.discover-sheet button')];
@@ -271,6 +403,8 @@
     };
     updateScroll();
     window.addEventListener('scroll', updateScroll, { passive: true });
+    window.addEventListener('touchmove', markScrollGesture, { passive: true });
+    window.addEventListener('wheel', markScrollGesture, { passive: true });
     window.addEventListener('keydown', closeSeasonOnEscape);
     tmdbKey = savedTmdbKey();
     const refreshSettings = savedCatalogRefresh();
@@ -286,7 +420,14 @@
     const catalogTimer = window.setInterval(() => {
       if (autoRefreshCatalogs && addons.length && !loadingCatalogs && Date.now() - lastCatalogRefresh >= catalogRefreshInterval * 60_000) void loadCatalogs();
     }, 60_000);
-    return () => { dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('keydown', closeSeasonOnEscape); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); };
+    const featureTimer = window.setInterval(() => {
+      if (tab === 'home' && !selected && !managing && !accountPanel && !document.hidden && featureCandidates.length > 1
+        && Date.now() - featureLastInteraction > 8000
+        && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        featureIndex = (featureIndex + 1) % featureCandidates.length;
+      }
+    }, 8000);
+    return () => { dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
   });
 
   async function restoreAddons() {
@@ -652,9 +793,11 @@
     await Promise.all(definitions.map(async ({ addon, catalog, extras }) => {
       const key = `${addon.manifestUrl}:${catalog.type}:${catalog.id}`;
       try {
-        const items = await fetchCatalog(addon, catalog, extras);
+        const page = await fetchCatalogPage(addon, catalog, extras);
         if (request === catalogRequest) {
-          rows = rows.map((row) => row.key === key ? { ...row, items, loading: false } : row);
+          const items = uniqueCatalogItems(page.items);
+          rows = rows.map((row) => row.key === key ? { ...row, items, loading: false,
+            nextSkip: catalogNextSkip(catalog, page.rawItemCount, 0, 0), duplicatePages: 0 } : row);
           saveCatalogCache(key, items);
         }
       } catch (error) {
@@ -662,6 +805,105 @@
       }
     }));
     if (request === catalogRequest) loadingCatalogs = false;
+  }
+
+  function uniqueCatalogItems(items: MetaPreview[]): MetaPreview[] {
+    return [...new Map(items.map((item) => [`${item.type}:${item.id}`, item])).values()];
+  }
+
+  function catalogNextSkip(catalog: AddonCatalog, rawCount: number, skip: number, duplicatePages: number): number | null {
+    const supportsSkip = (catalog.extra || []).some((extra) => extra.name === 'skip') || rawCount >= 100;
+    return supportsSkip && rawCount > 0 && duplicatePages < 3 ? skip + rawCount : null;
+  }
+
+  async function loadMoreCatalogRow(key: string) {
+    const row = rows.find((item) => item.key === key);
+    if (!row || row.loading || row.loadingMore || row.nextSkip == null) return;
+    const request = catalogRequest;
+    const skip = row.nextSkip;
+    const extras = requiredCatalogExtras(row.catalog);
+    if (!extras) return;
+    extras.skip = String(skip);
+    rows = rows.map((item) => item.key === key ? { ...item, loadingMore: true, pageError: '' } : item);
+    try {
+      const page = await fetchCatalogPage(row.addon, row.catalog, extras);
+      if (request !== catalogRequest) return;
+      const current = rows.find((item) => item.key === key);
+      if (!current || current.nextSkip !== skip) return;
+      const items = uniqueCatalogItems([...current.items, ...page.items]);
+      const duplicatePages = items.length === current.items.length ? (current.duplicatePages || 0) + 1 : 0;
+      rows = rows.map((item) => item.key === key ? { ...item, items, loadingMore: false, duplicatePages,
+        nextSkip: catalogNextSkip(item.catalog, page.rawItemCount, skip, duplicatePages) } : item);
+      saveCatalogCache(key, items);
+    } catch (error) {
+      if (request === catalogRequest) rows = rows.map((item) => item.key === key
+        ? { ...item, loadingMore: false, pageError: message(error) } : item);
+    }
+  }
+
+  function observeCatalogRowEnd(node: HTMLElement, key: string) {
+    const rail = node.closest<HTMLElement>('.media-row');
+    if (!rail) return;
+    const onScroll = () => {
+      if (tab !== 'home' || catalogPage || selected || rail.scrollLeft <= 0) return;
+      if (rail.scrollWidth - rail.clientWidth - rail.scrollLeft < 280) void loadMoreCatalogRow(key);
+    };
+    rail.addEventListener('scroll', onScroll, { passive: true });
+    return { destroy: () => rail.removeEventListener('scroll', onScroll) };
+  }
+
+  function openCatalogPage(row: CatalogRow) {
+    catalogPage = row;
+    catalogPageItems = row.items;
+    catalogPageNextSkip = row.nextSkip ?? null;
+    catalogPageDuplicatePages = row.duplicatePages || 0;
+    catalogPageError = row.error || '';
+    catalogPageLoading = false;
+    ++catalogPageRequest;
+    if (row.loading || row.error || !row.items.length) void loadCatalogPage(true);
+  }
+
+  function closeCatalogPage() {
+    ++catalogPageRequest;
+    catalogPage = null;
+    catalogPageItems = [];
+    catalogPageNextSkip = null;
+    catalogPageError = '';
+    catalogPageLoading = false;
+  }
+
+  async function loadCatalogPage(reset = false) {
+    const row = catalogPage;
+    if (!row || (catalogPageLoading && !reset) || (!reset && catalogPageNextSkip == null)) return;
+    const request = reset ? ++catalogPageRequest : catalogPageRequest;
+    const skip = reset ? 0 : catalogPageNextSkip!;
+    const extras = requiredCatalogExtras(row.catalog);
+    if (!extras) return;
+    if (skip > 0) extras.skip = String(skip);
+    catalogPageLoading = true;
+    catalogPageError = '';
+    try {
+      const page = await fetchCatalogPage(row.addon, row.catalog, extras);
+      if (request !== catalogPageRequest || catalogPage?.key !== row.key) return;
+      const items = uniqueCatalogItems(reset ? page.items : [...catalogPageItems, ...page.items]);
+      catalogPageDuplicatePages = reset || items.length > catalogPageItems.length ? 0 : catalogPageDuplicatePages + 1;
+      catalogPageItems = items;
+      catalogPageNextSkip = catalogNextSkip(row.catalog, page.rawItemCount, skip, catalogPageDuplicatePages);
+    } catch (error) {
+      if (request === catalogPageRequest) catalogPageError = message(error);
+    } finally {
+      if (request === catalogPageRequest) catalogPageLoading = false;
+    }
+  }
+
+  function observeCatalogPageEnd(node: HTMLElement) {
+    const panel = node.closest('.catalog-page-panel');
+    if (!panel || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && !selected) void loadCatalogPage();
+    }, { root: panel, rootMargin: '500px' });
+    observer.observe(node);
+    return { destroy: () => observer.disconnect() };
   }
 
   function message(error: unknown): string {
@@ -1263,14 +1505,21 @@
 
   function navigate(next: Tab) {
     openDiscoverDropdown = null;
+    closeCatalogPage();
     if (next === tab) { closeDetail(); return; }
     tabScrollPositions[tab] = window.scrollY;
     const request = ++navigationRequest;
+    dockRestoringScroll = true;
     tab = next;
     closeDetail();
     void tick().then(() => {
       if (request !== navigationRequest) return;
       window.scrollTo(0, tabScrollPositions[next]);
+      window.requestAnimationFrame(() => {
+        if (request !== navigationRequest) return;
+        if (window.scrollY < 48) dockCompact = false;
+        dockRestoringScroll = false;
+      });
     });
   }
 
@@ -1581,10 +1830,10 @@
 </script>
 
 <svelte:head>
-  <title>Bridged Streams · PlayBridge</title>
+  <title>{selected ? `${selected.name} · Bridged Streams` : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
 </svelte:head>
 
-<div class:detail-open={!!selected && !accountPanel && !managing} class="app-shell">
+<div class:detail-open={!!selected && !accountPanel && !managing} class:content-open={!!selected || !!catalogPage} class="app-shell">
   <header class:scrolled={pageScrolled} class="sidebar site-header">
     <button class="brand" onclick={() => navigate('home')} aria-label="Bridged Streams home">
       <span class="brand-mark"><Clapperboard size={23} strokeWidth={2.4} /></span>
@@ -1664,15 +1913,17 @@
       </section>
       {:else}
       {#if featured}
-        <section class="feature-hero" style:background-image={featured.background ? `linear-gradient(90deg, rgba(7,9,13,.97) 0%, rgba(7,9,13,.67) 43%, rgba(7,9,13,.08) 100%), linear-gradient(0deg, #090b0f 1%, transparent 40%), url('${featured.background.replaceAll("'", '%27')}')` : ''}>
+        <section class="feature-hero" aria-label="Featured titles" use:heroGestures>
+          {#key `${featured.type}:${featured.id}`}<img class="feature-art" class:poster-art={!featured.background} src={featured.background || featured.poster} alt="" in:fade={{ duration: motionDuration(380) }} out:fade={{ duration: motionDuration(260) }} />{/key}
+          {#if !featured.background && featured.poster}<img class="feature-poster" src={featured.poster} alt="" />{/if}
           <div class="feature-content">
             <div class="feature-kicker">FEATURED FROM YOUR ADDONS</div>
             {#if featured.logo}<img class="feature-logo" src={featured.logo} alt={featured.name} />{:else}<h1>{featured.name}</h1>{/if}
             <div class="feature-facts">{#if featured.imdbRating}<span><Star size={15} fill="currentColor" /> {featured.imdbRating}/10</span>{/if}{#if featured.releaseInfo}<span>{displayReleaseInfo(featured.releaseInfo)}</span>{/if}<span>{featured.type === 'movie' ? 'Movie' : 'Series'}</span>{#if featured.genres?.length}<span>{featured.genres.slice(0, 2).join(' · ')}</span>{/if}</div>
             <p>{featured.description || 'Discover this title from your connected addons.'}</p>
-            <div class="feature-actions"><button class="feature-play" onclick={() => void openDetail(featured)}><Play size={21} fill="currentColor" /> Play</button><button class="feature-info" onclick={() => void openDetail(featured)} aria-label={`Details for ${featured.name}`}><Info size={21} /> <span>Details</span></button></div>
+            <div class="feature-actions"><button class="feature-play" onclick={() => void openDetail(featured)}><Play size={21} fill="currentColor" /> Play</button><button class="feature-info" onclick={() => void openDetail(featured)} aria-label={`Details for ${featured.name}`}><Info size={21} /> <span>View details</span></button></div>
           </div>
-          {#if featureCandidates.length > 1}<div class="feature-pagination">{#each featureCandidates as candidate, index (candidate.type + candidate.id)}<button class:active={index === featureIndex} onclick={() => featureIndex = index} aria-label={`Feature ${candidate.name}`}></button>{/each}</div>{/if}
+          {#if featureCandidates.length > 1}<div class="feature-pagination" aria-label="Featured titles">{#each featureCandidates as candidate, index (candidate.type + candidate.id)}<button class:active={index === featureIndex} aria-label={`Show ${candidate.name}`} aria-current={index === featureIndex ? 'true' : undefined} onclick={() => selectFeature(index)}></button>{/each}</div>{/if}
         </section>
       {/if}
       <section class="browse">
@@ -1682,8 +1933,8 @@
         {/if}
         {#if loadingCatalogs && !visibleRows.some((row) => row.items.length)}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading catalogs…</div>{/if}
         {#each visibleRows as row (row.key)}
-          <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : 'LIBRARY'} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><ArrowRight size={20} /></div>
-            {#if row.items.length}<div class="media-row">{#each row.items as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
+          <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : 'LIBRARY'} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><button class="catalog-view-all" onclick={() => openCatalogPage(row)} aria-label={`View all ${row.title} from ${row.addon.manifest.name}`} title={`View all ${row.title}`}><ArrowRight size={20} /></button></div>
+            {#if row.items.length}<div class="media-row">{#each row.items as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}{#if row.nextSkip != null}<div class="catalog-row-end" use:observeCatalogRowEnd={row.key}>{#if row.loadingMore}<LoaderCircle size={21} class="spin" />{:else}<button onclick={() => void loadMoreCatalogRow(row.key)} aria-label={`Load more ${row.title}`}>{row.pageError ? 'Retry' : 'More'} <ArrowRight size={17} /></button>{/if}</div>{/if}</div>{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
             {:else if row.loading}<div class="card-skeletons" aria-label={`Loading ${row.title}`}><span></span><span></span><span></span><span></span><span></span></div>{:else if row.error}<div class="row-empty">{row.error}</div>{:else}<div class="row-empty">No titles in this catalog.</div>{/if}
           </section>
         {/each}
@@ -1707,14 +1958,29 @@
     </div>
   {/if}
 
-  <nav class="mobile-nav" class:dock-ready={dockReady} aria-label="Main navigation" bind:this={dockElement}>
-    <span class="dock-indicator" aria-hidden="true" style:width={`${dockIndicatorWidth}px`} style:transform={`translate3d(${dockIndicatorX}px, 0, 0)`}></span>
+  <nav class="mobile-nav" class:dock-ready={dockReady} class:compact={dockCompact} class:interacting={dockInteracting} aria-label="Main navigation" bind:this={dockElement} onpointerdown={onDockPointerDown} onpointermove={onDockPointerMove} onpointerup={onDockPointerUp} onpointercancel={() => { dockInteracting = false; dockStretch = 1; updateDockIndicator(); }} onclickcapture={(event) => { if (suppressDockClick) { event.preventDefault(); event.stopPropagation(); suppressDockClick = false; } }}>
+    <span class="dock-indicator" aria-hidden="true" style={`--dock-x:${dockIndicatorX}px;--dock-width:${dockIndicatorWidth}px;--dock-offset:${dockPosition * 100}%;--dock-stretch:${dockStretch}`}></span>
     <button class:active={tab === 'home'} aria-current={tab === 'home' ? 'page' : undefined} onclick={() => navigate('home')}><Home size={20} /><span>Home</span></button>
     <button class:active={tab === 'search'} aria-current={tab === 'search' ? 'page' : undefined} onclick={() => navigate('search')}><Search size={20} /><span>Search</span></button>
     <button class:active={tab === 'library'} aria-current={tab === 'library' ? 'page' : undefined} onclick={() => navigate('library')}><Library size={20} /><span>Library</span></button>
     <button class:active={tab === 'settings'} aria-current={tab === 'settings' ? 'page' : undefined} onclick={() => navigate('settings')}><Settings2 size={20} /><span>Settings</span></button>
   </nav>
 </div>
+
+{#if catalogPage}
+  <div class="catalog-page-overlay" role="presentation" aria-hidden={selected ? 'true' : undefined} in:fade={{ duration: motionDuration(210), easing: cubicOut }} out:fade={{ duration: motionDuration(150), easing: cubicIn }}>
+    <div class="catalog-page-panel" role="dialog" aria-modal="true" aria-label={`${catalogPage.title} catalog`}>
+      <header class="catalog-page-header"><button class="catalog-page-back" onclick={closeCatalogPage} aria-label="Back to home"><ArrowLeft size={21} /></button><div><span class="section-type">{catalogPage.addon.manifest.name}</span><h1>{catalogPage.title}</h1></div></header>
+      <div class="catalog-page-content">
+        {#if catalogPageItems.length}<div class="poster-grid catalog-page-grid">{#each catalogPageItems as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{/if}
+        {#if catalogPageLoading && !catalogPageItems.length}<div class="catalog-page-skeletons"><span></span><span></span><span></span><span></span><span></span><span></span></div>{/if}
+        {#if catalogPageError}<div class="catalog-page-message" role="alert">{catalogPageError} <button onclick={() => void loadCatalogPage(catalogPageNextSkip == null)}>Retry</button></div>{/if}
+        {#if !catalogPageLoading && !catalogPageError && !catalogPageItems.length}<div class="row-empty">No titles in this catalog.</div>{/if}
+        {#if catalogPageNextSkip != null}<div class="catalog-page-footer" use:observeCatalogPageEnd>{#if catalogPageLoading}<LoaderCircle size={22} class="spin" />{:else}<button onclick={() => void loadCatalogPage()}>Load more <ArrowRight size={17} /></button>{/if}</div>{/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => status = ''} aria-label="Dismiss"><X size={16} /></button></div>{/if}
 
