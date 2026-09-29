@@ -17,6 +17,8 @@ Open `http://127.0.0.1:5182`. Install at least one Stremio-compatible addon with
 
 The site serves `/.well-known/playbridge-app.json`, which opts it into PlayBridge's Bridged Apps launcher. Open the deployed HTTPS site, or a local development server at a private LAN address such as `http://192.168.1.23:5182`, in PlayBridge's Android browser and choose **Add Bridged App** from the menu. Its tile then appears on the PlayBridge dashboard. Tapping the tile opens the site without browser chrome; Android Back returns to the dashboard after the site's own navigation history. Long press the tile to remove it. Installation and casting permission are separate.
 
+Production builds register a service worker that caches only versioned app files (JavaScript, CSS, fonts, images, and WebAssembly) for faster repeat loads. The page document still comes from the network, so new deployments can load new asset hashes. Addon, account, stream, and media requests are excluded. Vite development builds do not register the worker.
+
 Sports Streams and some other addons mark direct HTTP sources `notWebReady` even when the playlist and segments permit browser requests. These sources appear with **Try in browser** and **Cast** actions. Browser playback can still fail if the media host blocks it. Stream lookup errors now appear beside the source list.
 
 ## Stremio account sync

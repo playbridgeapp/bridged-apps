@@ -40,6 +40,8 @@ Open [http://localhost:5180](http://localhost:5180).
 
 The Jellyfin site serves `/.well-known/playbridge-app.json` so PlayBridge can offer **Add Bridged App** in its browser menu. Open the deployed HTTPS site, or a local development server at a private LAN address such as `http://192.168.1.23:5180`, in PlayBridge's Android browser and choose that menu action. Its dashboard tile opens Jellyfin without browser controls; casting still uses the existing PlayBridge bridge and its separate permission. Jellyfin and Bridged Streams must use separate origins to appear as separate tiles.
 
+Production builds register a service worker that caches only versioned app files (JavaScript, CSS, fonts, images, and WebAssembly) for faster repeat loads. The page document still comes from the network, so new deployments can load new asset hashes. Jellyfin API responses and media are excluded; the existing library cache handles library data separately. Vite development builds do not register the worker.
+
 ### Build & Typecheck
 
 ```bash
