@@ -1,0 +1,6 @@
+{
+  "protocol": "playbridge-app-v1",
+  "name": "Bridged Streams",
+  "start_url": "/",
+  "icon_url": "/bridged-streams.png"
+}

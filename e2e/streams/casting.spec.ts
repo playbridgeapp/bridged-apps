@@ -91,6 +91,31 @@ test('opens a movie in MoviPlayer without starting a cast', async ({ page }) => 
   await expect(page.locator('movi-player')).toHaveCount(0);
 });
 
+test('keeps a copyable report when the MoviPlayer module fails to load', async ({ page }) => {
+  await openAddons(page);
+  await page.getByRole('switch', { name: 'Native player fallback' }).uncheck();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
+  await goTab(page, 'Home');
+  await page.route('**/*element*slim*.js*', (route) => route.abort());
+  await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await page.locator('.detail-play').click();
+  await page.locator('.stream-overlay .watch-button').click();
+  const player = page.getByRole('dialog', { name: 'Now playing Sample Film' });
+  await expect(player.getByText(/MoviPlayer could not load/)).toBeVisible();
+  await player.locator('details.playback-diagnostics summary').click();
+  const report = player.getByRole('textbox', { name: 'Playback diagnostic report' });
+  await expect(report).toHaveValue(/player import failed/);
+  expect(await report.inputValue()).not.toContain('http://127.0.0.1:5182');
+  await player.getByRole('button', { name: 'Check player engine' }).click();
+  await expect(report).toHaveValue(/"event": "WASM compile"/, { timeout: 20000 });
+  await expect(player.getByRole('status')).toContainText('Player engine check passed');
+  await page.reload();
+  await openAddons(page);
+  await page.getByRole('dialog', { name: 'Manage addons' }).locator('details.playback-diagnostics summary').click();
+  const settingsReport = page.getByRole('dialog', { name: 'Manage addons' }).getByRole('textbox', { name: 'Playback diagnostic report' });
+  await expect(settingsReport).toHaveValue(/player import failed/);
+});
+
 test('resolves the next episode only after PlayBridge requests it', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.getByRole('button', { name: /Pilot/ }).click();

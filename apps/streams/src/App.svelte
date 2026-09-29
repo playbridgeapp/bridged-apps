@@ -10,6 +10,7 @@
   import { cachedCatalog, clearCatalogCache, saveCatalogCache, savedCatalogRefresh, saveCatalogRefresh } from './lib/catalog-cache';
   import { readPersistentSession, writePersistentSession } from './lib/persistent-session';
   import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveStremioLibrary } from './lib/startup-cache';
+  import { appendPlaybackDiagnostic, clearPlaybackDiagnostics, readPlaybackDiagnostics, safeDiagnosticText } from './lib/playback-diagnostics';
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
   import { bridgeAvailable, castMovie, directCast, lazyCastSeries, stopLinkedCast } from './lib/cast';
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
@@ -19,6 +20,7 @@
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioSession } from './lib/nuvio';
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
+  import moviWasmUrl from 'movi-player/movi.wasm?url';
 
   type CatalogRow = { key: string; title: string; addon: InstalledAddon; catalog: AddonCatalog; items: MetaPreview[]; loading?: boolean; error?: string; nextSkip?: number | null; loadingMore?: boolean; duplicatePages?: number; pageError?: string };
   type StreamSource = { key: string; name: string; addon?: InstalledAddon; plugin?: PluginRepository };
@@ -27,7 +29,11 @@
   const NUVIO_PROFILE_KEY = 'bridged-streams.nuvio-profile.v1';
   const DISCOVER_CATALOG_KEY = 'bridged-streams.discover-catalog.v1';
   const SEARCH_HISTORY_KEY = 'bridged-streams.search-history.v1';
+  const NATIVE_PLAYER_FALLBACK_KEY = 'bridged-streams.native-player-fallback.v1';
   const SEARCH_HISTORY_DELAY_MS = 2500;
+  function savedNativePlayerFallback(): boolean {
+    try { return localStorage.getItem(NATIVE_PLAYER_FALLBACK_KEY) !== 'false'; } catch { return true; }
+  }
   function savedSearchHistory(): string[] {
     try {
       const value: unknown = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]');
@@ -191,7 +197,99 @@
   let playerReady = false;
   let playerLoading = false;
   let playerError = '';
+  let nativePlayerFallback = savedNativePlayerFallback();
   let playerElement: HTMLElement | null = null;
+  let playbackDiagnostics = readPlaybackDiagnostics();
+  let playbackAttempt = Math.max(0, ...playbackDiagnostics.map((entry) => entry.attempt));
+  let diagnosticsChecking = false;
+  let diagnosticsStatus = '';
+
+  function saveNativePlayerFallback() {
+    try { localStorage.setItem(NATIVE_PLAYER_FALLBACK_KEY, String(nativePlayerFallback)); }
+    catch { /* The setting still works for this session when storage is unavailable. */ }
+  }
+
+  function logPlayback(event: string, detail = '') {
+    playbackDiagnostics = appendPlaybackDiagnostic(playbackDiagnostics, playbackAttempt, event, detail);
+  }
+
+  function logPlayerAssets() {
+    for (const item of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
+      try {
+        const url = new URL(item.name);
+        if (url.origin !== location.origin) continue;
+        const name = url.pathname.split('/').pop() || '';
+        if (!/element[._-]slim|^movi[-.].*\.wasm$/i.test(name)) continue;
+        const responseStatus = (item as PerformanceResourceTiming & { responseStatus?: number }).responseStatus;
+        logPlayback('asset timing', `${name}: HTTP ${responseStatus || 'unknown'}; ${Math.round(item.duration)}ms, transferred ${item.transferSize} bytes, decoded ${item.decodedBodySize} bytes`);
+      } catch { /* Ignore malformed browser timing entries. */ }
+    }
+  }
+
+  function playbackReport(entries: typeof playbackDiagnostics): string {
+    return JSON.stringify({
+      app: 'Bridged Streams',
+      player: 'movi-player 0.4.0 slim',
+      browser: safeDiagnosticText(navigator.userAgent),
+      online: navigator.onLine,
+      secureContext: isSecureContext,
+      webAssembly: typeof WebAssembly !== 'undefined',
+      webCodecs: typeof VideoDecoder !== 'undefined',
+      nativeFallback: nativePlayerFallback,
+      wasmAsset: new URL(moviWasmUrl, location.href).pathname.split('/').pop(),
+      entries
+    }, null, 2);
+  }
+
+  async function copyPlaybackReport() {
+    const report = playbackReport(playbackDiagnostics);
+    try {
+      await navigator.clipboard.writeText(report);
+      diagnosticsStatus = 'Playback report copied.';
+    } catch {
+      const field = document.createElement('textarea');
+      field.value = report;
+      field.style.position = 'fixed';
+      field.style.opacity = '0';
+      document.body.append(field);
+      field.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); }
+      catch { /* The report remains selectable below. */ }
+      field.remove();
+      diagnosticsStatus = copied ? 'Playback report copied.' : 'Select the report text below to copy it.';
+    }
+  }
+
+  function removePlaybackReport() {
+    clearPlaybackDiagnostics();
+    playbackDiagnostics = [];
+    diagnosticsStatus = 'Playback history cleared.';
+  }
+
+  async function runPlaybackChecks() {
+    if (diagnosticsChecking) return;
+    diagnosticsChecking = true;
+    diagnosticsStatus = 'Checking the player engine…';
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20000);
+    try {
+      const response = await fetch(moviWasmUrl, { cache: 'no-store', signal: controller.signal });
+      logPlayback('WASM fetch', `HTTP ${response.status}; ${response.headers.get('content-type') || 'unknown type'}`);
+      if (!response.ok) throw new Error(`WASM asset returned HTTP ${response.status}`);
+      const binary = await response.arrayBuffer();
+      logPlayback('WASM bytes', `${binary.byteLength}; valid=${WebAssembly.validate(binary)}`);
+      const module = await WebAssembly.compile(binary);
+      logPlayback('WASM compile', `ok; ${WebAssembly.Module.exports(module).length} exports`);
+      diagnosticsStatus = 'Player engine check passed. Copy the report if playback still fails.';
+    } catch (error) {
+      logPlayback('WASM check failed', safeDiagnosticText(error));
+      diagnosticsStatus = 'Player engine check failed. Copy the report for debugging.';
+    } finally {
+      clearTimeout(timeout);
+      diagnosticsChecking = false;
+    }
+  }
   let featureIndex = 0;
   let activeAddonFilter = '';
   let detailExpanded = false;
@@ -1748,16 +1846,26 @@
     const meta = selected;
     const chosenEpisode = episode;
     const request = detailRequest;
+    playbackAttempt += 1;
+    logPlayback('play requested', `type=${meta.type}; fallback=${nativePlayerFallback}; custom element=${!!customElements.get('movi-player')}`);
     playerLoading = true;
     playerError = '';
+    const importStarted = performance.now();
     try {
-      if (!customElements.get('movi-player')) await import('movi-player/element');
+      if (!customElements.get('movi-player')) await import('movi-player/element/slim');
       playerReady = true;
-    } catch {
+      logPlayback('player import ready', `${Math.round(performance.now() - importStarted)}ms`);
+    } catch (error) {
       playerReady = false;
+      logPlayback('player import failed', `${Math.round(performance.now() - importStarted)}ms; ${safeDiagnosticText(error)}`);
+      logPlayerAssets();
+      if (!nativePlayerFallback) playerError = 'MoviPlayer could not load. Open Playback diagnostics below for details.';
     }
     playerLoading = false;
-    if (request !== detailRequest || selected !== meta) return;
+    if (request !== detailRequest || selected !== meta) {
+      logPlayback('play cancelled', 'The selected title changed while the player loaded.');
+      return;
+    }
     const video = meta.type === 'series' ? chosenEpisode : null;
     playing = { meta, stream, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress), resumeApplied: false };
   }
@@ -1787,6 +1895,7 @@
   }
 
   function closePlayer() {
+    if (playing) logPlayback('player closed');
     if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
     playerElement?.removeAttribute('src');
     playing = null;
@@ -1814,14 +1923,29 @@
     } catch { /* Retry when the player becomes ready to seek. */ }
   }
 
+  function browserMetadataReady(event: Event) {
+    const duration = Number((event.currentTarget as HTMLMediaElement).duration);
+    logPlayback('metadata ready', Number.isFinite(duration) ? `duration=${Math.round(duration)}s` : 'duration unknown');
+    applyBrowserResume(event);
+  }
+
+  function browserCanPlay(event: Event) {
+    logPlayback('can play');
+    applyBrowserResume(event);
+  }
+
   function browserTimeUpdate(event: Event) {
     browserWatchState(event, 'playing');
   }
 
   function browserPlaybackError(event: Event) {
     const detail = (event as CustomEvent<unknown>).detail;
-    const reason = detail instanceof Error ? detail.message : '';
-    playerError = reason && !/https?:\/\//i.test(reason) ? `Playback failed: ${reason}. Try another source or cast with PlayBridge.`
+    const reason = detail instanceof Error ? detail.message
+      : typeof detail === 'string' ? detail
+      : detail && typeof detail === 'object' && 'message' in detail && typeof detail.message === 'string' ? detail.message : '';
+    logPlayback('playback error', reason || `event=${event.type}; nativeCode=${event.currentTarget instanceof HTMLVideoElement ? event.currentTarget.error?.code || 0 : 'n/a'}`);
+    logPlayerAssets();
+    playerError = reason ? `Playback failed: ${safeDiagnosticText(reason)}. Try another source or cast with PlayBridge.`
       : 'This source could not play in the browser. Its host may block browser requests or require headers the browser cannot send. Try another source or cast with PlayBridge.';
   }
 
@@ -1830,6 +1954,7 @@
   }
 
   function browserPlaybackEnded(event: Event) {
+    logPlayback('playback ended');
     browserWatchState(event, 'ended');
     void browserEnded();
   }
@@ -1865,6 +1990,8 @@
         || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl && candidate.name === current.stream.name)
         || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl);
       if (stream) {
+        playbackAttempt += 1;
+        logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
         playing = { meta: current.meta, video: next, stream,
           resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress), resumeApplied: false };
         episode = next;
@@ -2118,6 +2245,8 @@
       <p class="panel-copy">Set addon priority, enable the resources each addon provides, refresh its manifest, or open its configuration page. Nuvio plugin repositories add browser-compatible stream scrapers.</p>
       <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
       <div class="catalog-cache-controls"><strong>Catalog refresh</strong><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
+      <label class="playback-fallback-control"><span><strong>Native player fallback</strong><small>If MoviPlayer cannot play a stream, try the browser’s video player. On by default.</small></span><input type="checkbox" role="switch" bind:checked={nativePlayerFallback} onchange={saveNativePlayerFallback} aria-label="Native player fallback" /></label>
+      <details class="playback-diagnostics"><summary>Playback diagnostics <span>{playbackDiagnostics.length} events</span></summary><p>Recent player attempts remain on this device across refreshes. Reports omit stream URLs, headers, and account credentials.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button><button type="button" onclick={removePlaybackReport}>Clear history</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>
       <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addAddon(); }}><input type="url" bind:value={addonInput} placeholder="https://addon.example/manifest.json" aria-label="Addon manifest URL" required /><button type="submit" disabled={adding}>{#if adding}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
       {#if account || nuvioSession}<label class="source-destination">Install in <select bind:value={addonDestination}><option value="local">This browser</option>{#if account}<option value="stremio">Stremio account</option>{/if}{#if nuvioSession && nuvioProfileReady}<option value="nuvio">Nuvio profile</option>{/if}</select></label>{/if}
       {#if addonError}<p class="error-message" role="alert">{addonError}</p>{/if}
@@ -2233,13 +2362,14 @@
     <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Back to streams</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
     <div class="player-stage">
       {#if playerReady}
-        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} controls autoplay playsinline theme="dark" sw="auto" fallback="native" onloadedmetadata={applyBrowserResume} oncanplay={applyBrowserResume} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => playerError = ''}></movi-player>
-      {:else}
+        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('playing')} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
+      {:else if nativePlayerFallback}
         <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
-        <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={applyBrowserResume} oncanplay={applyBrowserResume} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={() => playerError = 'This source could not play in the browser. Try another source.'}></video>
+        <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('native playing')} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>
       {/if}
     </div>
     <div class="player-bottom"><div><span class="eyebrow">PLAYING IN YOUR BROWSER</span><h2>{playing.video?.title || playing.meta.name}</h2><p>{playing.stream.name || playing.stream.title || playing.stream.addonName} · {playing.stream.addonName}</p></div>{#if bridge}<button class="cast-button" onclick={() => void castPlaying()}><Cast size={17} /> Cast to PlayBridge</button>{/if}</div>
     {#if playerError}<p class="player-error" role="alert">{playerError}</p>{/if}
+    {#if playerError}<details class="playback-diagnostics player-diagnostics"><summary>Playback diagnostics <span>Open report</span></summary><p>Run an engine check, then copy the report. Stream URLs, headers, and account credentials are omitted.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>{/if}
   </div>
 {/if}

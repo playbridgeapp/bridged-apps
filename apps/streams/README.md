@@ -13,6 +13,10 @@ pnpm dev:streams
 
 Open `http://127.0.0.1:5182`. Install at least one Stremio-compatible addon with a catalog and metadata resource to browse titles. Add configured manifest URLs directly. Home shows featured titles, Continue Watching, Browse by Addon, and catalog rows. Search has a search bar and a Discover feed with Type, Catalog, and Genre dropdowns; compatible catalogs load more titles as you scroll. Catalogs that require an option use the addon's first listed option by default, such as the current year in Cinemeta's New rows. Nuvio plugin repositories add stream sources to those titles; they do not supply catalogs.
 
+## Bridged Apps on Android
+
+The site serves `/.well-known/playbridge-app.json`, which opts it into PlayBridge's Bridged Apps launcher. Open the deployed HTTPS site, or a local development server at a private LAN address such as `http://192.168.1.23:5182`, in PlayBridge's Android browser and choose **Add Bridged App** from the menu. Its tile then appears on the PlayBridge dashboard. Tapping the tile opens the site without browser chrome; Android Back returns to the dashboard after the site's own navigation history. Long press the tile to remove it. Installation and casting permission are separate.
+
 Sports Streams and some other addons mark direct HTTP sources `notWebReady` even when the playlist and segments permit browser requests. These sources appear with **Try in browser** and **Cast** actions. Browser playback can still fail if the media host blocks it. Stream lookup errors now appear beside the source list.
 
 ## Stremio account sync
@@ -39,7 +43,9 @@ Local addon order and switches stay in this browser. Stremio addon order syncs t
 
 ## Casting
 
-- Choose **Play** on a stream to watch in the website with MoviPlayer. It is loaded only when playback starts and supports MKV, MP4, HLS, DASH, and other formats supported by the player. The source must allow browser requests, including media segments and required headers. A native video fallback is used if MoviPlayer cannot load.
+- Choose **Play** on a stream to watch in the website with MoviPlayer. It is loaded only when playback starts and supports MKV, MP4, HLS, DASH, and other formats supported by the player. Its FFmpeg WebAssembly engine is served as a separate, versioned `.wasm` asset. Deploy the entire `dist` directory so that asset is available. The source must allow browser requests, including media segments and required headers. A native video fallback is used if MoviPlayer cannot load.
+- **Settings → Addons and playback → Native player fallback** controls whether the browser's video player is tried when MoviPlayer cannot play or load. It is on by default and saved in this browser.
+- If playback fails, open **Playback diagnostics** below the error, run **Check player engine**, and copy the report. The same report is available under **Settings → Addons and playback** after closing the player or refreshing the page. It records recent import and playback events, asset timing, browser capabilities, and a direct WASM fetch and compile check. Stream URLs, request headers, and account credentials are excluded. Use **Clear history** to remove the saved entries.
 - Browser playback reports movie and TV watch progress to connected accounts. TV playback looks for the next episode from the same source when the current episode ends.
 - Movies use `window.playbridge.linkCast()` with one item when available so watch progress can sync. Older PlayBridge versions fall back to `cast()`.
 - Series use `window.playbridge.linkCast()` with the chosen first episode. The client fetches further episode streams only after a `needitems` event, then supplies them through `provideItems()`.

@@ -1,0 +1,6 @@
+{
+  "protocol": "playbridge-app-v1",
+  "name": "PlayBridge Jellyfin",
+  "start_url": "/",
+  "icon_url": "/jellyfin.png"
+}

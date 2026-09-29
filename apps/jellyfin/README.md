@@ -29,17 +29,21 @@ A modern, responsive Jellyfin Web client clone built with **Svelte 5** and **Vit
 ## Development
 
 ```bash
-cd web/jellyfin
+cd bridged-apps
 pnpm install
-pnpm dev
+pnpm dev:jellyfin
 ```
 
 Open [http://localhost:5180](http://localhost:5180).
 
+### Add to PlayBridge on Android
+
+The Jellyfin site serves `/.well-known/playbridge-app.json` so PlayBridge can offer **Add Bridged App** in its browser menu. Open the deployed HTTPS site, or a local development server at a private LAN address such as `http://192.168.1.23:5180`, in PlayBridge's Android browser and choose that menu action. Its dashboard tile opens Jellyfin without browser controls; casting still uses the existing PlayBridge bridge and its separate permission. Jellyfin and Bridged Streams must use separate origins to appear as separate tiles.
+
 ### Build & Typecheck
 
 ```bash
-pnpm check
-pnpm build
-pnpm preview
+pnpm --filter @bridged-apps/jellyfin check
+pnpm build:jellyfin
+pnpm --filter @bridged-apps/jellyfin preview
 ```
