@@ -110,6 +110,61 @@ test('resolves the next episode only after PlayBridge requests it', async ({ pag
   expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
 });
 
+test('selects another season from the desktop detail menu', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [
+    { id: 'tt200:1:1', season: 1, episode: 1, title: 'Pilot' },
+    { id: 'tt200:2:1', season: 2, episode: 1, title: 'Season Two Premiere' }
+  ] } }, headers: { 'access-control-allow-origin': '*' } }));
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.locator('.season-trigger').click();
+  await page.locator('#season-options').getByRole('button', { name: /Season 2/ }).click();
+  await expect(page.locator('.season-trigger')).toContainText('Season 2');
+  await expect(page.getByRole('button', { name: /Season Two Premiere/ })).toBeVisible();
+});
+
+test('shows recent searches only when the history button is opened', async ({ page }) => {
+  await goTab(page, 'Search');
+  const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  await input.fill('Sample');
+  await page.locator('.search-submit').click();
+  await expect(page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+  await expect(page.locator('.search-form').getByRole('button', { name: 'Recent searches' })).toBeEnabled();
+
+  await page.reload();
+  await goTab(page, 'Search');
+  const restoredInput = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  await restoredInput.focus();
+  await expect(page.getByRole('group', { name: 'Recent searches' })).toHaveCount(0);
+  const historyButton = page.locator('.search-form').getByRole('button', { name: 'Recent searches' });
+  await historyButton.click();
+  await expect(page.getByRole('group', { name: 'Recent searches' }).getByRole('button', { name: 'Sample', exact: true })).toBeVisible();
+  await historyButton.click();
+  await expect(page.getByRole('group', { name: 'Recent searches' })).toHaveCount(0);
+  await historyButton.click();
+  await page.getByRole('group', { name: 'Recent searches' }).getByRole('button', { name: 'Sample', exact: true }).click();
+  await expect(restoredInput).toHaveValue('Sample');
+  await expect(page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+});
+
+test('saves only the settled search text to history', async ({ page }) => {
+  await goTab(page, 'Search');
+  const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  for (const partial of ['a', 'av', 'ave']) {
+    await input.fill(partial);
+    await page.waitForTimeout(450);
+  }
+  await input.fill('avengers');
+  await expect(page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+  const historyButton = page.locator('.search-form').getByRole('button', { name: 'Recent searches' });
+  await expect(historyButton).toBeDisabled();
+  await expect(historyButton).toBeEnabled({ timeout: 5000 });
+  await historyButton.click();
+  const history = page.getByRole('group', { name: 'Recent searches' });
+  await expect(history.locator('.search-history-query')).toHaveCount(1);
+  await expect(history.getByRole('button', { name: 'avengers', exact: true })).toBeVisible();
+});
+
 test('continues to the next episode in browser playback', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Series' }).click();
   await page.getByRole('button', { name: /Pilot/ }).click();

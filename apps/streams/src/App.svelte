@@ -2,7 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
-  import { ArrowLeft, ArrowRight, Bookmark, Cast, Check, ChevronDown, Clapperboard, Film, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
+  import { ArrowLeft, ArrowRight, Bookmark, Cast, Check, ChevronDown, Clapperboard, Film, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
@@ -26,6 +26,15 @@
   type DiscoverDropdown = 'type' | 'catalog' | 'genre';
   const NUVIO_PROFILE_KEY = 'bridged-streams.nuvio-profile.v1';
   const DISCOVER_CATALOG_KEY = 'bridged-streams.discover-catalog.v1';
+  const SEARCH_HISTORY_KEY = 'bridged-streams.search-history.v1';
+  const SEARCH_HISTORY_DELAY_MS = 2500;
+  function savedSearchHistory(): string[] {
+    try {
+      const value: unknown = JSON.parse(localStorage.getItem(SEARCH_HISTORY_KEY) || '[]');
+      return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && !!item.trim())
+        .map((item) => item.trim().slice(0, 100)).slice(0, 8) : [];
+    } catch { return []; }
+  }
   const motionDuration = (milliseconds: number) => typeof window !== 'undefined'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : milliseconds;
   function savedDiscoverCatalogKey(): string {
@@ -141,9 +150,12 @@
   let openDiscoverDropdown: DiscoverDropdown | null = null;
   let discoverDropdownTrigger: HTMLButtonElement | null = null;
   let search = '';
+  let searchHistory = savedSearchHistory();
+  let searchHistoryOpen = false;
   let searchResults: MetaPreview[] = [];
   let searching = false;
   let searchTimer: number | undefined;
+  let searchHistoryTimer: number | undefined;
   let loadingCatalogs = false;
   let managing = false;
   let addonInput = '';
@@ -400,12 +412,20 @@
       if (event.key !== 'Escape') return;
       if (openDiscoverDropdown) closeDiscoverMenu();
       else if (seasonPickerOpen) seasonPickerOpen = false;
+      else if (searchHistoryOpen) searchHistoryOpen = false;
+    };
+    const closeMenusOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (seasonPickerOpen && !target.closest('.season-picker, .season-mobile-sheet')) seasonPickerOpen = false;
+      if (searchHistoryOpen && !target.closest('.search-entry')) searchHistoryOpen = false;
     };
     updateScroll();
     window.addEventListener('scroll', updateScroll, { passive: true });
     window.addEventListener('touchmove', markScrollGesture, { passive: true });
     window.addEventListener('wheel', markScrollGesture, { passive: true });
     window.addEventListener('keydown', closeSeasonOnEscape);
+    document.addEventListener('pointerdown', closeMenusOnOutsidePointer);
     tmdbKey = savedTmdbKey();
     const refreshSettings = savedCatalogRefresh();
     autoRefreshCatalogs = refreshSettings.auto;
@@ -427,7 +447,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
+    return () => { dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
   });
 
   async function restoreAddons() {
@@ -1324,6 +1344,12 @@
     const request = ++searchRequest;
     searchResults = [];
     if (!query) { searching = false; return; }
+    window.clearTimeout(searchHistoryTimer);
+    searchHistoryTimer = window.setTimeout(() => {
+      if (search.trim() !== query) return;
+      searchHistory = [query, ...searchHistory.filter((item) => item.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 8);
+      saveSearchHistory();
+    }, SEARCH_HISTORY_DELAY_MS);
     searching = true;
     const targets = catalogs(addons).flatMap(({ addon, catalog }) => {
       if (!(catalog.extra || []).some((extra) => extra.name === 'search')) return [];
@@ -1341,9 +1367,29 @@
     }
   }
 
+  function saveSearchHistory() {
+    try { localStorage.setItem(SEARCH_HISTORY_KEY, JSON.stringify(searchHistory)); }
+    catch { /* Search works when local storage is unavailable. */ }
+  }
+
+  function useSearchHistory(query: string) {
+    scheduleSearch(query);
+    window.clearTimeout(searchTimer);
+    searchHistoryOpen = false;
+    void runSearch();
+  }
+
+  function removeSearchHistory(query: string) {
+    if (search.trim() === query) window.clearTimeout(searchHistoryTimer);
+    searchHistory = searchHistory.filter((item) => item !== query);
+    saveSearchHistory();
+  }
+
   function scheduleSearch(value: string) {
     search = value;
+    searchHistoryOpen = false;
     if (searchTimer) window.clearTimeout(searchTimer);
+    window.clearTimeout(searchHistoryTimer);
     ++searchRequest;
     searchResults = [];
     searching = !!value.trim();
@@ -1869,12 +1915,23 @@
       <section class="search-page search-home">
         <div class="eyebrow">FIND SOMETHING TO WATCH</div>
         <h1>Search</h1>
-        <form class="search-form" onsubmit={(event) => { event.preventDefault(); if (searchTimer) window.clearTimeout(searchTimer); void runSearch(); }}>
-          <Search size={21} />
-          <input value={search} oninput={(event) => scheduleSearch(event.currentTarget.value)} placeholder="Movies, TV shows, sports..." aria-label="Search movies, TV shows, and sports" />
-          {#if search}<button class="search-clear" type="button" onclick={() => scheduleSearch('')} aria-label="Clear search"><X size={18} /></button>{/if}
-          <button class="search-submit" type="submit">Search <ArrowRight size={18} /></button>
-        </form>
+        <div class="search-entry" onfocusout={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) searchHistoryOpen = false; }}>
+          <form class="search-form" onsubmit={(event) => { event.preventDefault(); if (searchTimer) window.clearTimeout(searchTimer); searchHistoryOpen = false; void runSearch(); }}>
+            <Search size={21} />
+            <input value={search} oninput={(event) => scheduleSearch(event.currentTarget.value)} placeholder="Movies, TV shows, sports..." aria-label="Search movies, TV shows, and sports" autocomplete="off" />
+            <button class="search-history-toggle" type="button" onclick={() => searchHistoryOpen = !searchHistoryOpen} disabled={!searchHistory.length} aria-label="Recent searches" aria-expanded={searchHistoryOpen} aria-controls="search-history-list" title={searchHistory.length ? 'Recent searches' : 'No recent searches'}><History size={18} /></button>
+            {#if search}<button class="search-clear" type="button" onclick={() => scheduleSearch('')} aria-label="Clear search"><X size={18} /></button>{/if}
+            <button class="search-submit" type="submit">Search <ArrowRight size={18} /></button>
+          </form>
+          {#if searchHistoryOpen && searchHistory.length}
+            <div id="search-history-list" class="search-history" role="group" aria-label="Recent searches">
+              <div class="search-history-heading"><span>Recent searches</span><button type="button" onclick={() => { window.clearTimeout(searchHistoryTimer); searchHistory = []; saveSearchHistory(); searchHistoryOpen = false; }}>Clear all</button></div>
+              {#each searchHistory as query (query)}
+                <div class="search-history-row"><button class="search-history-query" type="button" onclick={() => useSearchHistory(query)}><Search size={16} /><span>{query}</span></button><button class="search-history-remove" type="button" onclick={() => removeSearchHistory(query)} aria-label={`Remove ${query} from search history`}><X size={16} /></button></div>
+              {/each}
+            </div>
+          {/if}
+        </div>
       </section>
       {#if search.trim()}
         <section class="search-results browse" aria-label="Search results">
@@ -2162,7 +2219,6 @@
         {#if relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
       </div>
       {#if seasonPickerOpen}
-        <button class="season-menu-scrim" onclick={() => seasonPickerOpen = false} aria-label="Close season menu"></button>
         <div class="season-mobile-sheet" role="dialog" aria-modal="true" aria-label="Choose season">
           <div class="season-mobile-head"><strong>Seasons</strong><button onclick={() => seasonPickerOpen = false} aria-label="Close seasons"><X size={21} /></button></div>
           <div class="season-wheel" bind:this={seasonWheel} onscroll={seasonWheelScrolled} role="group" aria-label="Seasons">{#each seasonSummaries as item}<button class:active={item.value === season} onclick={() => chooseSeason(item.value)} aria-current={item.value === season ? 'true' : undefined}>{item.label}</button>{/each}</div>
