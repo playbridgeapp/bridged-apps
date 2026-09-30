@@ -18,6 +18,16 @@ async function openAddons(page: Page) {
   await page.getByRole('button', { name: /Addons and playback/ }).click();
 }
 
+async function enableStreamSelection(page: Page) {
+  await openAddons(page);
+  await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).not.toBeChecked();
+  await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
+  await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
+  await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const calls: Array<{ method: string; payload: any }> = [];
@@ -64,8 +74,147 @@ test.beforeEach(async ({ page }) => {
   await page.getByLabel('Addon manifest URL').fill(`${addon}/manifest.json`);
   await page.getByRole('button', { name: 'Install' }).first().click();
   const manager = page.getByRole('dialog', { name: 'Manage addons' });
-  await expect(manager.getByText('Test Catalog', { exact: true })).toBeVisible();
+  await expect(manager.locator('.addon-management-card').getByText('Test Catalog', { exact: true })).toBeVisible();
   await manager.getByRole('button', { name: 'Close' }).click();
+});
+
+test('automatically plays a matching release, saves preferences, and leaves Back and reload manual', async ({ page }) => {
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: '720p WEB-DL', url: 'https://media.test/low.mp4' },
+    { name: '1080p REMUX', url: 'https://media.test/remux.mp4' },
+    { name: '1080p WEB-DL', url: 'https://media.test/matching.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await enableStreamSelection(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/matching.mp4');
+  await page.getByRole('button', { name: 'Choose another stream' }).click();
+  await expect(page.locator('.stream-panel')).toBeVisible();
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  await page.reload();
+  await expect(page.locator('.stream-results .stream-result')).toHaveCount(3);
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  await page.locator('.stream-result').filter({ hasText: '720p WEB-DL' }).getByRole('button', { name: 'Play', exact: true }).click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/low.mp4');
+  await page.goto('/#/settings/addons');
+  await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).toBeChecked();
+  await expect(page.getByLabel('Preferred resolution', { exact: true })).toHaveValue('1080p');
+  await expect(page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true })).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('falls back to the manual stream list when required filters have no match', async ({ page }) => {
+  await enableStreamSelection(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('No stream matches your auto-selection settings');
+  await expect(page.getByText('Film Source', { exact: true })).toBeVisible();
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  await page.locator('.stream-result .watch-button').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
+});
+
+test('waits for the preferred provider instead of starting a faster matching provider', async ({ page }) => {
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: '1080p WEB-DL', url: 'https://media.test/fast.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route('https://preferred.test/**', async (route) => {
+    if (route.request().url().endsWith('/manifest.json')) {
+      await route.fulfill({ json: { id: 'preferred', name: 'Preferred Provider', version: '1.0.0', types: ['movie'],
+        resources: ['stream'], catalogs: [] }, headers: { 'access-control-allow-origin': '*' } });
+    } else {
+      requested();
+      await gate;
+      await route.fulfill({ json: { streams: [{ name: '1080p WEB-DL', url: 'https://media.test/preferred.mp4' }] },
+        headers: { 'access-control-allow-origin': '*' } });
+    }
+  });
+  await openAddons(page);
+  await page.getByLabel('Addon manifest URL').fill('https://preferred.test/manifest.json');
+  await page.getByRole('button', { name: 'Install', exact: true }).first().click();
+  await expect(page.getByLabel('Preferred provider', { exact: true }).locator('option', { hasText: 'Preferred Provider' })).toHaveCount(1);
+  await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
+  await page.getByLabel('Preferred provider', { exact: true }).selectOption('https://preferred.test/manifest.json');
+  await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
+  await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await requestStarted;
+  try {
+    await expect(page.locator('.stream-result')).toHaveCount(1);
+    await expect(page.locator('movi-player')).toHaveCount(0);
+  } finally { release(); }
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/preferred.mp4');
+});
+
+test('uses automatic selection only for an explicit cast action', async ({ page }) => {
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: '720p WEB-DL', url: 'https://media.test/low.mp4' },
+    { name: '1080p WEB-DL', url: 'https://media.test/matching.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await enableStreamSelection(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.getByRole('button', { name: 'Cast with auto-selection' }).click();
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  expect(calls[0].payload.items[0].url).toBe('https://media.test/matching.mp4');
+  await expect(page.locator('movi-player')).toHaveCount(0);
+});
+
+for (const target of ['browser', 'cast'] as const) {
+  test(`preserves a manually selected release across episodes during ${target} playback`, async ({ page }) => {
+    await page.route(`${addon}/stream/series/**`, (route) => {
+      const next = route.request().url().includes('1%3A2');
+      return route.fulfill({ json: { streams: [
+        ...(next ? [{ name: '1080p WEB-DL', url: 'https://media.test/preferred-next.mp4', behaviorHints: { bingeGroup: 'other' } }] : []),
+        { name: '720p WEBRip', url: `https://media.test/manual-${next ? '2' : '1'}.mp4`, behaviorHints: { bingeGroup: 'manual' } }
+      ] }, headers: { 'access-control-allow-origin': '*' } });
+    });
+    await enableStreamSelection(page);
+    await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+    await page.getByRole('button', { name: /Pilot/ }).click();
+    await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('No stream matches');
+    if (target === 'browser') {
+      await page.locator('.stream-result .watch-button').click();
+      await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/manual-1.mp4');
+      await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('ended')));
+      await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/manual-2.mp4');
+    } else {
+      await page.locator('.stream-result .cast-button').click();
+      await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'manual-next', count: 1 } })));
+      await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+      const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+      expect(calls[1].payload.items[0].url).toBe('https://media.test/manual-2.mp4');
+    }
+  });
+}
+
+test('keeps automatic cast continuation within the required quality and release filters', async ({ page }) => {
+  await page.route(`${addon}/stream/series/**`, (route) => {
+    const next = route.request().url().includes('1%3A2');
+    return route.fulfill({ json: { streams: next ? [
+      { name: '720p WEB-DL', url: 'https://media.test/wrong-next.mp4', behaviorHints: { bingeGroup: 'original' } },
+      { name: '1080p WEB-DL', url: 'https://media.test/matching-next.mp4', behaviorHints: { bingeGroup: 'different' } }
+    ] : [{ name: '1080p WEB-DL', url: 'https://media.test/matching-first.mp4', behaviorHints: { bingeGroup: 'original' } }] },
+    headers: { 'access-control-allow-origin': '*' } });
+  });
+  await enableStreamSelection(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.getByRole('button', { name: 'Cast with auto-selection' }).click();
+  await expect(page.getByText('Choose an episode to cast.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'auto-next', count: 1 } })));
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  expect(calls[0].payload.items[0].url).toBe('https://media.test/matching-first.mp4');
+  expect(calls[1].payload.items[0].url).toBe('https://media.test/matching-next.mp4');
+  await expect(page.locator('movi-player')).toHaveCount(0);
 });
 
 test('shows a skeleton for an uncached deep link instead of exposing its media ID', async ({ page }) => {
@@ -378,7 +527,7 @@ test('loads required year catalogs and browses and casts sport titles', async ({
   await openAddons(page);
   await page.getByLabel('Addon manifest URL').fill('https://expanded.test/manifest.json');
   await page.getByRole('button', { name: 'Install' }).first().click();
-  await expect(page.getByRole('dialog', { name: 'Manage addons' }).getByText('Expanded Catalogs', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Manage addons' }).locator('.addon-management-card').getByText('Expanded Catalogs', { exact: true })).toBeVisible();
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
   await expect(page.getByRole('heading', { name: 'New Films' })).toBeVisible();
@@ -404,7 +553,7 @@ test('uses a browser-compatible Nuvio scraper for an IMDb movie', async ({ page 
   await openAddons(page);
   await page.getByLabel('Nuvio plugin repository URL').fill('https://plugins.test/manifest.json');
   await page.getByRole('button', { name: 'Install' }).last().click();
-  await expect(page.getByText('Test Plugins')).toBeVisible();
+  await expect(page.getByText('Test Plugins', { exact: true })).toBeVisible();
   await page.getByLabel('TMDB API key').fill('test-key');
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
@@ -565,7 +714,7 @@ test('loads more titles in a catalog row and its dedicated page', async ({ page 
   await openAddons(page);
   await page.getByLabel('Addon manifest URL').fill('https://paging.test/manifest.json');
   await page.getByRole('button', { name: 'Install' }).first().click();
-  await expect(page.getByRole('dialog', { name: 'Manage addons' }).getByText('Paged Addon', { exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Manage addons' }).locator('.addon-management-card').getByText('Paged Addon', { exact: true })).toBeVisible();
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
   await expect(page.getByRole('button', { name: 'View all Paged Movies from Paged Addon' })).toBeVisible();

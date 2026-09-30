@@ -1,4 +1,6 @@
 import { fetchStreams, playableStream } from './addons';
+import { savedStreamSelection, selectionContext, selectNextStream } from './stream-selection';
+import type { StreamSelectionContext } from './stream-selection';
 import type { CastItem, InstalledAddon, LinkedSession, Meta, PluginRepository, Stream, Video } from './types';
 
 let activeSession: LinkedSession | null = null;
@@ -58,15 +60,6 @@ export async function stopLinkedCast(): Promise<void> {
   const session = activeSession;
   activeSession = null;
   if (session) await session.unlink();
-}
-
-function matchingStream(streams: Stream[], selected: Stream): (Stream & { url: string }) | undefined {
-  const playable = streams.filter(playableStream);
-  const group = selected.behaviorHints?.bingeGroup;
-  return playable.find((candidate) => group && candidate.behaviorHints?.bingeGroup === group)
-    || playable.find((candidate) => candidate.addonUrl === selected.addonUrl && candidate.name === selected.name)
-    || playable.find((candidate) => candidate.addonUrl === selected.addonUrl)
-    || playable[0];
 }
 
 function trackSessionProgress(session: LinkedSession,
@@ -134,7 +127,8 @@ export async function lazyCastSeries(
   tmdbKey: string,
   startPositionMs: number,
   onStatus: (message: string) => void,
-  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void
+  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void,
+  selection: StreamSelectionContext = selectionContext(selectedStream, savedStreamSelection())
 ): Promise<void> {
   if (!playableStream(selectedStream)) throw new Error('Choose a direct HTTP stream for linked casting.');
   if (!window.playbridge?.linkCast || !window.playbridge.capabilities?.linkedCast) {
@@ -171,9 +165,9 @@ export async function lazyCastSeries(
       while (batch.length < count && nextCursor < ordered.length) {
         const video = ordered[nextCursor];
         const streams = await fetchStreams(addons, 'series', video.id, plugins, tmdbKey, onStatus);
-        const match = matchingStream(streams, selectedStream);
-        if (!match) {
-          onStatus(`No playable stream for S${video.season}E${video.episode}. Queue ends here.`);
+        const match = selectNextStream(streams.filter(playableStream), selection, true);
+        if (!match || !playableStream(match)) {
+          onStatus(`No matching playable stream for S${video.season}E${video.episode}. Queue ends here.`);
           break;
         }
         batch.push(castItem(meta, match, video));

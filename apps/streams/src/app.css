@@ -608,3 +608,5 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
   .catalog-page-grid .media-card{width:100%;min-width:0}
 }
 @media(prefers-reduced-motion:reduce){.catalog-view-all,.catalog-page-skeletons span{transition:none;animation:none}}
+
+.stream-auto-actions{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}.stream-auto-actions button{min-height:42px}.episode-action-hint{color:#a5c6bb;font-size:12px;margin:9px 0 0}.episode-action-hint button{border:0;background:none;color:#9debd2;font:inherit;cursor:pointer;text-decoration:underline}

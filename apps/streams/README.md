@@ -59,6 +59,14 @@ Local addon order and switches stay in this browser. Stremio addon order syncs t
 
 ## Casting
 
+### Automatic stream selection
+
+Open **Settings → Addons and playback → Auto-select stream**. It is off by default. Choose a resolution (Any, 4K, 1080p, or 720p), an addon or Nuvio scraper as the preferred provider, and one or more release types (Remux, BluRay, WEB-DL, WEBRip, HDTV, DVD, CAM/TS). No selected release types means Any. Settings stay in this browser.
+
+With auto-selection enabled, Play, Resume, Continue Watching, and choosing an episode resolve streams and start a matching source in the browser. Use the detail page's Cast button for automatic casting; on an untracked series it first asks you to choose an episode. The stream page also offers **Play/Resume best match** and **Cast best match**. Resolution and release types are required matches, inferred from stream names and descriptions; unknown values cannot satisfy a specific filter. The preferred provider is tried first among matching streams, followed by other providers. If nothing matches, the complete stream list remains available for manual selection.
+
+**Choose another stream** returns from playback to that list. Refreshing, following a shared URL, or going Back does not trigger automatic playback. A manual stream selection takes priority for that playback session. Subsequent episodes first try its release group or matching provider/name and quality; if that release is unavailable, they use the saved preferences. Automatically selected episodes continue to respect the required filters. Casting remains lazy: the next episode resolves when the receiver requests it. Existing resume positions and progress reporting apply to both selection methods.
+
 - Choose **Play** on a stream to watch in the website with MoviPlayer. It is loaded only when playback starts and supports MKV, MP4, HLS, DASH, and other formats supported by the player. Its FFmpeg WebAssembly engine is served as a separate, versioned `.wasm` asset. Deploy the entire `dist` directory so that asset is available. The source must allow browser requests, including media segments and required headers. A native video fallback is used if MoviPlayer cannot load.
 - **Settings → Addons and playback → Native player fallback** controls whether the browser's video player is tried when MoviPlayer cannot play or load. It is on by default and saved in this browser.
 - If playback fails, open **Playback diagnostics** below the error, run **Check player engine**, and copy the report. The same report is available under **Settings → Addons and playback** after closing the player or refreshing the page. It records recent import and playback events, asset timing, browser capabilities, and a direct WASM fetch and compile check. Stream URLs, request headers, and account credentials are excluded. Use **Clear history** to remove the saved entries.

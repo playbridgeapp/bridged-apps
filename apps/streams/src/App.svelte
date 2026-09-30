@@ -7,6 +7,9 @@
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
+  import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
+  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectNextStream, selectionContext } from './lib/stream-selection';
+  import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
   import { cachedDetailPreview, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
   import { cachedCatalog, clearCatalogCache, saveCatalogCache, savedCatalogRefresh, saveCatalogRefresh } from './lib/catalog-cache';
@@ -133,7 +136,12 @@
   let routeRequest = 0;
   const detailMemory = new Map<string, Meta>();
   const previewMemory = new Map<string, MetaPreview>();
-  const playerMemory = new Map<string, Stream>();
+  type PlaybackChoice = { stream: Stream; selection: StreamSelectionContext };
+  const playerMemory = new Map<string, PlaybackChoice>();
+  let streamSelection = savedStreamSelection();
+  let pendingAutoAction: { type: MediaType; id: string; videoId?: string; action: 'play' | 'cast' } | null = null;
+  let pendingEpisodeAction: 'play' | 'cast' = 'play';
+  let streamActionRequest = 0;
   const routePositions = new Map<string, { window: number; panel: number; episodes: number }>();
   const tabScrollPositions: Record<Tab, number> = { home: 0, search: 0, library: 0, settings: 0 };
   let navigationRequest = 0;
@@ -204,7 +212,7 @@
   let sourceError = '';
   let status = '';
   let bridge = false;
-  let playing: { meta: Meta; stream: Stream; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
+  let playing: { meta: Meta; stream: Stream; selection: StreamSelectionContext; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
   let playerReady = false;
   let playerLoading = false;
   let playerError = '';
@@ -316,6 +324,13 @@
   $: effectiveAddonFilter = browsableAddons.some((addon) => addon.manifestUrl === activeAddonFilter)
     ? activeAddonFilter : '';
   $: plugins = [...new Map([...localPlugins, ...nuvioPlugins].map((repo) => [repo.manifestUrl, repo])).values()];
+  $: selectionProviders = [...new Map([
+    ...addons.filter((addon) => !addon.disabledFeatures?.includes('stream') && addon.manifest.resources.some((resource) =>
+      (typeof resource === 'string' ? resource : resource.name) === 'stream'))
+      .map((addon) => ({ id: addon.manifestUrl, name: addon.manifest.name })),
+    ...plugins.flatMap((repo) => repo.scrapers.filter(browserCompatible)
+      .map((scraper) => ({ id: `${repo.manifestUrl}:${scraper.id}`, name: `${scraper.name} · ${repo.name}` })))
+  ].map((provider) => [provider.id, provider])).values()];
   $: visibleRows = rows.filter((row) => !effectiveAddonFilter || row.addon.manifestUrl === effectiveAddonFilter);
   $: discoverSources = rows.filter((row) => !(row.catalog.extra || []).some((extra) => extra.isRequired && !['genre', 'skip'].includes(extra.name)));
   $: discoverTypes = [...new Set(discoverSources.map((row) => row.catalog.type))];
@@ -1655,6 +1670,9 @@
 
   async function applyRoute(route: AppRoute) {
     const request = ++routeRequest;
+    const actionToken = ++streamActionRequest;
+    const automaticAction = pendingAutoAction;
+    pendingAutoAction = null;
     const previousMeta = loadingDetail ? undefined : selected;
     window.clearTimeout(searchTimer);
     const retainedStreams = route.kind !== 'tab' && route.kind !== 'catalog' && route.kind !== 'detail'
@@ -1723,8 +1741,8 @@
           ({ streams, activeStreamSources, selectedStreamSource, sourceStreams, sourceLoading, sourceWarnings, sourceError } = retainedStreams);
         }
         if (route.kind === 'player') {
-          const stream = playerMemory.get(routeHash(route));
-          if (stream) await playInBrowser(stream, false);
+          const choice = playerMemory.get(routeHash(route));
+          if (choice) await playInBrowser(choice.stream, false, choice.selection);
           else {
             const fallback = mediaRoute('streams');
             const parent = router?.parent();
@@ -1735,6 +1753,11 @@
             }
             replaceRoute(fallback); // Shared player links require a fresh stream selection.
           }
+        } else if (route.kind === 'streams' && automaticAction && actionToken === streamActionRequest
+          && automaticAction.type === route.type && automaticAction.id === route.id
+          && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
+          && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
+          await startPreferredStream(automaticAction.action);
         }
       }
     }
@@ -1751,6 +1774,8 @@
 
   function openDetail(preview: MetaPreview, fromContinue = false) {
     previewMemory.set(`${preview.type}:${preview.id}`, preview);
+    pendingAutoAction = streamSelection.enabled && fromContinue
+      ? { type: preview.type, id: preview.id, action: 'play' } : null;
     router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id });
   }
 
@@ -1832,6 +1857,7 @@
     streams = [];
     loadingStreams = false;
     loadingDetail = false;
+    pendingEpisodeAction = 'play';
   }
 
   function navigate(next: Tab) {
@@ -1862,21 +1888,23 @@
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  async function detailPlay() {
+  async function detailPlay(action: 'play' | 'cast' = 'play') {
     if (!selected || loadingDetail) return;
     if (selected.type === 'series') {
-      if (episode && detailResumeMs > 0) {
-        openStreamScreen(episode);
+      if (episode && (detailResumeMs > 0 || action === 'cast')) {
+        openStreamScreen(episode, action);
         return;
       }
+      pendingEpisodeAction = action;
       detailJump('detail-episodes');
       return;
     }
-    openStreamScreen(null);
+    openStreamScreen(null, action);
   }
 
-  function openStreamScreen(video: Video | null) {
+  function openStreamScreen(video: Video | null, action: 'play' | 'cast' = pendingEpisodeAction) {
     if (!selected) return;
+    pendingAutoAction = streamSelection.enabled ? { type: selected.type, id: selected.id, videoId: video?.id, action } : null;
     // Preserve the selected episode and season in the detail history entry as well.
     replaceRoute(mediaRoute('detail', video));
     router?.push(mediaRoute('streams', video));
@@ -1997,15 +2025,33 @@
       episode?.id || selected.id, streamRequest, true);
   }
 
-  async function cast(stream: Stream) {
+  function updateStreamSelection(preferences: StreamSelectionPreferences) {
+    streamSelection = preferences;
+    saveStreamSelection(preferences);
+  }
+
+  async function startPreferredStream(action: 'play' | 'cast') {
+    if (!selected || loadingDetail || loadingStreams) return;
+    const stream = selectPreferredStream(streams.filter(playableStream), streamSelection);
+    if (!stream) {
+      sourceError = 'No stream matches your auto-selection settings. Choose a stream below or adjust your settings.';
+      return;
+    }
+    const selection = selectionContext(stream, streamSelection, false);
+    if (action === 'cast') await cast(stream, selection);
+    else await playInBrowser(stream, true, selection);
+  }
+
+  async function cast(stream: Stream, selection = selectionContext(stream, streamSelection)) {
     if (!selected) return;
+    ++streamActionRequest;
     try {
       if (selected.type === 'series') {
         if (!episode) throw new Error('Choose an episode first.');
         const meta = selected;
         await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [episode], episode, stream, addons, plugins, tmdbKey,
           resumePositionMs(meta, episode, accountLibrary, nuvioProgress),
-          (value) => { status = value; }, (progress) => reportWatchProgress(meta, progress));
+          (value) => { status = value; }, (progress) => reportWatchProgress(meta, progress), selection);
       } else if (selected.type === 'movie') {
         const meta = selected;
         const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress),
@@ -2023,11 +2069,12 @@
     }
   }
 
-  async function playInBrowser(stream: Stream, recordHistory = true) {
+  async function playInBrowser(stream: Stream, recordHistory = true, selection = selectionContext(stream, streamSelection)) {
     if (!selected || !playableStream(stream)) return;
     if (recordHistory) {
+      ++streamActionRequest;
       const route = mediaRoute('player');
-      playerMemory.set(routeHash(route), stream);
+      playerMemory.set(routeHash(route), { stream, selection });
       router?.push(route);
       return;
     }
@@ -2059,7 +2106,7 @@
       return;
     }
     const video = meta.type === 'series' ? chosenEpisode : null;
-    playing = { meta, stream, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress), resumeApplied: false };
+    playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress), resumeApplied: false };
   }
 
   async function castPlaying() {
@@ -2070,7 +2117,7 @@
         if (!current.video) throw new Error('Choose an episode first.');
         await lazyCastSeries(current.meta, current.meta.videos?.length ? current.meta.videos : [current.video], current.video, current.stream, addons, plugins, tmdbKey,
           browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress),
-          (value) => { status = value; }, (progress) => reportWatchProgress(current.meta, progress));
+          (value) => { status = value; }, (progress) => reportWatchProgress(current.meta, progress), current.selection);
       } else if (current.meta.type === 'movie') {
         const tracked = await castMovie(current.meta, current.stream,
           browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress),
@@ -2181,19 +2228,16 @@
     try {
       const sources = (await fetchStreams(addons, 'series', next.id, plugins, tmdbKey)).filter(playableStream);
       if (playing !== current) return;
-      const group = current.stream.behaviorHints?.bingeGroup;
-      const stream = sources.find((candidate) => group && candidate.behaviorHints?.bingeGroup === group)
-        || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl && candidate.name === current.stream.name)
-        || sources.find((candidate) => candidate.addonUrl === current.stream.addonUrl);
+      const stream = selectNextStream(sources, current.selection);
       if (stream) {
         playbackAttempt += 1;
         logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
-        playing = { meta: current.meta, video: next, stream,
+        playing = { meta: current.meta, video: next, stream, selection: current.selection,
           resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress), resumeApplied: false };
         episode = next;
         season = next.season ?? season;
         const route = mediaRoute('player', next);
-        playerMemory.set(routeHash(route), stream);
+        playerMemory.set(routeHash(route), { stream, selection: current.selection });
         replaceRoute(route);
         void loadStreams('series', next.id);
         playerError = '';
@@ -2445,6 +2489,7 @@
       <p class="panel-copy">Set addon priority, enable the resources each addon provides, refresh its manifest, or open its configuration page. Nuvio plugin repositories add browser-compatible stream scrapers.</p>
       <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
       <div class="catalog-cache-controls"><strong>Catalog refresh</strong><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
+      <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} onChange={updateStreamSelection} />
       <label class="playback-fallback-control"><span><strong>Native player fallback</strong><small>If MoviPlayer cannot play a stream, try the browser’s video player. On by default.</small></span><input type="checkbox" role="switch" bind:checked={nativePlayerFallback} onchange={saveNativePlayerFallback} aria-label="Native player fallback" /></label>
       <details class="playback-diagnostics"><summary>Playback diagnostics <span>{playbackDiagnostics.length} events</span></summary><p>Recent player attempts remain on this device across refreshes. Reports omit stream URLs, headers, and account credentials.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button><button type="button" onclick={removePlaybackReport}>Clear history</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>
       <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addAddon(); }}><input type="url" bind:value={addonInput} placeholder="https://addon.example/manifest.json" aria-label="Addon manifest URL" required /><button type="submit" disabled={adding}>{#if adding}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
@@ -2493,6 +2538,7 @@
         {#if selected.type === 'series' && !episode && !loadingDetail}<button class="stream-choose-episode" onclick={() => router?.push(mediaRoute('detail'))}>Choose an episode <ArrowRight size={17} /></button>{/if}
         {#if detailIdentityReady && (selected.type !== 'series' || episode)}
           <div class="stream-screen-heading"><div><span class="section-type">AVAILABLE SOURCES</span><h2>Streams <small>{visiblePlayable.length}</small></h2></div></div>
+          {#if streamSelection.enabled}<div class="stream-auto-actions"><button class="watch-button" onclick={() => void startPreferredStream('play')} disabled={loadingDetail || loadingStreams || playerLoading}><Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume best match' : 'Play best match'}</button><button class="cast-button" onclick={() => void startPreferredStream('cast')} disabled={!bridge || loadingDetail || loadingStreams || playerLoading} title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast best match</button></div>{/if}
           <div class="stream-provider-row" role="group" aria-label="Filter and refresh stream sources">
             <button class="stream-refresh-all" onclick={refreshAllStreams} disabled={loadingDetail} aria-label="Refresh all streams" title="Refresh all streams"><RefreshCw size={17} class={loadingStreams ? 'spin' : ''} /></button>
             <button class:active={!selectedStreamSource} class="stream-provider-chip" onclick={() => selectedStreamSource = ''}>All <small>{playable.length}</small></button>
@@ -2532,7 +2578,7 @@
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if streamSelection.enabled}<button class="detail-action-icon" onclick={() => void detailPlay('cast')} disabled={loadingDetail || !bridge} aria-label="Cast with auto-selection" title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={21} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
           {/if}
@@ -2543,7 +2589,7 @@
         {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading details…</div>{/if}
         {#if detailError}<div class="error-message">{detailError}</div>{/if}
         {#if detailIdentityReady && selected.type === 'series'}
-          <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2></div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
+          <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2>{#if pendingEpisodeAction === 'cast'}<p class="episode-action-hint">Choose an episode to cast. <button onclick={() => pendingEpisodeAction = 'play'}>Cancel</button></p>{/if}</div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
           {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
         {#if selected.cast?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
@@ -2561,7 +2607,7 @@
 
 {#if playing}
   <div class="player-overlay" role="dialog" aria-modal="true" aria-label={`Now playing ${playing.meta.name}`} in:fade={{ duration: motionDuration(220), easing: cubicOut }} out:fade={{ duration: motionDuration(160), easing: cubicIn }}>
-    <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Back to streams</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
+    <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Choose another stream</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
     <div class="player-stage">
       {#if playerReady}
         <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('playing')} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
