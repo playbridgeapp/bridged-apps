@@ -9,6 +9,8 @@
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
   import TmdbDetails from './lib/TmdbDetails.svelte';
+  import PluginSettingsDialog from './lib/PluginSettingsDialog.svelte';
+  import { applyPluginPreferences, saveLocalScraperSettings, type ScraperPreference } from './lib/plugin-preferences';
   import { savedTmdbSettings, saveTmdbSettings } from './lib/tmdb-settings';
   import type { TmdbSettings } from './lib/tmdb-settings';
   import { fetchTmdbMetadata, fetchTmdbSeason, applyTmdbMetadata, applyTmdbSeason } from './lib/tmdb';
@@ -29,6 +31,7 @@
   import { addAccountAddon, fetchAccountAddons, fetchAccountLibrary, login, loginWithKey, moveAccountAddon, refreshUser, removeAccountAddon, savedSession, saveSession, saveWatchProgress, setLibraryMembership } from './lib/stremio';
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioProgress, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, pushNuvioProgress, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioSession } from './lib/nuvio';
+  import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
   import { HashRouter, parseRoute, routeHash } from './lib/router';
@@ -127,6 +130,9 @@
   let pluginInput = '';
   let pluginError = '';
   let addingPlugin = false;
+  let pluginSaving = '';
+  let pluginMutation = 0;
+  let pluginSettingsTarget: { repo: PluginRepository; scraperId: string; synced: boolean } | null = null;
   let tmdbKey = '';
   let tmdbSettings = savedTmdbSettings();
   let tmdbMetadata: TmdbMetadata | null = null;
@@ -566,6 +572,7 @@
       else if (seasonPickerOpen) seasonPickerOpen = false;
       else if (searchHistoryOpen) searchHistoryOpen = false;
       else if (playing) closePlayer();
+      else if (pluginSettingsTarget) pluginSettingsTarget = null;
       else if (accountPanel || managing || integrationsPanel) closeSettingsPanel();
       else if (selected && streamScreen) closeStreamScreen();
       else if (selected) closeDetail();
@@ -593,7 +600,7 @@
       .then(() => { startupLoading = false; restorationComplete = true; });
     void applyRoute(currentRoute);
     const syncTimer = window.setInterval(() => { if (account && !accountSyncing) void syncAccount(); }, 10 * 60 * 1000);
-    const nuvioTimer = window.setInterval(() => { if (nuvioSession && !nuvioSyncing && nuvioProfileReady) void syncNuvio(); }, 10 * 60 * 1000);
+    const nuvioTimer = window.setInterval(() => { if (nuvioSession && !nuvioSyncing && !pluginSaving && nuvioProfileReady) void syncNuvio(); }, 10 * 60 * 1000);
     const catalogTimer = window.setInterval(() => {
       if (autoRefreshCatalogs && addons.length && !loadingCatalogs && Date.now() - lastCatalogRefresh >= catalogRefreshInterval * 60_000) void loadCatalogs();
     }, 60_000);
@@ -796,6 +803,9 @@
   async function chooseNuvioProfile(index: number) {
     if (!nuvioProfiles.some((profile) => profile.profile_index === index)) return;
     nuvioGeneration += 1;
+    pluginMutation++;
+    pluginSaving = '';
+    pluginSettingsTarget = null;
     nuvioSyncRequest += 1;
     addonWorking = '';
     nuvioProfileIndex = index;
@@ -843,6 +853,7 @@
   }
 
   async function syncNuvio() {
+    if (pluginSaving) return;
     const current = nuvioSession;
     const selectedProfile = nuvioProfiles.find((item) => item.profile_index === nuvioProfileIndex);
     if (!current || !selectedProfile || (selectedProfile.pin_enabled && nuvioUnlockedProfile !== nuvioProfileIndex)) return;
@@ -852,10 +863,11 @@
     const profile = selectedProfile;
     nuvioSyncing = true;
     nuvioError = '';
-    const [addonsResult, pluginsResult, libraryResult, progressResult] = await Promise.allSettled([
+    const [addonsResult, pluginsResult, libraryResult, progressResult, pluginPreferencesResult] = await Promise.allSettled([
       fetchNuvioSources(current, 'addons', profile?.uses_primary_addons ? 1 : index),
       fetchNuvioSources(current, 'plugins', profile?.uses_primary_plugins ? 1 : index),
-      fetchNuvioLibrary(current, index), fetchNuvioProgress(current, index)
+      fetchNuvioLibrary(current, index), fetchNuvioProgress(current, index),
+      fetchNuvioPluginPreferences(current, profile.uses_primary_plugins ? 1 : index)
     ]);
     if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
     const failures: string[] = [];
@@ -872,11 +884,15 @@
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
     } else failures.push(`Addons: ${message(addonsResult.reason)}`);
     if (pluginsResult.status === 'fulfilled') {
-      const resolved = await Promise.allSettled(pluginsResult.value.filter((row) => row.enabled !== false).map((row) => installPlugin(row.url)));
+      const previousPreferences = nuvioPlugins.map((repo) => ({ url: repo.manifestUrl,
+        scrapers: repo.scrapers.map((scraper) => ({ id: scraper.id, enabled: scraper.enabled, settings: scraper.settings })) }));
+      const resolved = await Promise.allSettled(pluginsResult.value.filter((row) => row.enabled !== false).map((row) => installPlugin(row.url, false)));
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
-      nuvioPlugins = resolved.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+      nuvioPlugins = applyPluginPreferences(resolved.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []),
+        pluginPreferencesResult.status === 'fulfilled' ? pluginPreferencesResult.value : previousPreferences);
       if (resolved.some((result) => result.status === 'rejected')) failures.push('Some Nuvio plugin repositories could not be loaded in this browser.');
     } else failures.push(`Plugins: ${message(pluginsResult.reason)}`);
+    if (pluginPreferencesResult.status === 'rejected') failures.push(`Plugin settings: ${message(pluginPreferencesResult.reason)}`);
     if (progressResult.status === 'fulfilled') nuvioProgress = progressResult.value;
     else failures.push(`Progress: ${message(progressResult.reason)}`);
     if (libraryResult.status === 'fulfilled') nuvioLibrary = decorateNuvioLibrary(libraryResult.value, nuvioProgress);
@@ -889,6 +905,9 @@
 
   function disconnectNuvio() {
     nuvioGeneration += 1;
+    pluginMutation++;
+    pluginSaving = '';
+    pluginSettingsTarget = null;
     nuvioSyncRequest += 1;
     addonWorking = '';
     nuvioSession = null;
@@ -946,7 +965,7 @@
   }
 
   async function restorePlugins() {
-    const restored = await Promise.allSettled(savedPluginUrls().map(installPlugin));
+    const restored = await Promise.allSettled(savedPluginUrls().map((url) => installPlugin(url)));
     localPlugins = restored.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
     if (restored.some((result) => result.status === 'rejected')) pluginError = 'Some saved plugin repositories could not be reached.';
   }
@@ -1488,9 +1507,39 @@
     savePluginUrls(localPlugins);
   }
 
-  function togglePluginScraper(url: string, scraperId: string, enabled: boolean) {
-    if (nuvioPlugins.some((repo) => repo.manifestUrl === url)) nuvioPlugins = toggleScraper(nuvioPlugins, url, scraperId, enabled);
-    if (localPlugins.some((repo) => repo.manifestUrl === url)) localPlugins = toggleScraper(localPlugins, url, scraperId, enabled);
+  async function updatePluginScraper(url: string, scraperId: string, patch: Omit<ScraperPreference, 'id'>) {
+    if (pluginSaving) throw new Error('Wait for the current plugin change to finish.');
+    const synced = nuvioPlugins.some((repo) => repo.manifestUrl === url);
+    if (!synced) {
+      if (!localPlugins.some((repo) => repo.manifestUrl === url)) throw new Error('This plugin repository is no longer installed.');
+      if (patch.settings) saveLocalScraperSettings(url, scraperId, patch.settings);
+      if (patch.enabled !== undefined) localPlugins = toggleScraper(localPlugins, url, scraperId, patch.enabled);
+      localPlugins = applyPluginPreferences(localPlugins, [{ url, scrapers: [{ id: scraperId, ...patch }] }]);
+      return;
+    }
+    const current = nuvioSession;
+    const index = nuvioProfileIndex;
+    const generation = nuvioGeneration;
+    if (!current || !nuvioProfileReady) throw new Error('Choose and unlock a Nuvio profile first.');
+    if (activeNuvioProfile?.uses_primary_plugins && index !== 1) throw new Error('Select the primary profile to change shared plugins.');
+    const mutation = ++pluginMutation;
+    pluginSaving = `${url}:${scraperId}`;
+    // Invalidate a poll started before this edit; it must not replace the saved value.
+    nuvioSyncRequest++;
+    nuvioSyncing = false;
+    try {
+      const preferences = await changeNuvioScraperPreference(current, index, url, scraperId, patch);
+      if (generation !== nuvioGeneration || index !== nuvioProfileIndex || mutation !== pluginMutation) return;
+      nuvioPlugins = applyPluginPreferences(nuvioPlugins, preferences);
+      saveNuvioCache(current, index);
+    } finally { if (mutation === pluginMutation) pluginSaving = ''; }
+  }
+
+  async function togglePluginScraper(url: string, scraperId: string, enabled: boolean) {
+    pluginError = '';
+    const generation = nuvioGeneration;
+    try { await updatePluginScraper(url, scraperId, { enabled }); }
+    catch (error) { if (generation === nuvioGeneration) pluginError = message(error); }
   }
 
   async function removeNuvioPlugin(url: string) {
@@ -1687,6 +1736,7 @@
   }
 
   function closeSettingsPanel() {
+    pluginSettingsTarget = null;
     router?.back({ kind: 'tab', tab: 'settings' });
   }
 
@@ -1707,6 +1757,7 @@
       || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
     accountPanel = false;
     managing = false;
+    pluginSettingsTarget = null;
     integrationsPanel = false;
     openDiscoverDropdown = null;
     searchHistoryOpen = false;
@@ -2580,7 +2631,7 @@
           <form class="login-form" onsubmit={(event) => { event.preventDefault(); void unlockNuvioProfile(); }}><label>Profile PIN<input type="password" inputmode="numeric" bind:value={nuvioPin} autocomplete="off" required /></label><button class="primary-button" type="submit" disabled={nuvioBusy}>Unlock profile</button></form>
         {:else if nuvioProfileReady}
           <p class="panel-copy">Nuvio addons, plugin repositories, library, and progress refresh every 10 minutes. Library changes and playback progress made here sync to this profile.</p>
-          <button class="sync-button" onclick={() => void syncNuvio()} disabled={nuvioSyncing}>{#if nuvioSyncing}<LoaderCircle size={18} class="spin" />{:else}<RefreshCw size={18} />{/if} Sync Nuvio now</button>
+          <button class="sync-button" onclick={() => void syncNuvio()} disabled={nuvioSyncing || !!pluginSaving}>{#if nuvioSyncing}<LoaderCircle size={18} class="spin" />{:else}<RefreshCw size={18} />{/if} Sync Nuvio now</button>
           <div class="sync-summary"><span><strong>{nuvioAddons.length}</strong> addons</span><span><strong>{nuvioPlugins.length}</strong> plugins</span><span><strong>{nuvioLibrary.length}</strong> titles</span></div>
         {/if}
         {#if nuvioMessage}<p class="sync-message" role="status">{nuvioMessage}</p>{/if}
@@ -2633,13 +2684,31 @@
       {#if nuvioSession && nuvioProfileReady}<label class="sync-choice"><input type="checkbox" bind:checked={syncNewPlugin} /> Install new plugin repositories in my Nuvio profile</label>{/if}
       {#if pluginError}<p class="error-message" role="alert">{pluginError}</p>{/if}
       {#each plugins as repo (repo.manifestUrl)}<div class="plugin-repo"><div class="addon-row"><div class="addon-logo">N</div><div class="addon-info"><strong>{repo.name}</strong><small>{nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) ? 'Nuvio profile' : 'This browser'} · {repo.scrapers.filter(browserCompatible).length} enabled of {repo.scrapers.length} scrapers</small></div>{#if localPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<button class="icon-button" onclick={() => removePlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from this browser`}><Trash2 size={18} /></button>{:else if !activeNuvioProfile?.uses_primary_plugins || nuvioProfileIndex === 1}<button class="icon-button" onclick={() => void removeNuvioPlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from Nuvio`}><Trash2 size={18} /></button>{/if}</div>
-        {#each repo.scrapers as scraper (scraper.id)}<div class="scraper-row"><span>{scraper.name}</span>{#if platformCompatible(scraper)}<button class:enabled={scraper.enabled !== false} aria-pressed={scraper.enabled !== false} onclick={() => togglePluginScraper(repo.manifestUrl, scraper.id, scraper.enabled === false)}>{scraper.enabled === false ? 'Off' : 'On'}</button>{:else}<small>Native only</small>{/if}</div>{/each}
+        {#if nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<p class="panel-copy">Scraper controls sync to this Nuvio profile for Bridged Streams. Nuvio Mobile stores these controls locally.</p>{#if activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}<p class="panel-copy">Select the primary profile to edit shared plugins.</p>{/if}{/if}
+        {#each repo.scrapers as scraper (scraper.id)}
+          {@const readOnly = nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) && activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}
+          <div class="scraper-row"><span>{scraper.name}</span>
+            {#if scraper.hasSettings && platformCompatible(scraper)}<button aria-label={`Configure ${scraper.name}`} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => pluginSettingsTarget = { repo, scraperId: scraper.id, synced: nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) }}><Settings2 size={14} /> Configure</button>{/if}
+            {#if platformCompatible(scraper)}<button class:enabled={scraper.enabled !== false} aria-label={`${scraper.name} enabled`} aria-pressed={scraper.enabled !== false} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => void togglePluginScraper(repo.manifestUrl, scraper.id, scraper.enabled === false)}>{pluginSaving === `${repo.manifestUrl}:${scraper.id}` ? 'Saving…' : scraper.enabled === false ? 'Off' : 'On'}</button>{:else}<small>Native only</small>{/if}
+          </div>
+        {/each}
       </div>{/each}
       <div class="installed-label">TMDB LOOKUP KEY</div>
       <p class="panel-copy">A TMDB API key lets Nuvio scrapers use titles from IMDb-based catalogs. The key stays in this browser.</p>
       <input class="settings-input" type="password" bind:value={tmdbKey} oninput={() => saveTmdbKey(tmdbKey)} placeholder="Your TMDB API key" aria-label="TMDB API key" autocomplete="off" />
     </div>
   </div>
+{/if}
+
+{#if pluginSettingsTarget}
+  {@const target = pluginSettingsTarget}
+  {@const scraper = target.repo.scrapers.find((item) => item.id === target.scraperId)}
+  {#if scraper}
+    <PluginSettingsDialog repo={target.repo} {scraper} {tmdbKey} synced={target.synced} onClose={() => pluginSettingsTarget = null} onSave={async (settings) => {
+      await updatePluginScraper(target.repo.manifestUrl, target.scraperId, { settings });
+      if (pluginSettingsTarget === target) pluginSettingsTarget = null;
+    }} />
+  {/if}
 {/if}
 
 {#if integrationsPanel}

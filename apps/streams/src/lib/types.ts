@@ -126,6 +126,8 @@ export interface PluginScraper {
   manifestEnabled?: boolean;
   supportedPlatforms?: string[];
   disabledPlatforms?: string[];
+  hasSettings?: boolean;
+  settings?: Record<string, unknown>;
 }
 
 export interface PluginRepository {

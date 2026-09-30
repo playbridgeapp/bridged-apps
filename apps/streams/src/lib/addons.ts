@@ -149,7 +149,7 @@ export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id
     let warned = false;
     return cachedStreamLookup(
       JSON.stringify(['plugin', repo.manifestUrl, scraper.id, scraper.filename, scraper.enabled, scraper.supportedPlatforms,
-        type, pluginId, parts?.[2], parts?.[3], tmdbKey]),
+        type, pluginId, parts?.[2], parts?.[3], tmdbKey, scraper.settings]),
       () => fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
         parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined,
         (warning) => { warned = true; onWarning?.(warning); }), forceRefresh || !!signal, () => !warned);

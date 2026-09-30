@@ -861,6 +861,163 @@ test(delayedRestore ? 'adds a Nuvio scraper restored after its stream page opens
 });
 }
 
+async function mockNuvioPluginSync(page: Page, options: { guardedMissing?: boolean } = {}) {
+  const repoUrl = 'https://configured-plugins.test/manifest.json';
+  const state = {
+    failNextWrite: false,
+    conflicts: 0,
+    writes: [] as any[],
+    settingsReads: [] as number[],
+    blobs: new Map<number, any>([
+      [1, { version: 1, features: { unrelated: { keep: true }, plugins: { repositories: [{ url: repoUrl, scrapers: [{ id: 'configured', enabled: false, settings: { token: 'test-cloud-token', audio: 'sub', strict: true } }] }] } } }],
+      [2, { version: 1, features: { plugins: { repositories: [{ url: repoUrl, scrapers: [{ id: 'configured', enabled: true, settings: { audio: 'dub' } }] }] } } }],
+    ]),
+  };
+  await page.route('https://nuvio.test/**', async (route) => {
+    const url = new URL(route.request().url());
+    const body = route.request().postDataJSON() || {};
+    const method = url.pathname.split('/').pop();
+    let result: unknown = [];
+    if (method === 'sync_pull_profiles') result = [
+      { profile_index: 1, name: 'Primary' }, { profile_index: 2, name: 'Kids' },
+      { profile_index: 3, name: 'Shared', uses_primary_plugins: true },
+    ];
+    else if (method === 'plugins') result = [{ url: repoUrl, name: 'Configured Repo', enabled: true }];
+    else if (method === 'sync_pull_profile_settings_blob') {
+      expect(body.p_platform).toBe('bridged-streams');
+      state.settingsReads.push(body.p_profile_id);
+      result = [{ settings_json: state.blobs.get(body.p_profile_id) || {}, updated_at: '2026-09-30T00:00:00Z' }];
+    } else if (method?.startsWith('sync_push_profile_settings_blob')) {
+      expect(body.p_platform).toBe('bridged-streams');
+      if (options.guardedMissing && method.endsWith('_guarded')) return route.fulfill({ status: 404, json: { code: 'PGRST202', message: 'Function not found' }, headers: { 'access-control-allow-origin': '*' } });
+      if (state.failNextWrite) {
+        state.failNextWrite = false;
+        return route.fulfill({ status: 503, json: { message: 'Test save failed' }, headers: { 'access-control-allow-origin': '*' } });
+      }
+      if (state.conflicts > 0) {
+        state.conflicts--;
+        state.blobs.get(body.p_profile_id).features.fromAnotherDevice = true;
+        return route.fulfill({ status: 400, json: { code: '40001', message: 'Settings changed' }, headers: { 'access-control-allow-origin': '*' } });
+      }
+      state.writes.push(body);
+      state.blobs.set(body.p_profile_id, body.p_settings_json);
+      result = null;
+    }
+    await route.fulfill({ json: result, headers: { 'access-control-allow-origin': '*' } });
+  });
+  await page.route('https://api.themoviedb.org/**', route => route.fulfill({ json: { movie_results: [{ id: 321 }] }, headers: { 'access-control-allow-origin': '*' } }));
+  await page.route('https://configured-plugins.test/**', route => {
+    if (route.request().url().endsWith('manifest.json')) return route.fulfill({ json: { name: 'Configured Repo', scrapers: [
+      { id: 'configured', name: 'Configured Scraper', filename: 'configured.js', hasSettings: true, supportedTypes: ['movie'] },
+    ] }, headers: { 'access-control-allow-origin': '*' } });
+    return route.fulfill({ contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' }, body: `
+      module.exports = {
+        onSettings: async () => [
+          {type: 'text', key: 'token', label: 'Access token', isPassword: true},
+          {type: 'select', key: 'audio', label: 'Audio preference', defaultValue: 'both', options: [{label: 'Sub', value: 'sub'}, {label: 'Dub', value: 'dub'}, {label: 'Both', value: 'both'}]},
+          {type: 'toggle', key: 'strict', label: 'Strict matching', defaultValue: false}
+        ],
+        getStreams: async (id) => [{ name: 'Configured ' + SCRAPER_SETTINGS.audio + ' ' + id, url: 'https://media.test/configured.mp4', headers: { authorization: SCRAPER_SETTINGS.token || '' } }]
+      };
+    ` });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('bridged-streams.nuvio-session.v1', JSON.stringify({ backendUrl: 'https://nuvio.test', publishableKey: 'test-key', accessToken: 'test-access', refreshToken: 'test-refresh', expiresAt: Date.now() + 3600000, user: { id: 'test-user', email: 'viewer@example.com' } }));
+    localStorage.setItem('bridged-streams.tmdb-key.v1', 'test-key');
+  });
+  await page.reload();
+  await openAddons(page);
+  await expect(page.getByRole('button', { name: 'Configured Scraper enabled' })).toBeEnabled();
+  return state;
+}
+
+test('syncs Nuvio scraper switches and settings and uses them for cached playback', async ({ page }) => {
+  const state = await mockNuvioPluginSync(page);
+  const enabled = page.getByRole('button', { name: 'Configured Scraper enabled' });
+  await expect(enabled).toHaveAttribute('aria-pressed', 'false');
+  state.conflicts = 1;
+  await enabled.click();
+  await expect(enabled).toHaveAttribute('aria-pressed', 'true');
+  expect(state.writes[0].p_settings_json.features.unrelated).toEqual({ keep: true });
+  expect(state.writes[0].p_settings_json.features.fromAnotherDevice).toBe(true);
+  await page.getByRole('button', { name: 'Configure Configured Scraper' }).click();
+  let settings = page.getByRole('dialog', { name: 'Configured Scraper settings' });
+  await expect(settings.getByLabel('Access token')).toHaveAttribute('type', 'password');
+  await expect(settings.getByLabel('Access token')).toHaveValue('test-cloud-token');
+  await expect(settings.getByLabel('Audio preference')).toHaveValue('sub');
+  await expect(settings.getByLabel('Strict matching')).toBeChecked();
+  await settings.getByRole('button', { name: 'Cancel' }).click();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await page.locator('.detail-play').click();
+  await expect(page.getByText('Configured sub 321', { exact: true })).toBeVisible();
+  await page.goto('/#/settings/addons');
+  await page.getByRole('button', { name: 'Configure Configured Scraper' }).click();
+  settings = page.getByRole('dialog', { name: 'Configured Scraper settings' });
+  await settings.getByLabel('Audio preference').selectOption('dub');
+  await settings.getByLabel('Access token').fill('test-new-token');
+  await settings.getByLabel('Strict matching').uncheck();
+  await settings.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(settings).not.toBeVisible();
+  expect(state.writes.at(-1).p_settings_json.features.plugins.repositories[0].scrapers[0].settings).toEqual({ token: 'test-new-token', audio: 'dub', strict: false });
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await page.locator('.detail-play').click();
+  await expect(page.getByText('Configured dub 321', { exact: true })).toBeVisible();
+  await page.evaluate(() => localStorage.removeItem('bridged-streams.startup-cache.v1.nuvio-plugins'));
+  await page.reload();
+  await expect(page.getByText('Configured dub 321', { exact: true })).toBeVisible();
+});
+
+test('isolates Nuvio scraper controls by profile and protects shared plugins', async ({ page }) => {
+  const state = await mockNuvioPluginSync(page, { guardedMissing: true });
+  await page.getByRole('button', { name: 'Configured Scraper enabled' }).click();
+  await expect(page.getByRole('button', { name: 'Configured Scraper enabled' })).toHaveAttribute('aria-pressed', 'true');
+  expect(state.writes[0].p_profile_id).toBe(1);
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await openAccounts(page);
+  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('2');
+  await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close account' }).click();
+  await openAddons(page);
+  await page.getByRole('button', { name: 'Configure Configured Scraper' }).click();
+  await expect(page.getByRole('dialog', { name: 'Configured Scraper settings' }).getByLabel('Audio preference')).toHaveValue('dub');
+  await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await openAccounts(page);
+  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('3');
+  await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Close account' }).click();
+  await openAddons(page);
+  await expect(page.getByRole('button', { name: 'Configured Scraper enabled' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Configure Configured Scraper' })).toBeDisabled();
+  expect(state.settingsReads.at(-1)).toBe(1);
+  expect(state.writes).toHaveLength(1);
+});
+
+test('keeps Nuvio scraper edits retryable when saving fails', async ({ page }) => {
+  const state = await mockNuvioPluginSync(page);
+  state.failNextWrite = true;
+  const enabled = page.getByRole('button', { name: 'Configured Scraper enabled' });
+  await enabled.click();
+  await expect(page.getByRole('alert').filter({ hasText: 'Test save failed' })).toBeVisible();
+  await expect(enabled).toHaveAttribute('aria-pressed', 'false');
+  await enabled.click();
+  await expect(enabled).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('button', { name: 'Configure Configured Scraper' }).click();
+  const settings = page.getByRole('dialog', { name: 'Configured Scraper settings' });
+  await settings.getByLabel('Access token').fill('test-retry-token');
+  state.failNextWrite = true;
+  await settings.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(settings.getByRole('alert')).toContainText('Test save failed');
+  await expect(settings.getByLabel('Access token')).toHaveValue('test-retry-token');
+  await settings.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(settings).not.toBeVisible();
+  expect(state.writes).toHaveLength(2);
+});
+
 test('imports Stremio account addons, library, and progress without removing local addons', async ({ page }) => {
   const accountManifest = {
     id: 'account-addon', name: 'Account Catalog', version: '1.0.0', types: ['movie'],

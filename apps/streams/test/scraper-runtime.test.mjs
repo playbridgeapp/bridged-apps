@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { executeScraper } from '../src/lib/scraper-runtime.ts';
+import { executeScraper, executeScraperSettings } from '../src/lib/scraper-runtime.ts';
 
 const args = { tmdbId: '321', mediaType: 'tv', season: 2, episode: 3, tmdbKey: 'test-key' };
 
@@ -60,4 +60,15 @@ test('global exports and runtime aliases share settings and helpers', async () =
     else globalThis.getStreams = previousGetStreams;
     delete globalThis.URL_VALIDATION_ENABLED;
   }
+});
+
+test('passes scraper configuration and ID to playback and async onSettings', async () => {
+  const request = { ...args, scraperId: 'configured', settings: { token: 'test-token', audio: 'dub', enabled: true }, code: `
+    module.exports = {
+      getStreams: () => [{ url: 'https://media.test/configured.mp4', settings: global.SCRAPER_SETTINGS, id: SCRAPER_ID }],
+      onSettings: async () => [{ type: 'select', label: 'Audio', key: 'audio', defaultValue: SCRAPER_SETTINGS.audio }]
+    };
+  ` };
+  assert.deepEqual(await executeScraper(request), [{ url: 'https://media.test/configured.mp4', settings: request.settings, id: 'configured' }]);
+  assert.deepEqual(await executeScraperSettings(request), [{ type: 'select', label: 'Audio', key: 'audio', defaultValue: 'dub' }]);
 });

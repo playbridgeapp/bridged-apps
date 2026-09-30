@@ -1,6 +1,8 @@
 import type { MediaType, PluginRepository, PluginScraper, Stream } from './types';
 import ScraperWorker from './scraper-worker?worker';
 import { resolveTmdbId } from './tmdb';
+import { applyPluginPreferences, savedLocalPluginPreferences, objectValue } from './plugin-preferences';
+import type { ScraperRequest } from './scraper-runtime';
 
 const STORAGE_KEY = 'bridged-streams.plugins.v1';
 const DISABLED_KEY = 'bridged-streams.disabled-scrapers.v1';
@@ -21,7 +23,7 @@ function normalizedUrl(raw: string): string {
   return url.toString();
 }
 
-export async function installPlugin(raw: string): Promise<PluginRepository> {
+export async function installPlugin(raw: string, useLocalPreferences = true): Promise<PluginRepository> {
   const manifestUrl = normalizedUrl(raw);
   const response = await fetch(manifestUrl);
   if (!response.ok) throw new Error(`Plugin repository returned HTTP ${response.status}.`);
@@ -29,10 +31,11 @@ export async function installPlugin(raw: string): Promise<PluginRepository> {
   if (!data || typeof data !== 'object') throw new Error('Invalid plugin manifest.');
   const manifest = data as { name?: string; scrapers?: PluginScraper[]; description?: string };
   if (!manifest.name || !Array.isArray(manifest.scrapers) || !manifest.scrapers.length) throw new Error('This is not a Nuvio plugin repository.');
-  const disabled = new Set(disabledScrapers());
-  return { manifestUrl, name: manifest.name, description: manifest.description, scrapers: manifest.scrapers
+  const disabled = new Set(useLocalPreferences ? disabledScrapers() : []);
+  const repo = { manifestUrl, name: manifest.name, description: manifest.description, scrapers: manifest.scrapers
     .filter((scraper) => scraper.id && scraper.filename)
     .map((scraper) => ({ ...scraper, manifestEnabled: scraper.enabled !== false, enabled: scraper.enabled !== false && !disabled.has(`${manifestUrl}:${scraper.id}`) })) };
+  return useLocalPreferences ? applyPluginPreferences([repo], savedLocalPluginPreferences())[0] : repo;
 }
 
 export function savedPluginUrls(): string[] {
@@ -76,7 +79,7 @@ async function tmdbId(id: string, type: MediaType, key: string): Promise<string 
   return (await resolveTmdbId(id, type, key))?.toString() || null;
 }
 
-function runWorker(code: string, args: { tmdbId: string; mediaType: 'movie' | 'tv'; season?: number; episode?: number; tmdbKey: string }): Promise<unknown[]> {
+function runWorker(code: string, args: Omit<ScraperRequest, 'code'>): Promise<unknown[]> {
   return new Promise((resolve, reject) => {
     const worker = new ScraperWorker();
     const timer = window.setTimeout(() => { worker.terminate(); reject(new Error('Scraper timed out.')); }, 30_000);
@@ -87,6 +90,36 @@ function runWorker(code: string, args: { tmdbId: string; mediaType: 'movie' | 't
     };
     worker.onerror = (event) => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message || 'Scraper failed.')); };
     worker.postMessage({ code, ...args });
+  });
+}
+
+export type PluginSettingsField = {
+  type: string; key?: string; label: string; description?: string; placeholder?: string;
+  isPassword?: boolean; defaultValue?: string | boolean | number;
+  options?: { label: string; value: string }[];
+};
+export async function fetchPluginSettingsLayout(repo: PluginRepository, scraper: PluginScraper, tmdbKey: string): Promise<PluginSettingsField[]> {
+  const url = new URL(scraper.filename, repo.manifestUrl);
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Invalid scraper URL.');
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Scraper code returned HTTP ${response.status}.`);
+  const layout = await runWorker(await response.text(), { tmdbId: '', mediaType: 'movie', tmdbKey,
+    settings: scraper.settings || {}, scraperId: scraper.id, operation: 'settings' });
+  return layout.flatMap((value) => {
+    const field = objectValue(value);
+    if (typeof field.type !== 'string' || typeof field.label !== 'string') return [];
+    const result: PluginSettingsField = { type: field.type, label: field.label };
+    for (const name of ['key', 'description', 'placeholder'] as const) {
+      if (typeof field[name] === 'string') result[name] = field[name];
+    }
+    result.isPassword = field.isPassword === true;
+    if (['string', 'number', 'boolean'].includes(typeof field.defaultValue)) result.defaultValue = field.defaultValue as string | number | boolean;
+    result.options = Array.isArray(field.options) ? field.options.flatMap((value) => {
+      const option = objectValue(value);
+      return typeof option.label === 'string' && ['string', 'number'].includes(typeof option.value)
+        ? [{ label: option.label, value: String(option.value) }] : [];
+    }) : [];
+    return [result];
   });
 }
 
@@ -109,7 +142,8 @@ export async function fetchPluginStreams(repos: PluginRepository[], type: MediaT
     if (!['http:', 'https:'].includes(codeUrl.protocol)) throw new Error('Invalid scraper URL.');
     const response = await fetch(codeUrl);
     if (!response.ok) throw new Error(`Scraper code returned HTTP ${response.status}.`);
-    const output = await runWorker(await response.text(), { tmdbId: candidateId, mediaType: type === 'series' ? 'tv' : 'movie', season, episode, tmdbKey: key });
+    const output = await runWorker(await response.text(), { tmdbId: candidateId, mediaType: type === 'series' ? 'tv' : 'movie', season, episode, tmdbKey: key,
+      settings: scraper.settings || {}, scraperId: scraper.id });
     return output.flatMap((value): Stream[] => {
       if (!value || typeof value !== 'object') return [];
       const item = value as { url?: string | { url?: string }; title?: string; name?: string; headers?: Record<string, string> };

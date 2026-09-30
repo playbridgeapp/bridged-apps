@@ -1,5 +1,6 @@
 import type { MetaPreview } from './types';
 import { readPersistentSession, writePersistentSession } from './persistent-session';
+import { objectValue, pluginPreferences, updatePluginPreference, type PluginPreferences, type ScraperPreference } from './plugin-preferences';
 
 const SESSION_KEY = 'bridged-streams.nuvio-session.v1';
 export const NUVIO_CLOUD_URL = 'https://api.nuvio.tv';
@@ -77,8 +78,60 @@ function errorMessage(data: unknown, status: number): string {
 
 async function responseJson<T>(response: Response): Promise<T> {
   const data: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(errorMessage(data, response.status));
+  if (!response.ok) throw new NuvioApiError(errorMessage(data, response.status), response.status, objectValue(data).code);
   return data as T;
+}
+
+class NuvioApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code: unknown) { super(message); }
+}
+
+// Nuvio Mobile keeps scraper controls locally. Our own platform blob lets Bridged
+// Streams sync them through Nuvio without replacing native mobile or TV settings.
+const PLUGIN_SETTINGS_PLATFORM = 'bridged-streams';
+type SettingsSnapshot = { settings_json: Record<string, unknown>; updated_at: string | null };
+async function pluginSettingsSnapshot(session: NuvioSession, profileIndex: number): Promise<SettingsSnapshot> {
+  const rows = await rpc<unknown>(session, 'sync_pull_profile_settings_blob', {
+    p_profile_id: profileIndex, p_platform: PLUGIN_SETTINGS_PLATFORM,
+  });
+  if (!Array.isArray(rows)) throw new Error('Nuvio returned invalid plugin settings.');
+  const row = objectValue(rows[0]);
+  return { settings_json: objectValue(row.settings_json), updated_at: typeof row.updated_at === 'string' ? row.updated_at : null };
+}
+function preferencesFromSnapshot(snapshot: SettingsSnapshot): PluginPreferences {
+  return pluginPreferences(objectValue(objectValue(snapshot.settings_json.features).plugins).repositories);
+}
+export async function fetchNuvioPluginPreferences(session: NuvioSession, profileIndex: number): Promise<PluginPreferences> {
+  return preferencesFromSnapshot(await pluginSettingsSnapshot(session, profileIndex));
+}
+const pluginSettingsWrites = new Map<string, Promise<unknown>>();
+export function changeNuvioScraperPreference(session: NuvioSession, profileIndex: number, url: string, id: string,
+  patch: Omit<ScraperPreference, 'id'>): Promise<PluginPreferences> {
+  const scope = `${session.backendUrl}:${session.user.id}:${profileIndex}`;
+  const operation = (pluginSettingsWrites.get(scope) || Promise.resolve()).catch(() => {}).then(async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const snapshot = await pluginSettingsSnapshot(session, profileIndex);
+      const preferences = updatePluginPreference(preferencesFromSnapshot(snapshot), url, id, patch);
+      const features = objectValue(snapshot.settings_json.features);
+      const settings = { ...snapshot.settings_json, version: snapshot.settings_json.version ?? 1,
+        features: { ...features, plugins: { ...objectValue(features.plugins), repositories: preferences } } };
+      const body = { p_profile_id: profileIndex, p_platform: PLUGIN_SETTINGS_PLATFORM, p_settings_json: settings };
+      try {
+        await rpc(session, 'sync_push_profile_settings_blob_guarded', { ...body, p_expected_updated_at: snapshot.updated_at });
+      } catch (error) {
+        if (error instanceof NuvioApiError && error.code === '40001' && attempt < 2) continue;
+        if (error instanceof NuvioApiError && error.code === 'PGRST202') {
+          // Older cloud/self-host releases expose only the original settings RPC.
+          await rpc(session, 'sync_push_profile_settings_blob', body);
+        } else throw error;
+      }
+      return preferences;
+    }
+    throw new Error('Plugin settings changed on another device. Sync and try again.');
+  });
+  pluginSettingsWrites.set(scope, operation);
+  void operation.finally(() => { if (pluginSettingsWrites.get(scope) === operation) pluginSettingsWrites.delete(scope); }).catch(() => {});
+  return operation;
 }
 
 type AuthResponse = { access_token: string; refresh_token: string; expires_in: number; user: { id: string; email: string } };

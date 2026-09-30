@@ -8,6 +8,9 @@ export type ScraperRequest = {
   season?: number;
   episode?: number;
   tmdbKey: string;
+  settings?: Record<string, unknown>;
+  scraperId?: string;
+  operation?: 'streams' | 'settings';
 };
 
 // Match Nuvio's supported CommonJS modules. Use the slim HTML parser so this
@@ -25,7 +28,7 @@ function pluginRequire(name: string): unknown {
   }
 }
 
-export function loadScraper(code: string, tmdbKey: string): (...args: unknown[]) => unknown {
+function loadPlugin(code: string, tmdbKey: string, settings: Record<string, unknown>, scraperId: string) {
   // Match Nuvio's runtime aliases inside the isolated worker. `window` here is
   // the worker global, with no access to the application's window or DOM.
   const bindings = globalThis as unknown as Record<string, unknown>;
@@ -34,22 +37,36 @@ export function loadScraper(code: string, tmdbKey: string): (...args: unknown[])
   }
   // Nuvio exposes these as globals. Function parameters would collide with common
   // plugin declarations such as `const cheerio = require('cheerio')`.
-  Object.assign(globalThis, { cheerio, CryptoJS, TMDB_API_KEY: tmdbKey, SCRAPER_SETTINGS: {} });
-  const module = { exports: {} as { getStreams?: (...args: unknown[]) => unknown } };
+  Object.assign(globalThis, { cheerio, CryptoJS, TMDB_API_KEY: tmdbKey, SCRAPER_SETTINGS: settings, SCRAPER_ID: scraperId });
+  const module = { exports: {} };
   const run = new Function(
     'module', 'exports', 'require',
-    `${code}\nreturn module.exports.getStreams ? module.exports : typeof getStreams === 'function' ? { getStreams } : module.exports;`,
+    `${code}\nreturn {
+      getStreams: module.exports.getStreams || (typeof getStreams === 'function' ? getStreams : globalThis.getStreams),
+      onSettings: module.exports.onSettings || (typeof onSettings === 'function' ? onSettings : globalThis.onSettings)
+    };`,
   );
   const result = run(module, module.exports, pluginRequire);
-  const getStreams = result?.getStreams || module.exports.getStreams ||
-    (globalThis as typeof globalThis & { getStreams?: unknown }).getStreams;
+  return result;
+}
+
+export function loadScraper(code: string, tmdbKey: string, settings: Record<string, unknown> = {}, scraperId = ''): (...args: unknown[]) => unknown {
+  const { getStreams } = loadPlugin(code, tmdbKey, settings, scraperId);
   if (typeof getStreams !== 'function') throw new Error('No getStreams export. This scraper may require Nuvio native APIs.');
   return getStreams;
 }
 
 export async function executeScraper(request: ScraperRequest): Promise<unknown[]> {
   const { code, tmdbId, mediaType, season, episode, tmdbKey } = request;
-  const getStreams = loadScraper(code, tmdbKey);
+  const getStreams = loadScraper(code, tmdbKey, request.settings, request.scraperId);
   const streams = await getStreams(tmdbId, mediaType, season, episode);
   return Array.isArray(streams) ? streams : [];
+}
+
+export async function executeScraperSettings(request: ScraperRequest): Promise<unknown[]> {
+  const { onSettings } = loadPlugin(request.code, request.tmdbKey, request.settings || {}, request.scraperId || '');
+  if (typeof onSettings !== 'function') throw new Error('This scraper does not export onSettings.');
+  const layout = await onSettings();
+  if (!Array.isArray(layout)) throw new Error('The scraper returned an invalid settings layout.');
+  return layout;
 }

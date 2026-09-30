@@ -53,6 +53,16 @@ Choose a Nuvio profile after signing in. If the account has no profiles, create 
 
 Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV movie and episode casts report watch progress to both connected accounts; each account keeps its own library actions. Direct movie casts on older PlayBridge versions do not provide playback callbacks.
 
+### Scraper controls and configuration sync
+
+Under **Settings → Addons and playback**, individual scraper On/Off switches for a **Nuvio profile** repository now save to that profile. Scrapers declaring `hasSettings` have a **Configure** button that loads their `onSettings()` layout in an isolated worker. Text, masked password/token, select, toggle, and number fields are supported. Saved values are passed to the scraper as `SCRAPER_SETTINGS`; its ID is available as `SCRAPER_ID`. Configuration changes use a different stream-cache key, so the next lookup uses the new settings immediately.
+
+These preferences sync between **Bridged Streams devices using the same Nuvio account/profile**, on restoration, every 10 minutes, or with **Sync Nuvio now**. Repositories marked **This browser** keep their switches and configuration local. Shared plugins use the primary profile's preferences and must be edited there. Failed saves leave the previous value intact and can be retried.
+
+The inspected Nuvio Mobile version syncs repository URLs but stores individual scraper switches and settings only on the device. Bridged Streams cannot import those device-local values or change them in Nuvio Mobile. It uses Nuvio's existing `sync_pull_profile_settings_blob` / `sync_push_profile_settings_blob` APIs with its own `bridged-streams` platform namespace. Native mobile and TV settings are not overwritten. Each write reads the latest snapshot and merges only the scraper being changed; newer backends use the guarded RPC with conflict retries. Older backends fall back to the original RPC and simultaneous cross-device saves may use the last write. A backend missing the settings RPC reports a sync/save error rather than claiming success.
+
+Plugin settings, including user-entered tokens, are stored in this browser's site data and in the selected Nuvio profile. The settings object is supplied to that scraper's worker. Any stream URLs or headers produced by the scraper follow the normal playback and casting flow.
+
 ## Addon controls
 
 Open **Settings → Addons and playback** to change addon priority, turn an addon on or off, refresh its manifest, copy or open its URL, and remove it. Addons with a configuration page have a **Configure** link. The feature button lets you turn catalog, metadata, stream, and subtitle resources on or off separately. Catalog, metadata, and stream switches affect the website's requests; subtitle lookup is not yet part of browser playback.
