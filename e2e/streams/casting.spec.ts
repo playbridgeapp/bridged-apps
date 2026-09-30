@@ -817,7 +817,18 @@ test(delayedRestore ? 'adds a Nuvio scraper restored after its stream page opens
     if (route.request().url().endsWith('/manifest.json')) {
       return route.fulfill({ json: { name: 'Test Plugins', version: '1.0.0', scrapers: [{ id: 'simple', name: 'Simple Scraper', filename: 'simple.js', supportedTypes: ['movie'] }] }, headers: { 'access-control-allow-origin': '*' } });
     }
-    return route.fulfill({ body: 'module.exports.getStreams = async (id) => [{ name: "Plugin Source " + id, url: "https://media.test/plugin.mp4" }];', contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
+    return route.fulfill({ body: `
+      global.URL_VALIDATION_ENABLED = true;
+      if (global !== globalThis || window !== globalThis || self !== globalThis) throw new Error('Missing Nuvio runtime aliases');
+      const cheerio = require('cheerio-without-node-native');
+      const CryptoJS = require('crypto-js');
+      const scrape = async (id) => {
+        const $ = cheerio.load('<a href="https://media.test/plugin.mp4">Plugin Source ' + id + '</a>');
+        const encrypted = CryptoJS.AES.encrypt($('a').attr('href'), 'test-passphrase');
+        return [{ name: $('a').text(), url: CryptoJS.AES.decrypt(encrypted.toString(), 'test-passphrase').toString(CryptoJS.enc.Utf8) }];
+      };
+      ${delayedRestore ? 'global.getStreams = scrape;' : 'module.exports.getStreams = scrape;'}
+    `, contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
   });
   await openAddons(page);
   await page.getByLabel('Nuvio plugin repository URL').fill('https://plugins.test/manifest.json');

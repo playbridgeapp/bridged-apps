@@ -10,11 +10,14 @@
     "check": "svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
+    "cheerio": "^1.2.0",
+    "crypto-js": "^4.2.0",
     "lucide-svelte": "^0.460.0",
     "movi-player": "0.4.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
+    "@types/crypto-js": "^4.2.2",
     "svelte": "^5.1.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.5.0",

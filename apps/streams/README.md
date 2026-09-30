@@ -88,7 +88,9 @@ With auto-selection enabled, Play, Resume, Continue Watching, and choosing an ep
 
 ## Browser plugin support
 
-Nuvio plugin code runs in a Web Worker with native browser APIs and a 30-second timeout. Browser CORS rules apply to the repository, scraper code, and sites a scraper fetches. Native-only Nuvio host functions (`require` polyfills, native fetch, DOM/WASM bridges, debrid services) are unavailable. Scrapers that declare only native platforms are skipped. Use plugin repositories you trust; their code runs locally after installation.
+Nuvio plugin code runs in a Web Worker with browser APIs and a 30-second timeout. Like Nuvio, `require` supports `cheerio` (including `cheerio-without-node-native` and `react-native-cheerio`) and `crypto-js`. The `cheerio` and `CryptoJS` globals are also available. `global`, `window`, and `self` refer to the isolated worker runtime, without access to the app DOM or local storage. CommonJS exports and top-level/global `getStreams` functions are supported. Unsupported modules report their name instead of a generic `require is not defined` error.
+
+Browser CORS rules still apply to the repository, scraper code, and sites a scraper fetches. Native-only Nuvio host functions (native fetch, DOM/WASM bridges, debrid services) and other Node modules are unavailable. Scrapers that declare only native platforms are skipped. Use plugin repositories you trust; their code runs locally after installation.
 
 For IMDb-based catalog IDs, enter your own TMDB API key in Addons. The key stays in this browser's local storage and is sent to TMDB for ID lookup and to the selected scraper worker. Manifest URLs and plugin repository URLs also stay in local storage. Clear site data to remove them.
 
