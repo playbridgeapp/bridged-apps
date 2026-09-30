@@ -236,6 +236,15 @@
   let restoringStreamSources = false;
   let sourceError = '';
   let status = '';
+  let statusTimer: number | undefined;
+  function showStatus(value: string) {
+    window.clearTimeout(statusTimer);
+    status = value;
+    statusTimer = value ? window.setTimeout(() => {
+      status = '';
+      statusTimer = undefined;
+    }, 5000) : undefined;
+  }
   let bridge = false;
   let playing: { meta: Meta; stream: Stream; selection: StreamSelectionContext; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
   let playerReady = false;
@@ -618,7 +627,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
+    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
   });
 
   async function restoreAddons() {
@@ -1146,7 +1155,7 @@
 
   function removeCatalogCache() {
     clearCatalogCache();
-    status = 'Cached catalog rows cleared.';
+    showStatus('Cached catalog rows cleared.');
   }
 
   function progressPreviews(progress: NuvioProgress[], catalogRows: CatalogRow[], library: NuvioLibraryItem[]) {
@@ -1329,7 +1338,7 @@
       if (!sourceStillCurrent(source, scope) || (source === 'nuvio' && generation !== nuvioGeneration) || !sourceAddons(source).some((item) => item.manifestUrl === url)) return;
       replaceSourceAddon(source, url, { ...addon, manifest: refreshed.manifest, loadError: undefined });
       await loadCatalogs();
-      status = `Refreshed ${refreshed.manifest.name}.`;
+      showStatus(`Refreshed ${refreshed.manifest.name}.`);
     } catch (error) {
       if (!sourceStillCurrent(source, scope) || (source === 'nuvio' && generation !== nuvioGeneration)) return;
       replaceSourceAddon(source, url, { ...addon, loadError: message(error) });
@@ -1338,7 +1347,7 @@
   }
 
   async function copyAddonUrl(url: string) {
-    try { await navigator.clipboard.writeText(url); status = 'Addon URL copied.'; }
+    try { await navigator.clipboard.writeText(url); showStatus('Addon URL copied.'); }
     catch { addonError = 'Could not copy the URL. Open the manifest and copy its address instead.'; }
   }
 
@@ -1363,7 +1372,7 @@
       if (account?.authKey === current.authKey) {
         accountLibrary = [...accountLibrary.filter((item) => item.id !== meta.id), updated];
         saveStremioLibrary(current.user._id, accountLibrary);
-        status = updated.removed ? 'Removed from Stremio library.' : 'Saved to Stremio library.';
+        showStatus(updated.removed ? 'Removed from Stremio library.' : 'Saved to Stremio library.');
       }
     } catch (error) { detailError = message(error); }
     finally { libraryBusy = false; }
@@ -1382,13 +1391,13 @@
         if (nuvioSession !== current || nuvioProfileIndex !== index) return;
         nuvioLibrary = nuvioLibrary.filter((item) => item.id !== meta.id || item.type !== meta.type);
         saveNuvioCache(current, index);
-        status = 'Removed from Nuvio library.';
+        showStatus('Removed from Nuvio library.');
       } else {
         await pushNuvioLibraryItem(current, index, meta);
         if (nuvioSession !== current || nuvioProfileIndex !== index) return;
         nuvioLibrary = [...nuvioLibrary, ...decorateNuvioLibrary([{ ...meta, addedAt: Date.now(), progress: 0 }], nuvioProgress)];
         saveNuvioCache(current, index);
-        status = 'Saved to Nuvio library.';
+        showStatus('Saved to Nuvio library.');
       }
     } catch (error) { detailError = message(error); }
     finally { nuvioLibraryBusy = false; }
@@ -2232,17 +2241,17 @@
         const meta = selected;
         await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [episode], episode, stream, addons, plugins, tmdbKey,
           resumePositionMs(meta, episode, accountLibrary, nuvioProgress),
-          (value) => { status = value; }, (progress) => reportWatchProgress(meta, progress), selection);
+          (value) => { showStatus(value); }, (progress) => reportWatchProgress(meta, progress), selection);
       } else if (selected.type === 'movie') {
         const meta = selected;
         const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress),
           (progress) => reportWatchProgress(meta, progress));
-        status = tracked ? `Casting ${meta.name} · watch progress sync is on.`
-          : `Casting ${meta.name} · progress sync is unavailable for this target.`;
+        showStatus(tracked ? `Casting ${meta.name} · watch progress sync is on.`
+          : `Casting ${meta.name} · progress sync is unavailable for this target.`);
       } else {
         await stopLinkedCast();
         directCast(selected, stream);
-        status = `Casting ${selected.name}`;
+        showStatus(`Casting ${selected.name}`);
       }
       sourceError = '';
     } catch (error) {
@@ -2299,17 +2308,17 @@
         if (!current.video) throw new Error('Choose an episode first.');
         await lazyCastSeries(current.meta, current.meta.videos?.length ? current.meta.videos : [current.video], current.video, current.stream, addons, plugins, tmdbKey,
           browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress),
-          (value) => { status = value; }, (progress) => reportWatchProgress(current.meta, progress), current.selection);
+          (value) => { showStatus(value); }, (progress) => reportWatchProgress(current.meta, progress), current.selection);
       } else if (current.meta.type === 'movie') {
         const tracked = await castMovie(current.meta, current.stream,
           browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress),
           (progress) => reportWatchProgress(current.meta, progress));
-        status = tracked ? `Casting ${current.meta.name} · watch progress sync is on.`
-          : `Casting ${current.meta.name} · progress sync is unavailable for this target.`;
+        showStatus(tracked ? `Casting ${current.meta.name} · watch progress sync is on.`
+          : `Casting ${current.meta.name} · progress sync is unavailable for this target.`);
       } else {
         await stopLinkedCast();
         directCast(current.meta, current.stream);
-        status = `Casting ${current.meta.name}`;
+        showStatus(`Casting ${current.meta.name}`);
       }
       closePlayer();
     } catch (error) { playerError = message(error); }
@@ -2596,7 +2605,7 @@
   </div>
 {/if}
 
-{#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => status = ''} aria-label="Dismiss"><X size={16} /></button></div>{/if}
+{#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => showStatus('')} aria-label="Dismiss"><X size={16} /></button></div>{/if}
 
 {#if accountPanel}
   <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
