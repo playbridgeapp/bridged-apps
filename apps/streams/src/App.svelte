@@ -9,6 +9,7 @@
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
   import TmdbDetails from './lib/TmdbDetails.svelte';
+  import TrailerPlayer from './lib/TrailerPlayer.svelte';
   import PluginSettingsDialog from './lib/PluginSettingsDialog.svelte';
   import { applyPluginPreferences, saveLocalScraperSettings, type ScraperPreference } from './lib/plugin-preferences';
   import { savedTmdbSettings, saveTmdbSettings } from './lib/tmdb-settings';
@@ -32,7 +33,7 @@
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioProgress, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, pushNuvioProgress, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioSession } from './lib/nuvio';
   import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
-  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, Video } from './lib/types';
+  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
   import { HashRouter, parseRoute, routeHash } from './lib/router';
   import type { AppRoute, MediaRoute, Tab } from './lib/router';
@@ -137,6 +138,7 @@
   let tmdbSettings = savedTmdbSettings();
   let tmdbMetadata: TmdbMetadata | null = null;
   let enrichmentBusy = false;
+  let activeTrailer: MetaTrailer | null = null;
   let enrichmentError = '';
   let enrichmentGeneration = 0;
   let enrichmentSeasonRequest = 0;
@@ -572,7 +574,8 @@
         else if (!event.shiftKey && document.activeElement === last && first) { event.preventDefault(); first.focus(); }
       }
       if (event.key !== 'Escape') return;
-      if (openDiscoverDropdown) closeDiscoverMenu();
+      if (activeTrailer) { event.preventDefault(); activeTrailer = null; }
+      else if (openDiscoverDropdown) closeDiscoverMenu();
       else if (seasonPickerOpen) seasonPickerOpen = false;
       else if (searchHistoryOpen) searchHistoryOpen = false;
       else if (playing) closePlayer();
@@ -1745,6 +1748,7 @@
   }
 
   async function applyRoute(route: AppRoute) {
+    activeTrailer = null;
     const request = ++routeRequest;
     const actionToken = ++streamActionRequest;
     const automaticAction = pendingAutoAction;
@@ -2802,7 +2806,7 @@
           {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}{#if video.runtime}<small>{video.runtime} min</small>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
         {#if selected.cast?.length && !selected.people?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
-        <TmdbDetails meta={selected} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
+        <TmdbDetails meta={selected} onTrailer={(trailer) => activeTrailer = trailer} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
         {#if detailIdentityReady && !selected.moreLikeThis?.length && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
       </div>
       {#if seasonPickerOpen}
@@ -2814,6 +2818,8 @@
     </div>
   </div>
 {/if}
+
+{#if activeTrailer}<TrailerPlayer trailer={activeTrailer} onClose={() => activeTrailer = null} />{/if}
 
 {#if playing}
   <div class="player-overlay" role="dialog" aria-modal="true" aria-label={`Now playing ${playing.meta.name}`} in:fade={{ duration: motionDuration(220), easing: cubicOut }} out:fade={{ duration: motionDuration(160), easing: cubicIn }}>

@@ -225,7 +225,7 @@ test('enriches movie details, caches TMDB results, and opens recommendations wit
   await expect(page.locator('.detail-facts-card')).toContainText('Example Director');
   await expect(page.getByRole('region', { name: 'Cast', exact: true })).toContainText('Hero');
   await expect(page.getByRole('region', { name: 'Production companies' })).toContainText('Example Studio');
-  await expect(page.getByRole('link', { name: /Official trailer/ })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=abcdef12345');
+  await expect(page.getByRole('button', { name: 'Play Official trailer', exact: true })).toBeVisible();
   await expect(page.getByRole('region', { name: 'Movie collection' })).toContainText('Collection Sequel');
   await page.getByRole('button', { name: 'Back to browsing' }).click();
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
@@ -239,6 +239,49 @@ test('enriches movie details, caches TMDB results, and opens recommendations wit
   const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'linkCast').payload);
   expect(cast.items[0].id).toBe('tt444');
 });
+
+for (const mobile of [false, true]) {
+  test(`opens and dismisses embedded trailers without leaving details on ${mobile ? 'mobile' : 'desktop'}`, async ({ page }) => {
+    if (mobile) await page.setViewportSize({ width: 390, height: 844 });
+    await mockTmdb(page);
+    await page.route('https://www.youtube-nocookie.com/embed/**', (route) => route.fulfill({
+      contentType: 'text/html', body: '<html><body>Embedded trailer</body></html>'
+    }));
+    await enableTmdbEnrichment(page);
+    await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+    const trigger = page.getByRole('button', { name: 'Play Official trailer', exact: true });
+    await expect(trigger).toBeVisible();
+    const detailUrl = page.url();
+    const dialog = page.getByRole('dialog', { name: 'Trailer: Official trailer', exact: true });
+    const close = dialog.getByRole('button', { name: 'Close trailer' });
+    await trigger.click();
+    await expect(dialog).toBeVisible();
+    await expect(close).toBeFocused();
+    await expect(dialog.locator('iframe')).toHaveAttribute('src', 'https://www.youtube-nocookie.com/embed/abcdef12345?autoplay=1&playsinline=1&rel=0');
+    await expect(dialog.locator('iframe')).toHaveAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+    await expect(dialog.getByRole('link', { name: 'Watch on YouTube' })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=abcdef12345');
+    expect(page.url()).toBe(detailUrl);
+    expect(page.context().pages()).toHaveLength(1);
+    const bounds = await dialog.boundingBox();
+    expect(bounds!.width).toBeLessThanOrEqual(mobile ? 390 : 1280);
+    await close.click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.trailer-player iframe')).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+    expect(page.url()).toBe(detailUrl);
+    await trigger.click();
+    await page.mouse.click(2, 2);
+    await expect(dialog).toHaveCount(0);
+    await trigger.click();
+    await page.goBack();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.locator('.detail-panel')).toHaveCount(0);
+  });
+}
 
 test('enriches only the selected season and preserves addon episode IDs for casting', async ({ page }) => {
   const requests = await mockTmdb(page);
