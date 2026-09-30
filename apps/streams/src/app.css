@@ -357,10 +357,16 @@ main{width:100%;min-height:100vh}
 .discover-sheet-option svg{flex:none;color:#8fe2c2}
 @keyframes discover-scrim-in{from{opacity:0}to{opacity:1}}
 @keyframes discover-dialog-in{from{opacity:0;transform:translate(-50%,15px) scale(.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
-.home-panel[hidden]{display:none}
-.tab-page{animation:tab-reveal .24s ease-out both}
+.tab-page[hidden]{display:none}
+/* Retain visited tabs without painting or extending the active tab's scroll area.
+   display:none discards the layout of every catalog card on each tab switch. */
+@supports(content-visibility:hidden){
+  .tab-page[hidden]{display:block;position:fixed;top:0;left:0;right:0;max-height:100dvh;overflow:clip;content-visibility:hidden;visibility:hidden;pointer-events:none}
+}
+.tab-page{animation:none}
+.tab-page[hidden] *{animation-play-state:paused}
+.tab-page .poster-grid .media-card{animation:none}
 .home-panel .catalog-section{content-visibility:auto;contain-intrinsic-size:auto 340px}
-@keyframes tab-reveal{from{opacity:.55;transform:translateY(7px)}to{opacity:1;transform:translateY(0)}}
 .discover-context{margin:19px 0 0;color:#aab5b8;font-size:12px}
 .discover-grid{margin-top:22px}
 .discover-skeletons{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:24px 17px;margin-top:24px}
@@ -561,23 +567,104 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
   .feature-pagination button{width:8px;height:8px;background:#ffffff75}
   .feature-pagination button.active{width:27px;background:#f4f5f4}
   .feature-hero+.browse{padding-top:10px}
-  .mobile-nav{width:min(400px,calc(100vw - 40px));bottom:max(14px,calc(env(safe-area-inset-bottom,0px) + 8px));padding:5px;border-color:#ffffff3f;background:#1c1c1ec7;box-shadow:inset 0 1px #ffffff30,0 15px 40px #000a;-webkit-backdrop-filter:blur(26px) saturate(145%);backdrop-filter:blur(26px) saturate(145%);touch-action:pan-y;animation:none;transition:width .35s cubic-bezier(.2,.8,.2,1),transform .35s cubic-bezier(.2,.8,.2,1),box-shadow .25s ease}
-  .dock-indicator{top:5px;bottom:5px;left:5px;width:calc((100% - 10px)/4);border-color:#89eed044;background:#65dab32b;box-shadow:inset 0 1px #d4ffe34d,0 0 20px #55d7ad38;transform:translate3d(var(--dock-offset,0%),0,0) scaleX(var(--dock-stretch,1));transition:transform .35s cubic-bezier(.2,.85,.2,1),opacity .15s ease}
-  .mobile-nav button{height:54px;gap:2px;padding:5px 3px;color:#c1c7c4;font-size:10px;transition:color .22s ease,height .35s ease}
-  .mobile-nav button span{max-height:16px;opacity:1;transition:opacity .2s ease,max-height .3s ease,transform .3s ease;transform:translateY(0)}
-  .mobile-nav button svg{width:21px;height:21px}
-  .mobile-nav button.active,.mobile-nav.dock-ready button.active,.mobile-nav.dock-ready button.active:hover{color:#83e8c6}
-  .mobile-nav button.active svg{animation:dock-jelly-icon .5s cubic-bezier(.2,.8,.2,1) both}
-  .mobile-nav button:hover:not(.active){background:#ffffff12;color:#fff}
-  .mobile-nav.compact{width:min(290px,calc(100vw - 80px))}
-  .mobile-nav.compact button{height:42px}
-  .mobile-nav.compact button span{max-height:0;opacity:0;transform:translateY(5px);overflow:hidden}
-  .mobile-nav.interacting{box-shadow:inset 0 1px #ffffff48,0 19px 45px #000b}
-  .mobile-nav.interacting .dock-indicator{transition:transform .08s linear;filter:brightness(1.3)}
+  .mobile-nav{
+    --dock-morph:300ms cubic-bezier(.2,0,0,1);
+    --dock-accent:#83e8c6;
+    width:min(400px,calc(100vw - 56px));
+    bottom:max(14px,calc(env(safe-area-inset-bottom,0px) + 8px));
+    gap:0;
+    padding:4px;
+    border:0;
+    background:#1c1c1e8c;
+    box-shadow:0 8px 24px #0005,0 2px 6px #0003;
+    -webkit-backdrop-filter:blur(24px) saturate(135%);
+    backdrop-filter:blur(24px) saturate(135%);
+    touch-action:pan-y;
+    isolation:isolate;
+    animation:none;
+    transition:width var(--dock-morph),box-shadow .22s ease;
+  }
+  /* A fine light-catching rim, independent of the translucent fill. */
+  .mobile-nav::before{
+    content:"";
+    position:absolute;
+    inset:0;
+    z-index:2;
+    padding:.75px;
+    border-radius:inherit;
+    background:linear-gradient(180deg,#ffffff45,#ffffff05);
+    -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+    -webkit-mask-composite:xor;
+    mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+    mask-composite:exclude;
+    pointer-events:none;
+  }
+  .dock-indicator{
+    top:4px;
+    bottom:4px;
+    left:4px;
+    width:calc((100% - 8px)/4);
+    border:.75px solid #a9f5db1c;
+    background:linear-gradient(160deg,#83e8c629,#83e8c61c);
+    box-shadow:inset 0 1px #caffea14,0 0 18px #83e8c61a;
+    transform:translate3d(var(--dock-offset,0%),0,0) scaleX(var(--dock-stretch,1));
+    transition:transform .4s cubic-bezier(.2,.9,.25,1.06),opacity .15s ease;
+    will-change:transform;
+  }
+  .mobile-nav button{
+    flex:1 1 0;
+    height:56px;
+    gap:0;
+    padding:0 2px;
+    color:#ffffff99;
+    font-size:11px;
+    font-weight:400;
+    line-height:16px;
+    background:transparent;
+    transition:color .22s ease,height var(--dock-morph);
+  }
+  .mobile-nav button span{
+    height:16px;
+    max-height:none;
+    font-size:11px;
+    opacity:1;
+    overflow:hidden;
+    transform:none;
+    transition:height var(--dock-morph),opacity var(--dock-morph);
+  }
+  .mobile-nav button svg{
+    flex:none;
+    width:28px;
+    height:28px;
+    stroke-width:1.8;
+    transform:translateY(2px);
+    transition:transform var(--dock-morph);
+  }
+  .mobile-nav button.active,.mobile-nav.dock-ready button.active,.mobile-nav.dock-ready button.active:hover{
+    color:var(--dock-accent);
+    background:transparent;
+    box-shadow:none;
+  }
+  .mobile-nav button.active span{font-weight:600}
+  .mobile-nav button.active svg{animation:dock-jelly-icon .4s cubic-bezier(.2,.8,.2,1) both}
+  .mobile-nav button:hover:not(.active){background:transparent;color:#ffffffb8}
+  .mobile-nav button:hover:not(.active) svg{transform:translateY(2px)}
+  .mobile-nav button:active svg{transform:translateY(2px) scale(.94)}
+  .mobile-nav button:focus-visible{outline:2px solid var(--dock-accent);outline-offset:-2px}
+  .mobile-nav.compact{width:min(340px,calc(100vw - 116px))}
+  .mobile-nav.compact button{height:44px}
+  .mobile-nav.compact button span{height:0;max-height:none;opacity:0;transform:none}
+  .mobile-nav.compact button svg{transform:translateY(0)}
+  .mobile-nav.compact button.active svg{animation:none}
+  .mobile-nav.compact button:active svg{transform:scale(.94)}
+  .mobile-nav.interacting{box-shadow:0 10px 28px #0006,0 2px 6px #0003}
+  .mobile-nav.interacting .dock-indicator{transition:transform .07s linear;filter:none}
+  @supports not ((backdrop-filter:blur(24px)) or (-webkit-backdrop-filter:blur(24px))){.mobile-nav{background:#1c1c1ed1}}
 }
-@keyframes dock-jelly-icon{0%{transform:scale(.86)}55%{transform:scale(1.2)}100%{transform:scale(1.06)}}
+@keyframes dock-jelly-icon{0%{transform:translateY(2px) scale(.96)}55%{transform:translateY(2px) scale(1.07)}100%{transform:translateY(2px) scale(1)}}
 @media(prefers-reduced-motion:reduce){.feature-art,.feature-pagination button,.mobile-nav,.mobile-nav button,.mobile-nav button span,.dock-indicator{animation:none!important;transition:none!important}}
 @media(prefers-reduced-transparency:reduce){.mobile-nav{background:#1c2221;backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media(max-width:800px) and (prefers-reduced-transparency:reduce){.mobile-nav{background:#1c1c1e}.dock-indicator{box-shadow:none}}
 .app-shell.content-open .mobile-nav{display:none}
 .catalog-view-all{display:grid;place-items:center;flex:none;width:39px;height:39px;margin-left:12px;border:1px solid #ffffff29;border-radius:50%;background:#ffffff10;color:#dce6e4;cursor:pointer;transition:background .18s ease,transform .18s ease}
 .catalog-view-all:hover{background:#ffffff26;transform:translateX(2px)}

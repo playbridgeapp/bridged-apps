@@ -27,6 +27,8 @@ Screens use URL routes with browser Back and Forward support. Hash routes work o
 
 Links resolve metadata and streams using the recipient's enabled addons. They do not install addons or contain account credentials or resolved stream URLs. Season and episode choices survive refreshes. Back returns from the player to streams, from streams to details (or the originating Continue Watching page), and from details to the originating catalog or tab. Scroll positions and loaded catalog pages are retained during navigation in the current page session. The player also has a route; reloading or sharing it opens stream selection so a fresh source can be chosen.
 
+Home, Search, Library, and Settings switch immediately, without page or grid entrance animations. Each tab is retained after its first visit, preserving loaded cards and controls instead of rebuilding them on every switch. Inactive tabs do not paint or extend the current page's scroll area; supported browsers retain their layouts with CSS content visibility. The dock and detail/player flows keep their own animations. Touch layouts omit desktop hover overlays, and poster images decode asynchronously.
+
 Refresh restores a recently opened title's name and artwork from a session cache (up to 24 titles for six hours), then loads fresh metadata. Uncached title links show a loading skeleton rather than a raw media ID. Playback actions remain disabled while details and account sources restore.
 
 ## Bridged Apps on Android

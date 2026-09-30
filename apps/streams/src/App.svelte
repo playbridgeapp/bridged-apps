@@ -152,6 +152,7 @@
   let catalogPageDuplicatePages = 0;
   let catalogPageRequest = 0;
   let tab: Tab = 'home';
+  let visitedTabs = new Set<Tab>(['home']);
   let currentRoute: AppRoute = parseRoute(window.location.hash);
   let router: HashRouter | null = null;
   let restoreReady: Promise<unknown> = Promise.resolve();
@@ -489,9 +490,8 @@
     dockPointerStartX = event.clientX;
     dockPointerStartY = event.clientY;
     dockPointerMoved = false;
-    dockStretch = 1.06;
+    dockStretch = 1.03;
     dockInteracting = true;
-    moveDockIndicatorToPointer(event.clientX);
   }
 
   function moveDockIndicatorToPointer(clientX: number) {
@@ -513,7 +513,7 @@
     if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 16) { dockInteracting = false; dockStretch = 1; updateDockIndicator(); return; }
     if (Math.abs(dx) < 8 && !dockPointerMoved) return;
     dockPointerMoved = true;
-    dockStretch = 1.06 + Math.min(.14, Math.abs(dx) / 450);
+    dockStretch = 1.03 + Math.min(.09, Math.abs(dx) / 600);
     moveDockIndicatorToPointer(event.clientX);
   }
 
@@ -521,7 +521,7 @@
     if (!dockInteracting) return;
     dockInteracting = false;
     dockStretch = 1;
-    if (!dockPointerMoved) return;
+    if (!dockPointerMoved) { updateDockIndicator(); return; }
     const buttons = [...(dockElement?.querySelectorAll<HTMLButtonElement>('button') || [])];
     const targetIndex = buttons.findIndex((button) => {
       const bounds = button.getBoundingClientRect();
@@ -1561,7 +1561,7 @@
 
   async function runSearch() {
     const query = search.trim();
-    tab = 'search';
+    selectTab('search');
     if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
       replaceRoute({ ...currentRoute, query: query || undefined });
     }
@@ -2025,6 +2025,7 @@
   function selectTab(next: Tab) {
     openDiscoverDropdown = null;
     if (next === tab) return;
+    if (!visitedTabs.has(next)) visitedTabs = new Set([...visitedTabs, next]);
     tabScrollPositions[tab] = window.scrollY;
     const request = ++navigationRequest;
     dockRestoringScroll = true;
@@ -2447,16 +2448,17 @@
         <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
       </section>
     {:else}
-    {#if tab === 'library'}
-      <section class="browse tab-page">
+    {#if visitedTabs.has('library')}
+      <section class="library-panel browse tab-page" hidden={tab !== 'library'}>
         <div class="page-intro"><div class="eyebrow">CONNECTED ACCOUNTS</div><h1>Library</h1><p>{account || nuvioSession ? `${savedLibrary.length} synced titles` : 'Sign in to Stremio or Nuvio to see your library and watch progress.'}</p></div>
         {#if !account && !nuvioSession}<div class="empty-state">Connect Stremio or Nuvio to bring in your library and Continue Watching.<br /><button class="primary-button inline-action" onclick={() => openSettingsPanel('accounts')}><UserRound size={17} /> Connect an account</button></div>
         {:else if (accountSyncing || nuvioSyncing) && !savedLibrary.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Syncing your library…</div>
         {:else if savedLibrary.length}<div class="poster-grid">{#each savedLibrary as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={item.progress ? `${item.progress}% watched` : undefined} onSelect={() => void openDetail(item)} />{/each}</div>
         {:else}<div class="empty-state">Your connected library is empty. Add a title, then sync again.</div>{/if}
       </section>
-    {:else if tab === 'settings'}
-      <section class="settings-page browse tab-page">
+    {/if}
+    {#if visitedTabs.has('settings')}
+      <section class="settings-page browse tab-page" hidden={tab !== 'settings'}>
         <div class="page-intro"><div class="eyebrow">YOUR SPACE</div><h1>Settings</h1><p>Manage your accounts, addons, and playback preferences.</p></div>
         <div class="settings-grid">
           <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
@@ -2464,8 +2466,9 @@
           <button class="settings-card" onclick={() => openSettingsPanel('integrations')}><span class="settings-card-icon"><Info size={24} /></span><span class="settings-card-copy"><strong>Integrations</strong><small>TMDB enrichment · {tmdbSettings.enabled ? 'On' : 'Off'}</small></span><ArrowRight size={19} /></button>
         </div>
       </section>
-    {:else if tab === 'search'}
-      <div class="search-panel tab-page">
+    {/if}
+    {#if visitedTabs.has('search')}
+      <div class="search-panel tab-page" hidden={tab !== 'search'}>
       <section class="search-page search-home">
         <div class="eyebrow">FIND SOMETHING TO WATCH</div>
         <h1>Search</h1>
@@ -2571,10 +2574,10 @@
 
   <nav class="mobile-nav" class:dock-ready={dockReady} class:compact={dockCompact} class:interacting={dockInteracting} aria-label="Main navigation" bind:this={dockElement} onpointerdown={onDockPointerDown} onpointermove={onDockPointerMove} onpointerup={onDockPointerUp} onpointercancel={() => { dockInteracting = false; dockStretch = 1; updateDockIndicator(); }} onclickcapture={(event) => { if (suppressDockClick) { event.preventDefault(); event.stopPropagation(); suppressDockClick = false; } }}>
     <span class="dock-indicator" aria-hidden="true" style={`--dock-x:${dockIndicatorX}px;--dock-width:${dockIndicatorWidth}px;--dock-offset:${dockPosition * 100}%;--dock-stretch:${dockStretch}`}></span>
-    <button class:active={tab === 'home'} aria-current={tab === 'home' ? 'page' : undefined} onclick={() => navigate('home')}><Home size={20} /><span>Home</span></button>
-    <button class:active={tab === 'search'} aria-current={tab === 'search' ? 'page' : undefined} onclick={() => navigate('search')}><Search size={20} /><span>Search</span></button>
-    <button class:active={tab === 'library'} aria-current={tab === 'library' ? 'page' : undefined} onclick={() => navigate('library')}><Library size={20} /><span>Library</span></button>
-    <button class:active={tab === 'settings'} aria-current={tab === 'settings' ? 'page' : undefined} onclick={() => navigate('settings')}><Settings2 size={20} /><span>Settings</span></button>
+    <button class:active={tab === 'home'} aria-label="Home" aria-current={tab === 'home' ? 'page' : undefined} onclick={() => navigate('home')}><Home size={20} /><span>Home</span></button>
+    <button class:active={tab === 'search'} aria-label="Search" aria-current={tab === 'search' ? 'page' : undefined} onclick={() => navigate('search')}><Search size={20} /><span>Search</span></button>
+    <button class:active={tab === 'library'} aria-label="Library" aria-current={tab === 'library' ? 'page' : undefined} onclick={() => navigate('library')}><Library size={20} /><span>Library</span></button>
+    <button class:active={tab === 'settings'} aria-label="Settings" aria-current={tab === 'settings' ? 'page' : undefined} onclick={() => navigate('settings')}><Settings2 size={20} /><span>Settings</span></button>
   </nav>
 </div>
 

@@ -1322,3 +1322,42 @@ test('keeps the dock expanded when returning to a scrolled tab', async ({ page }
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
   await expect(dock).not.toHaveClass(/compact/);
 });
+
+test('retains visited tab content and restores search without rebuilding or fetching it again', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  let searchRequests = 0;
+  await page.route(`${addon}/catalog/movie/**`, async (route) => {
+    if (route.request().url().includes('search=')) searchRequests += 1;
+    await route.fulfill({ json: { metas: Array.from({ length: 40 }, (_,index) => ({
+      id: `tt-search-${index}`, type: 'movie', name: `Search Film ${index}`
+    })) }, headers: { 'access-control-allow-origin': '*' } });
+  });
+  await goTab(page, 'Search');
+  const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  await input.fill('Film');
+  await page.locator('.search-submit').click();
+  const cards = page.locator('.search-results .media-card');
+  await expect(cards).toHaveCount(41);
+  const firstCard = await cards.first().elementHandle();
+  expect(firstCard).not.toBeNull();
+  const completedSearchRequests = searchRequests;
+  await page.evaluate(() => window.scrollTo(0, 600));
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(600);
+
+  await goTab(page, 'Settings');
+  await expect(input).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await goTab(page, 'Library');
+  await expect(page.getByRole('heading', { name: 'Library', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await goTab(page, 'Home');
+  await expect(page.getByRole('heading', { name: 'Films', exact: true })).toBeVisible();
+  await goTab(page, 'Search');
+  await expect(input).toHaveValue('Film');
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(600);
+  expect(await firstCard!.evaluate((node) => node.isConnected)).toBe(true);
+  expect(await cards.first().evaluate((node, original) => node === original, firstCard!)).toBe(true);
+  expect(searchRequests).toBe(completedSearchRequests);
+  await firstCard!.dispose();
+});
