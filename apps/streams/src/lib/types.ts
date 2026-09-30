@@ -46,6 +46,9 @@ export interface MetaPreview {
   releaseInfo?: string;
   imdbRating?: string;
   genres?: string[];
+  imdb_id?: string;
+  imdbId?: string;
+  tmdbId?: number;
 }
 
 export interface Video {
@@ -58,7 +61,13 @@ export interface Video {
   episode?: number;
   released?: string;
   thumbnail?: string;
+  runtime?: number;
+  seasonPoster?: string;
 }
+
+export interface MetaPerson { id: number; name: string; character?: string; photo?: string }
+export interface MetaCompany { id: number; name: string; logo?: string }
+export interface MetaTrailer { id: string; name: string; url: string; thumbnail: string }
 
 export interface Meta extends MetaPreview {
   videos?: Video[];
@@ -69,6 +78,16 @@ export interface Meta extends MetaPreview {
   cast?: string[];
   director?: string[] | string;
   writer?: string[] | string;
+  ageRating?: string;
+  language?: string;
+  ratingSource?: 'TMDB';
+  people?: MetaPerson[];
+  productionCompanies?: MetaCompany[];
+  networks?: MetaCompany[];
+  trailers?: MetaTrailer[];
+  moreLikeThis?: MetaPreview[];
+  collectionName?: string;
+  collectionItems?: MetaPreview[];
 }
 
 export interface Stream {

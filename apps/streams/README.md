@@ -59,6 +59,14 @@ Open **Settings → Addons and playback** to change addon priority, turn an addo
 
 Local addon order and switches stay in this browser. Stremio addon order syncs to Stremio, while its on/off and feature switches stay in this browser. Nuvio addon order and the main on/off switch sync to the selected Nuvio profile; per-resource switches stay in this browser. Disabled or unreachable addons remain listed so you can refresh, re-enable, or remove them. Cached addon manifests, catalog rows, and library data let the page show familiar content immediately after a refresh while account and addon requests update it in the background. Nuvio data from a PIN-protected profile stays hidden until that profile is unlocked. Stream URLs are resolved when you choose a title or episode. You can refresh catalogs manually, choose a 15, 30, or 60 minute auto refresh interval, or clear cached rows.
 
+## TMDB enrichment
+
+Open **Settings → Integrations → TMDB enrichment** and enable it with your own TMDB API key. It is off by default, uses the same browser-stored key as Nuvio scraper lookups, and does not require a TMDB account login in Bridged Streams. Choose a preferred language and independently enable artwork, basic information, title details, cast and crew, production companies, networks, episode details, season posters, trailers, recommendations, and movie collections.
+
+Addon details appear first; TMDB enrichment loads in the background without delaying Play or stream selection. Public metadata is cached in this tab for six hours, with at most 60 cached API responses. Failed requests are not cached and can be retried. Episode details are fetched only for the season being viewed. Addon title IDs, episode IDs, release dates, existing IMDb ratings, and progress identity are preserved. TMDB fallback ratings are labeled TMDB. Trailers open on YouTube. Recommended and collection titles use their IMDb identity for compatible addons when TMDB supplies one; playback still depends on installed stream providers, and series need an addon episode list.
+
+Bridged Streams requires a user-entered key. Enrichment preferences are local to this browser and are not synced to Nuvio profiles.
+
 ## Casting
 
 ### Automatic stream selection

@@ -7,6 +7,12 @@
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
+  import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
+  import TmdbDetails from './lib/TmdbDetails.svelte';
+  import { savedTmdbSettings, saveTmdbSettings } from './lib/tmdb-settings';
+  import type { TmdbSettings } from './lib/tmdb-settings';
+  import { fetchTmdbMetadata, fetchTmdbSeason, applyTmdbMetadata, applyTmdbSeason } from './lib/tmdb';
+  import type { TmdbMetadata } from './lib/tmdb';
   import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
   import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext } from './lib/stream-selection';
   import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
@@ -97,6 +103,7 @@
   let stremioRestoring = !!initialStremioSession;
   let nuvioRestoring = !!initialNuvioSession;
   let accountPanel = false;
+  let integrationsPanel = false;
   let loginMode: 'password' | 'key' = 'password';
   let email = '';
   let password = '';
@@ -121,6 +128,13 @@
   let pluginError = '';
   let addingPlugin = false;
   let tmdbKey = '';
+  let tmdbSettings = savedTmdbSettings();
+  let tmdbMetadata: TmdbMetadata | null = null;
+  let enrichmentBusy = false;
+  let enrichmentError = '';
+  let enrichmentGeneration = 0;
+  let enrichmentSeasonRequest = 0;
+  let lastEnrichmentSeasonKey = '';
   let rows: CatalogRow[] = [];
   let catalogPage: CatalogRow | null = null;
   let catalogPageItems: MetaPreview[] = [];
@@ -386,7 +400,7 @@
   $: seasonSummaries = seasons.map((value) => {
     const videos = (selected?.videos || []).filter((video) => video.season === value);
     return { value, label: value === 0 ? 'Specials' : `Season ${value}`, count: videos.length,
-      image: videos.find((video) => video.thumbnail)?.thumbnail || selected?.poster };
+      image: videos.find((video) => video.seasonPoster)?.seasonPoster || videos.find((video) => video.thumbnail)?.thumbnail || selected?.poster };
   });
   $: episodes = (selected?.videos || []).filter((video) => video.season === season)
     .sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
@@ -398,6 +412,12 @@
   $: unavailable = streams.length - playable.length;
   $: browserUncertain = playable.filter((stream) => stream.behaviorHints?.notWebReady).length;
   $: if (tab) void tick().then(updateDockIndicator);
+  $: enrichmentSeasonKey = selected?.type === 'series' && tmdbMetadata && tmdbSettings.enabled && tmdbSettings.episodes
+    ? `${enrichmentGeneration}:${tmdbMetadata.id}:${season}:${tmdbSettings.language}` : '';
+  $: if (enrichmentSeasonKey && enrichmentSeasonKey !== lastEnrichmentSeasonKey) {
+    lastEnrichmentSeasonKey = enrichmentSeasonKey;
+    void enrichCurrentSeason();
+  }
 
   function updateDockIndicator() {
     const buttons = [...(dockElement?.querySelectorAll<HTMLButtonElement>('button') || [])];
@@ -546,7 +566,7 @@
       else if (seasonPickerOpen) seasonPickerOpen = false;
       else if (searchHistoryOpen) searchHistoryOpen = false;
       else if (playing) closePlayer();
-      else if (accountPanel || managing) closeSettingsPanel();
+      else if (accountPanel || managing || integrationsPanel) closeSettingsPanel();
       else if (selected && streamScreen) closeStreamScreen();
       else if (selected) closeDetail();
       else if (catalogPage) closeCatalogPage();
@@ -1662,7 +1682,7 @@
       episode: video?.episode };
   }
 
-  function openSettingsPanel(panel: 'accounts' | 'addons') {
+  function openSettingsPanel(panel: 'accounts' | 'addons' | 'integrations') {
     router?.push({ kind: 'tab', tab: 'settings', panel });
   }
 
@@ -1687,12 +1707,14 @@
       || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
     accountPanel = false;
     managing = false;
+    integrationsPanel = false;
     openDiscoverDropdown = null;
     searchHistoryOpen = false;
     if (route.kind === 'tab') {
       selectTab(route.tab);
       accountPanel = route.panel === 'accounts';
       managing = route.panel === 'addons';
+      integrationsPanel = route.panel === 'integrations';
       if (route.tab === 'search' && search !== (route.query || '')) {
         search = route.query || '';
         if (!catalogs(addons).some(({ catalog }) => requiredCatalogExtras(catalog, search.trim())?.search)) await restoreReady;
@@ -1717,7 +1739,8 @@
       const needsSources = route.kind === 'catalog'
         ? !rows.some((row) => row.addon.manifest.id === route.addonId && row.catalog.type === route.type && row.catalog.id === route.id)
         : !retainMedia && !detailMemory.has(`${route.type}:${route.id}`)
-          && !addons.some((addon) => supports(addon, 'meta', route.type, route.id));
+          && !addons.some((addon) => supports(addon, 'meta', route.type, route.id))
+          && !(tmdbSettings.enabled && tmdbKey.trim() && /^tmdb:\d+$/.test(route.id));
       if (needsSources) { await restoreReady; await tick(); }
       if (request !== routeRequest) return;
       if (route.kind === 'catalog') {
@@ -1805,16 +1828,28 @@
     detailExpanded = false;
     loadingDetail = true;
     try {
-      const remembered = cached || detailMemory.get(`${preview.type}:${preview.id}`);
-      const meta = remembered || await fetchMeta(addons, preview);
+      const remembered = detailMemory.get(`${preview.type}:${preview.id}`) || cached;
+      let meta = remembered || await fetchMeta(addons, preview);
+      let initialTmdb: TmdbMetadata | null = null;
+      if (!remembered && /^tmdb:\d+$/.test(preview.id) && tmdbSettings.enabled && tmdbKey.trim()) {
+        initialTmdb = await fetchTmdbMetadata(preview, tmdbKey, { ...tmdbSettings, collections: false });
+        if (request !== detailRequest) return;
+        if (initialTmdb) {
+          const imdbId = initialTmdb.data.imdb_id || initialTmdb.data.external_ids?.imdb_id;
+          const lookup = { ...preview, id: /^tt\d+$/.test(imdbId || '') ? imdbId! : preview.id };
+          meta = await fetchMeta(addons, lookup);
+          if (meta.name === meta.id) meta = { ...meta, name: initialTmdb.data.title || initialTmdb.data.name || meta.name };
+        }
+      }
       if (request !== detailRequest) return;
       selected = meta;
       if (!remembered) saveDetailPreview(meta);
       if (meta.name === meta.id) detailError = 'Could not load this title. Check that its metadata addon is enabled and reachable.';
-      if (!addons.some((addon) => supports(addon, 'meta', meta.type, meta.id)) && !meta.videos?.length) {
+      if (!initialTmdb && !addons.some((addon) => supports(addon, 'meta', meta.type, meta.id)) && !meta.videos?.length) {
         detailError = 'Install or enable an addon that provides metadata for this title.';
       }
       detailMemory.set(`${meta.type}:${meta.id}`, meta);
+      if (preview.id !== meta.id) detailMemory.set(`${preview.type}:${preview.id}`, meta);
       season = route.season ?? defaultSeason(meta.videos);
       const recentProgress = nuvioProgress.filter((entry) => entry.content_id === meta.id && entry.content_type === meta.type
         && entry.position > 0 && entry.duration > 0 && entry.position < entry.duration * .95)
@@ -1842,6 +1877,7 @@
         replaceRoute(mediaRoute(route.kind));
       }
       loadingDetail = false;
+      void enrichDetail(meta);
       if (fromContinue && (meta.type !== 'series' || resumeVideo)) await loadStreams(meta.type, resumeVideo?.id || meta.id, false, onStreamsUpdate);
     } catch (error) {
       if (request === detailRequest) detailError = message(error);
@@ -1854,7 +1890,60 @@
     router?.back({ kind: 'tab', tab });
   }
 
+  function updateTmdbSettings(settings: TmdbSettings) {
+    tmdbSettings = settings;
+    saveTmdbSettings(settings);
+  }
+
+  function updateTmdbKey(key: string) {
+    tmdbKey = key;
+    saveTmdbKey(key);
+  }
+
+  async function enrichDetail(meta: Meta) {
+    const generation = ++enrichmentGeneration;
+    enrichmentError = '';
+    tmdbMetadata = null;
+    if (!tmdbSettings.enabled || !tmdbKey.trim() || (meta.type !== 'movie' && meta.type !== 'series')) return;
+    const settings = { ...tmdbSettings };
+    enrichmentBusy = true;
+    try {
+      const data = await fetchTmdbMetadata(meta, tmdbKey, settings);
+      if (generation !== enrichmentGeneration || selected?.id !== meta.id || selected.type !== meta.type) return;
+      if (data) {
+        tmdbMetadata = data;
+        selected = applyTmdbMetadata(meta, data, settings);
+        if (episode) episode = selected.videos?.find((video) => video.id === episode?.id) || episode;
+        saveDetailPreview(selected);
+      }
+    } catch (error) {
+      if (generation === enrichmentGeneration) enrichmentError = message(error);
+    } finally { if (generation === enrichmentGeneration) enrichmentBusy = false; }
+  }
+
+  async function enrichCurrentSeason() {
+    const meta = selected;
+    const data = tmdbMetadata;
+    if (!meta || !data || meta.type !== 'series' || !meta.videos?.some((video) => video.season === season)) return;
+    const request = ++enrichmentSeasonRequest;
+    const generation = enrichmentGeneration;
+    const selectedSeason = season;
+    const settings = { ...tmdbSettings };
+    try {
+      const details = await fetchTmdbSeason(data.id, selectedSeason, tmdbKey, settings.language);
+      if (request !== enrichmentSeasonRequest || generation !== enrichmentGeneration || selected?.id !== meta.id) return;
+      selected = { ...selected, videos: applyTmdbSeason(selected.videos || [], selectedSeason, details, settings) };
+      if (episode) episode = selected.videos?.find((video) => video.id === episode?.id) || episode;
+    } catch (error) { if (generation === enrichmentGeneration && request === enrichmentSeasonRequest) enrichmentError = message(error); }
+  }
+
   function resetDetail() {
+    enrichmentGeneration += 1;
+    enrichmentSeasonRequest += 1;
+    tmdbMetadata = null;
+    enrichmentBusy = false;
+    enrichmentError = '';
+    lastEnrichmentSeasonKey = '';
     detailRequest += 1;
     streamRequest += 1;
     selected = null;
@@ -2134,7 +2223,7 @@
       if (!nativePlayerFallback) playerError = 'MoviPlayer could not load. Open Playback diagnostics below for details.';
     }
     playerLoading = false;
-    if (request !== detailRequest || navigation !== routeRequest || selected !== meta) {
+    if (request !== detailRequest || navigation !== routeRequest || selected?.id !== meta.id || selected.type !== meta.type) {
       logPlayback('play cancelled', 'The selected title changed while the player loaded.');
       return;
     }
@@ -2313,6 +2402,7 @@
         <div class="settings-grid">
           <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('integrations')}><span class="settings-card-icon"><Info size={24} /></span><span class="settings-card-copy"><strong>Integrations</strong><small>TMDB enrichment · {tmdbSettings.enabled ? 'On' : 'Off'}</small></span><ArrowRight size={19} /></button>
         </div>
       </section>
     {:else if tab === 'search'}
@@ -2552,6 +2642,16 @@
   </div>
 {/if}
 
+{#if integrationsPanel}
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
+    <div class="manage-panel" role="dialog" aria-modal="true" aria-label="Integrations">
+      <div class="panel-header"><div><div class="eyebrow">EXTRA DETAILS</div><h2>Integrations</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={21} /></button></div>
+      <p class="panel-copy">Choose the extra details you want to see on movie and TV show pages.</p>
+      <TmdbSettingsPanel settings={tmdbSettings} apiKey={tmdbKey} onChange={updateTmdbSettings} onKeyChange={updateTmdbKey} />
+    </div>
+  </div>
+{/if}
+
 {#if addonPendingRemoval}
   <div class="overlay confirm-overlay" role="presentation" in:fade={{ duration: motionDuration(150) }} out:fade={{ duration: motionDuration(120) }} onclick={(event) => { if (event.target === event.currentTarget) addonPendingRemoval = null; }}>
     <div class="confirm-panel" role="dialog" aria-modal="true" aria-label="Remove addon"><h2>Remove addon?</h2><p>{addonPendingRemoval.name} will be removed from {addonPendingRemoval.source === 'local' ? 'this browser' : addonPendingRemoval.source === 'stremio' ? 'your Stremio account' : 'your Nuvio profile'}.</p><div><button class="outline-button" onclick={() => addonPendingRemoval = null}>Cancel</button><button class="confirm-delete" onclick={() => void confirmRemoveAddon()}>Remove</button></div></div>
@@ -2613,21 +2713,24 @@
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
           <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if streamSelection.enabled}<button class="detail-action-icon" onclick={() => void detailPlay('cast')} disabled={loadingDetail || !bridge} aria-label="Cast with auto-selection" title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={21} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
-          <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
+          <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10{selected.ratingSource ? ` · ${selected.ratingSource}` : ''}</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}{#if selected.ageRating}<span>{selected.ageRating}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
           {/if}
         </div>
-        {#if selected.director || selected.cast?.length || selected.country || selected.status}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{selected.cast.slice(0, 3).join(', ')}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}</aside>{/if}
+        {#if selected.director || selected.writer || selected.cast?.length || selected.country || selected.status || selected.language}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}</strong></div>{/if}{#if selected.writer}<div><span>WRITTEN BY</span><strong>{Array.isArray(selected.writer) ? selected.writer.join(', ') : selected.writer}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{selected.cast.slice(0, 3).join(', ')}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}{#if selected.language}<div><span>ORIGINAL LANGUAGE</span><strong>{selected.language.toUpperCase()}</strong></div>{/if}</aside>{/if}
       </div>
       <div id="detail-about" class="detail-content">
         {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading details…</div>{/if}
+        {#if enrichmentBusy}<p class="tmdb-detail-status" role="status">Adding TMDB details…</p>{/if}
+        {#if enrichmentError}<p class="tmdb-detail-status">{enrichmentError} <button class="text-action" onclick={() => { const base = selected && detailMemory.get(`${selected.type}:${selected.id}`); if (base) { lastEnrichmentSeasonKey = ''; void enrichDetail(base); } }}>Retry TMDB details</button></p>{/if}
         {#if detailError}<div class="error-message">{detailError}</div>{/if}
         {#if detailIdentityReady && selected.type === 'series'}
           <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2>{#if pendingEpisodeAction === 'cast'}<p class="episode-action-hint">Choose an episode to cast. <button onclick={() => pendingEpisodeAction = 'play'}>Cancel</button></p>{/if}</div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
-          {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
+          {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}{#if video.runtime}<small>{video.runtime} min</small>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
-        {#if selected.cast?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
-        {#if detailIdentityReady && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
+        {#if selected.cast?.length && !selected.people?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
+        <TmdbDetails meta={selected} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
+        {#if detailIdentityReady && !selected.moreLikeThis?.length && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
       </div>
       {#if seasonPickerOpen}
         <div class="season-mobile-sheet" role="dialog" aria-modal="true" aria-label="Choose season">

@@ -1,5 +1,6 @@
 import type { MediaType, PluginRepository, PluginScraper, Stream } from './types';
 import ScraperWorker from './scraper-worker?worker';
+import { resolveTmdbId } from './tmdb';
 
 const STORAGE_KEY = 'bridged-streams.plugins.v1';
 const DISABLED_KEY = 'bridged-streams.disabled-scrapers.v1';
@@ -67,33 +68,12 @@ export function saveTmdbKey(key: string): void {
   else localStorage.removeItem(TMDB_KEY);
 }
 
-const tmdbLookupCache = new Map<string, { result: Promise<string | null>; expiresAt: number }>();
-
 export function browserCompatible(scraper: PluginScraper): boolean {
   return scraper.enabled !== false && platformCompatible(scraper);
 }
 
 async function tmdbId(id: string, type: MediaType, key: string): Promise<string | null> {
-  if (/^tmdb:\d+$/.test(id)) return id.slice(5);
-  if (/^\d+$/.test(id)) return id;
-  if (!/^tt\d+$/.test(id) || !key) return null;
-  const cacheKey = `${type}:${id}:${key}`;
-  const cached = tmdbLookupCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) return cached.result;
-  const result = (async () => {
-    const url = new URL(`https://api.themoviedb.org/3/find/${encodeURIComponent(id)}`);
-    url.searchParams.set('api_key', key);
-    url.searchParams.set('external_source', 'imdb_id');
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`TMDB returned HTTP ${response.status}.`);
-    const data = await response.json() as { movie_results?: Array<{ id: number }>; tv_results?: Array<{ id: number }> };
-    const value = (type === 'movie' ? data.movie_results : data.tv_results)?.[0]?.id;
-    return value ? String(value) : null;
-  })();
-  tmdbLookupCache.set(cacheKey, { result, expiresAt: Date.now() + 5 * 60_000 });
-  if (tmdbLookupCache.size > 30) tmdbLookupCache.delete(tmdbLookupCache.keys().next().value!);
-  void result.catch(() => { if (tmdbLookupCache.get(cacheKey)?.result === result) tmdbLookupCache.delete(cacheKey); });
-  return result;
+  return (await resolveTmdbId(id, type, key))?.toString() || null;
 }
 
 function runWorker(code: string, args: { tmdbId: string; mediaType: 'movie' | 'tv'; season?: number; episode?: number; tmdbKey: string }): Promise<unknown[]> {

@@ -102,6 +102,170 @@ test('opens cached catalogs, title details, and URL search while an addon manife
   } finally { release(); }
 });
 
+async function enableTmdbEnrichment(page: Page) {
+  await goTab(page, 'Settings');
+  await page.getByRole('button', { name: /^Integrations/ }).click();
+  await expect(page.getByRole('switch', { name: 'TMDB enrichment', exact: true })).not.toBeChecked();
+  await page.getByRole('dialog', { name: 'Integrations' }).getByLabel('TMDB API key', { exact: true }).fill('test-tmdb-key');
+  await page.getByRole('switch', { name: 'TMDB enrichment', exact: true }).check();
+  await page.getByRole('dialog', { name: 'Integrations' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+}
+
+async function mockTmdb(page: Page) {
+  const requests: string[] = [];
+  await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route('https://i.ytimg.com/**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route('https://api.themoviedb.org/**', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    requests.push(path);
+    let data: unknown = {};
+    if (path === '/3/find/tt100') data = { movie_results: [{ id: 321 }] };
+    else if (path === '/3/find/tt200') data = { tv_results: [{ id: 900 }] };
+    else if (path === '/3/movie/321') data = { id: 321, title: 'Enriched Film', overview: 'Extra film overview', runtime: 123,
+      poster_path: '/poster.jpg', backdrop_path: '/backdrop.jpg', status: 'Released', original_language: 'en',
+      genres: [{ name: 'Adventure' }], vote_average: 7.5, production_countries: [{ name: 'Canada' }],
+      credits: { cast: [{ id: 1, name: 'Example Actor', character: 'Hero', profile_path: '/actor.jpg' }],
+        crew: [{ id: 2, name: 'Example Director', job: 'Director' }, { id: 3, name: 'Example Writer', job: 'Writer' }] },
+      production_companies: [{ id: 4, name: 'Example Studio', logo_path: '/studio.png' }],
+      release_dates: { results: [{ iso_3166_1: 'US', release_dates: [{ certification: 'PG-13' }] }] },
+      videos: { results: [{ key: 'abcdef12345', name: 'Official trailer', site: 'YouTube', type: 'Trailer', official: true }] },
+      recommendations: { results: [{ id: 444, title: 'Recommended Film', poster_path: '/recommended.jpg' }] },
+      belongs_to_collection: { id: 9, name: 'Example Collection' } };
+    else if (path === '/3/collection/9') data = { name: 'Example Collection', parts: [
+      { id: 321, title: 'Current Film', release_date: '2020-01-01' },
+      { id: 555, title: 'Collection Sequel', release_date: '2023-01-01' }
+    ] };
+    else if (path === '/3/movie/444') data = { id: 444, title: 'Recommended Film', external_ids: { imdb_id: 'tt444' } };
+    else if (path === '/3/tv/900') data = { id: 900, name: 'Enriched Series', overview: 'Extra series overview',
+      networks: [{ id: 10, name: 'Example Network' }], seasons: [
+        { season_number: 1, poster_path: '/season1.jpg' }, { season_number: 2, poster_path: '/season2.jpg' }
+      ] };
+    else if (path === '/3/tv/900/season/1') data = { poster_path: '/season1.jpg', episodes: [
+      { episode_number: 1, name: 'Enriched Pilot', overview: 'Pilot overview', still_path: '/pilot.jpg', runtime: 43 }
+    ] };
+    else if (path === '/3/tv/900/season/2') data = { poster_path: '/season2.jpg', episodes: [
+      { episode_number: 1, name: 'Enriched Second Season', overview: 'Second season overview', runtime: 44 }
+    ] };
+    return route.fulfill({ json: data, headers: { 'access-control-allow-origin': '*' } });
+  });
+  return requests;
+}
+
+test('enriches movie details, caches TMDB results, and opens recommendations with addon playback IDs', async ({ page }) => {
+  const requests = await mockTmdb(page);
+  await enableTmdbEnrichment(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-facts')).toContainText('123 min');
+  await expect(page.locator('.detail-facts')).toContainText('PG-13');
+  await expect(page.locator('.detail-facts')).toContainText('TMDB');
+  await expect(page.locator('.detail-facts-card')).toContainText('Example Director');
+  await expect(page.getByRole('region', { name: 'Cast', exact: true })).toContainText('Hero');
+  await expect(page.getByRole('region', { name: 'Production companies' })).toContainText('Example Studio');
+  await expect(page.getByRole('link', { name: /Official trailer/ })).toHaveAttribute('href', 'https://www.youtube.com/watch?v=abcdef12345');
+  await expect(page.getByRole('region', { name: 'Movie collection' })).toContainText('Collection Sequel');
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+  expect(requests.filter((path) => path === '/3/movie/321')).toHaveLength(1);
+  await page.getByRole('region', { name: 'More like this' }).getByRole('button', { name: 'View details for Recommended Film' }).click();
+  await expect(page).toHaveURL(/#\/movie\/tt444$/);
+  await expect(page.getByRole('heading', { name: 'Recommended Film', exact: true })).toBeVisible();
+  await page.locator('.detail-play').click();
+  await page.locator('.stream-result .cast-button').click();
+  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'linkCast').payload);
+  expect(cast.items[0].id).toBe('tt444');
+});
+
+test('enriches only the selected season and preserves addon episode IDs for casting', async ({ page }) => {
+  const requests = await mockTmdb(page);
+  await page.route(`${addon}/stream/series/tt200%3A2%3A1.json`, (route) => route.fulfill({ json: { streams: [
+    { name: 'Episode Source', url: 'https://media.test/season2.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [
+    { id: 'tt200:1:1', season: 1, episode: 1, title: 'Pilot', released: '2020-01-01' },
+    { id: 'tt200:2:1', season: 2, episode: 1, title: 'Season Two', released: '2021-01-01' }
+  ] } }, headers: { 'access-control-allow-origin': '*' } }));
+  await enableTmdbEnrichment(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+  await expect(page.locator('.episode-row')).toContainText('Enriched Pilot');
+  await expect(page.locator('.episode-row')).toContainText('43 min');
+  expect(requests).not.toContain('/3/tv/900/season/2');
+  await expect(page.getByRole('region', { name: 'Networks' })).toContainText('Example Network');
+  await page.locator('.season-trigger').click();
+  await page.getByRole('button', { name: /Season 2 1 episode/ }).click();
+  await expect(page.locator('.episode-row')).toContainText('Enriched Second Season');
+  await page.locator('.episode-row').click();
+  await expect(page).toHaveURL(/video=tt200%3A2%3A1/);
+  await expect(page.locator('.stream-panel')).toContainText('Enriched Second Season');
+  await page.locator('.stream-result .cast-button').click();
+  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'linkCast').payload);
+  expect(cast.items[0].id).toBe('tt200:2:1');
+});
+
+test('slow TMDB enrichment does not block details, stream selection, or browser playback', async ({ page }) => {
+  await mockTmdb(page);
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route('https://api.themoviedb.org/3/movie/321?**', async (route) => {
+    requested();
+    await gate;
+    await route.fallback();
+  });
+  await enableTmdbEnrichment(page);
+  try {
+    await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+    await requestStarted;
+    await expect(page.locator('.detail-play')).toBeEnabled();
+    await page.locator('.detail-play').click();
+    await page.locator('.stream-result .watch-button').click();
+    await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
+  } finally { release(); }
+  await expect(page).toHaveTitle('Enriched Film · Bridged Streams');
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
+});
+
+test('TMDB failures leave addon details playable and can be retried', async ({ page }) => {
+  await mockTmdb(page);
+  let fail = true;
+  await page.route('https://api.themoviedb.org/3/find/tt100?**', (route) => fail
+    ? route.fulfill({ status: 401, json: { status_message: 'Invalid key' }, headers: { 'access-control-allow-origin': '*' } })
+    : route.fallback());
+  await enableTmdbEnrichment(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.locator('.tmdb-detail-status')).toContainText('HTTP 401');
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  fail = false;
+  await page.getByRole('button', { name: 'Retry TMDB details' }).click();
+  await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Retry TMDB details' })).toHaveCount(0);
+});
+
+test('TMDB settings survive refresh and disabling enrichment restores addon metadata', async ({ page }) => {
+  const requests = await mockTmdb(page);
+  await enableTmdbEnrichment(page);
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await page.goto('/#/settings/integrations');
+  await page.reload();
+  await expect(page.getByRole('switch', { name: 'TMDB enrichment', exact: true })).toBeChecked();
+  await expect(page.getByRole('dialog', { name: 'Integrations' }).getByLabel('TMDB API key', { exact: true })).toHaveValue('test-tmdb-key');
+  await page.getByRole('switch', { name: 'TMDB enrichment', exact: true }).uncheck();
+  await expect(page.getByLabel('Episode details', { exact: false })).toBeDisabled();
+  await page.getByRole('dialog', { name: 'Integrations' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  const previousRequests = requests.length;
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.getByRole('heading', { name: 'Sample Film', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect(page.getByRole('region', { name: 'Trailers' })).toHaveCount(0);
+  expect(requests).toHaveLength(previousRequests);
+});
+
 test('plays a ready source and returns to its list without waiting for an unfinished provider', async ({ page }) => {
   let release!: () => void;
   let requested!: () => void;
