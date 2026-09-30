@@ -8,7 +8,7 @@
   import MediaTile from './lib/MediaTile.svelte';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
-  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectNextStream, selectionContext } from './lib/stream-selection';
+  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext } from './lib/stream-selection';
   import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
   import { cachedDetailPreview, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
@@ -133,6 +133,7 @@
   let currentRoute: AppRoute = parseRoute(window.location.hash);
   let router: HashRouter | null = null;
   let restoreReady: Promise<unknown> = Promise.resolve();
+  let restorationComplete = false;
   let routeRequest = 0;
   const detailMemory = new Map<string, Meta>();
   const previewMemory = new Map<string, MetaPreview>();
@@ -209,6 +210,7 @@
   let sourceLoading: Record<string, boolean> = {};
   let sourceWarnings: Record<string, string> = {};
   let loadingStreams = false;
+  let restoringStreamSources = false;
   let sourceError = '';
   let status = '';
   let bridge = false;
@@ -568,7 +570,7 @@
     const detector = window.setInterval(() => { bridge = bridgeAvailable(); }, 1000);
     if (addons.length) void loadCatalogs();
     restoreReady = Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio(), restorePlugins()])
-      .then(() => { startupLoading = false; });
+      .then(() => { startupLoading = false; restorationComplete = true; });
     void applyRoute(currentRoute);
     const syncTimer = window.setInterval(() => { if (account && !accountSyncing) void syncAccount(); }, 10 * 60 * 1000);
     const nuvioTimer = window.setInterval(() => { if (nuvioSession && !nuvioSyncing && nuvioProfileReady) void syncNuvio(); }, 10 * 60 * 1000);
@@ -1675,12 +1677,12 @@
     pendingAutoAction = null;
     const previousMeta = loadingDetail ? undefined : selected;
     window.clearTimeout(searchTimer);
-    const retainedStreams = route.kind !== 'tab' && route.kind !== 'catalog' && route.kind !== 'detail'
-      && streamScreen && !loadingStreams && selected?.id === route.id && selected?.type === route.type
-      && episode?.id === route.videoId
-      ? { streams, activeStreamSources, selectedStreamSource, sourceStreams, sourceLoading, sourceWarnings, sourceError } : null;
+    // Keep the same source screen alive beneath the player, including unfinished lookups.
+    const retainMedia = (route.kind === 'streams' || route.kind === 'player')
+      && streamScreen && !loadingDetail && selected?.id === route.id && selected?.type === route.type
+      && episode?.id === route.videoId;
     resetPlayer();
-    resetDetail();
+    if (!retainMedia) resetDetail();
     if (route.kind === 'tab' || (route.kind === 'catalog' && (catalogPage?.addon.manifest.id !== route.addonId
       || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
     accountPanel = false;
@@ -1693,14 +1695,14 @@
       managing = route.panel === 'addons';
       if (route.tab === 'search' && search !== (route.query || '')) {
         search = route.query || '';
-        await restoreReady;
+        if (!catalogs(addons).some(({ catalog }) => requiredCatalogExtras(catalog, search.trim())?.search)) await restoreReady;
         if (request !== routeRequest) return;
         await tick();
         void runSearch();
       }
     } else {
-      // Show a loading title immediately, but resolve only after account sources restore.
-      if (route.kind !== 'catalog') {
+      // Use cached sources immediately; remote account refresh is background work.
+      if (route.kind !== 'catalog' && !retainMedia) {
         const key = `${route.type}:${route.id}`;
         selected = detailMemory.get(key) || previewMemory.get(key) || cachedDetailPreview(route.type, route.id)
           || initialAccountLibrary.find((item) => item.type === route.type && item.id === route.id)
@@ -1711,8 +1713,12 @@
         loadingDetail = true;
         streamScreen = route.kind !== 'detail';
       }
-      await restoreReady;
       await tick();
+      const needsSources = route.kind === 'catalog'
+        ? !rows.some((row) => row.addon.manifest.id === route.addonId && row.catalog.type === route.type && row.catalog.id === route.id)
+        : !retainMedia && !detailMemory.has(`${route.type}:${route.id}`)
+          && !addons.some((addon) => supports(addon, 'meta', route.type, route.id));
+      if (needsSources) { await restoreReady; await tick(); }
       if (request !== routeRequest) return;
       if (route.kind === 'catalog') {
         const row = rows.find((row) => row.addon.manifest.id === route.addonId
@@ -1733,13 +1739,19 @@
           || rows.flatMap((row) => row.items).find((item) => item.type === route.type && item.id === route.id)
           || savedLibrary.find((item) => item.type === route.type && item.id === route.id)
           || { type: route.type, id: route.id, name: route.id };
-        streamBackToDetail = router?.parent()?.kind === 'detail';
-        await loadDetail(preview, route, previousMeta?.type === route.type && previousMeta?.id === route.id ? previousMeta : undefined,
-          !!retainedStreams);
-        if (request !== routeRequest) return;
-        if (retainedStreams) {
-          ({ streams, activeStreamSources, selectedStreamSource, sourceStreams, sourceLoading, sourceWarnings, sourceError } = retainedStreams);
+        if (!retainMedia) {
+          streamBackToDetail = router?.parent()?.kind === 'detail';
+          await loadDetail(preview, route, previousMeta?.type === route.type && previousMeta?.id === route.id ? previousMeta : undefined,
+            () => {
+              if (route.kind === 'streams' && automaticAction && request === routeRequest && actionToken === streamActionRequest
+                && automaticAction.type === route.type && automaticAction.id === route.id
+                && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
+                && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
+                void startPreferredStream(automaticAction.action, true);
+              }
+            });
         }
+        if (request !== routeRequest) return;
         if (route.kind === 'player') {
           const choice = playerMemory.get(routeHash(route));
           if (choice) await playInBrowser(choice.stream, false, choice.selection);
@@ -1779,7 +1791,7 @@
     router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id });
   }
 
-  async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, retainStreams = false) {
+  async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, onStreamsUpdate?: () => void) {
     const fromContinue = route.kind !== 'detail';
     const request = ++detailRequest;
     selected = preview;
@@ -1793,10 +1805,11 @@
     detailExpanded = false;
     loadingDetail = true;
     try {
-      const meta = cached || detailMemory.get(`${preview.type}:${preview.id}`) || await fetchMeta(addons, preview);
+      const remembered = cached || detailMemory.get(`${preview.type}:${preview.id}`);
+      const meta = remembered || await fetchMeta(addons, preview);
       if (request !== detailRequest) return;
       selected = meta;
-      saveDetailPreview(meta);
+      if (!remembered) saveDetailPreview(meta);
       if (meta.name === meta.id) detailError = 'Could not load this title. Check that its metadata addon is enabled and reachable.';
       if (!addons.some((addon) => supports(addon, 'meta', meta.type, meta.id)) && !meta.videos?.length) {
         detailError = 'Install or enable an addon that provides metadata for this title.';
@@ -1823,19 +1836,13 @@
         episode = resumeVideo;
         await tick();
         if (request !== detailRequest) return;
-        if (fromContinue) {
-          loadingDetail = false;
-          if (!retainStreams) await loadStreams('series', resumeVideo.id);
-        }
-        else revealSelectedEpisode();
-      }
-      if (fromContinue && meta.type !== 'series') {
-        loadingDetail = false;
-        if (!retainStreams) await loadStreams(meta.type, meta.id);
+        if (!fromContinue) revealSelectedEpisode();
       }
       if (request === detailRequest && currentRoute.kind !== 'tab' && currentRoute.kind !== 'catalog') {
         replaceRoute(mediaRoute(route.kind));
       }
+      loadingDetail = false;
+      if (fromContinue && (meta.type !== 'series' || resumeVideo)) await loadStreams(meta.type, resumeVideo?.id || meta.id, false, onStreamsUpdate);
     } catch (error) {
       if (request === detailRequest) detailError = message(error);
     } finally {
@@ -1856,6 +1863,7 @@
     episode = null;
     streams = [];
     loadingStreams = false;
+    restoringStreamSources = false;
     loadingDetail = false;
     pendingEpisodeAction = 'play';
   }
@@ -1982,7 +1990,8 @@
     return [...addonSources, ...pluginSources];
   }
 
-  async function refreshStreamSource(source: StreamSource, type: MediaType, id: string, request: number, forceRefresh = false) {
+  async function refreshStreamSource(source: StreamSource, type: MediaType, id: string, request: number, forceRefresh = false,
+    onUpdate?: () => void) {
     sourceLoading = { ...sourceLoading, [source.key]: true };
     let warning = '';
     try {
@@ -1997,12 +2006,13 @@
     } finally {
       if (request === streamRequest) {
         sourceLoading = { ...sourceLoading, [source.key]: false };
-        loadingStreams = Object.values(sourceLoading).some(Boolean);
+        loadingStreams = restoringStreamSources || Object.values(sourceLoading).some(Boolean);
+        onUpdate?.();
       }
     }
   }
 
-  async function loadStreams(type: MediaType, id: string, forceRefresh = false) {
+  async function loadStreams(type: MediaType, id: string, forceRefresh = false, onUpdate?: () => void) {
     const request = ++streamRequest;
     const previousFilter = forceRefresh ? selectedStreamSource : '';
     streams = [];
@@ -2012,8 +2022,25 @@
     sourceStreams = {};
     sourceWarnings = {};
     sourceLoading = Object.fromEntries(activeStreamSources.map((source) => [source.key, true]));
-    loadingStreams = activeStreamSources.length > 0;
-    await Promise.all(activeStreamSources.map((source) => refreshStreamSource(source, type, id, request, forceRefresh)));
+    restoringStreamSources = !restorationComplete;
+    loadingStreams = restoringStreamSources || activeStreamSources.length > 0;
+    const lookups = activeStreamSources.map((source) => refreshStreamSource(source, type, id, request, forceRefresh, onUpdate));
+    if (restoringStreamSources) {
+      // Render available sources now, then append sources restored from other accounts/plugins.
+      // Manual playback never waits for this; automatic selection preserves provider priority.
+      await restoreReady;
+      await tick();
+      if (request !== streamRequest) return;
+      const known = new Set(activeStreamSources.map((source) => source.key));
+      activeStreamSources = streamSources(type, id);
+      const restored = activeStreamSources.filter((source) => !known.has(source.key));
+      streams = activeStreamSources.flatMap((source) => sourceStreams[source.key] || []);
+      lookups.push(...restored.map((source) => refreshStreamSource(source, type, id, request, forceRefresh, onUpdate)));
+      restoringStreamSources = false;
+      loadingStreams = Object.values(sourceLoading).some(Boolean);
+      onUpdate?.();
+    }
+    await Promise.all(lookups);
   }
 
   function refreshAllStreams() {
@@ -2030,10 +2057,15 @@
     saveStreamSelection(preferences);
   }
 
-  async function startPreferredStream(action: 'play' | 'cast') {
-    if (!selected || loadingDetail || loadingStreams) return;
-    const stream = selectPreferredStream(streams.filter(playableStream), streamSelection);
+  async function startPreferredStream(action: 'play' | 'cast', allowPending = false) {
+    if (!selected || loadingDetail || (loadingStreams && !allowPending)) return;
+    const stream = loadingStreams
+      ? selectReadyPreferredStream(activeStreamSources.map((source) => ({ id: source.key.replace(/^(addon|plugin):/, ''),
+        streams: (sourceStreams[source.key] || []).filter(playableStream), loading: !!sourceLoading[source.key] })),
+        streamSelection, restoringStreamSources)
+      : selectPreferredStream(streams.filter(playableStream), streamSelection);
     if (!stream) {
+      if (loadingStreams) return;
       sourceError = 'No stream matches your auto-selection settings. Choose a stream below or adjust your settings.';
       return;
     }
@@ -2085,6 +2117,7 @@
     const meta = selected;
     const chosenEpisode = episode;
     const request = detailRequest;
+    const navigation = routeRequest;
     playbackAttempt += 1;
     logPlayback('play requested', `type=${meta.type}; fallback=${nativePlayerFallback}; custom element=${!!customElements.get('movi-player')}`);
     playerLoading = true;
@@ -2101,7 +2134,7 @@
       if (!nativePlayerFallback) playerError = 'MoviPlayer could not load. Open Playback diagnostics below for details.';
     }
     playerLoading = false;
-    if (request !== detailRequest || selected !== meta) {
+    if (request !== detailRequest || navigation !== routeRequest || selected !== meta) {
       logPlayback('play cancelled', 'The selected title changed while the player loaded.');
       return;
     }
@@ -2142,6 +2175,7 @@
     if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
     playerElement?.removeAttribute('src');
     playing = null;
+    playerLoading = false;
     playerError = '';
   }
 

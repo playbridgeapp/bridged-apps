@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { defaultStreamSelection, matchesStreamPreferences, selectPreferredStream, selectNextStream,
+import { defaultStreamSelection, matchesStreamPreferences, selectPreferredStream, selectReadyPreferredStream, selectNextStream,
   selectionContext, streamReleaseType, streamResolution } from '../src/lib/stream-selection.ts';
 
 const stream = (name, provider = 'a', extra = {}) => ({ name, addonName: provider, addonUrl: provider, url: 'https://media.test/video', ...extra });
@@ -31,6 +31,33 @@ test('unknown values do not satisfy a selected filter and no match stays manual'
   assert.equal(selectPreferredStream([stream('720p WEB-DL')], settings()), undefined);
   assert.equal(selectPreferredStream([stream('Unknown quality')], settings({ resolution: 'any', releaseTypes: [] }))?.name, 'Unknown quality');
   assert.equal(matchesStreamPreferences(stream('1080p WEBRip'), settings({ releaseTypes: ['web-dl', 'webrip'] })), true);
+});
+
+test('a matching preferred provider can start while unrelated providers and account restore are pending', () => {
+  const preferred = stream('1080p WEB-DL', 'preferred');
+  const providers = [
+    { id: 'slow', loading: true, streams: [] },
+    { id: 'preferred', loading: false, streams: [preferred] }
+  ];
+  assert.equal(selectReadyPreferredStream(providers, settings({ provider: 'preferred' }), true), preferred);
+  assert.equal(selectReadyPreferredStream(providers, settings()), undefined);
+});
+
+test('incremental selection preserves provider priority and falls back after higher priorities finish', () => {
+  const fallback = stream('1080p WEB-DL', 'other');
+  const providers = [
+    { id: 'first', loading: true, streams: [] },
+    { id: 'other', loading: false, streams: [fallback] },
+    { id: 'last', loading: true, streams: [] }
+  ];
+  assert.equal(selectReadyPreferredStream(providers, settings()), undefined);
+  providers[0].loading = false;
+  providers[0].streams = [stream('720p WEB-DL', 'first')];
+  assert.equal(selectReadyPreferredStream(providers, settings()), fallback);
+  assert.equal(selectReadyPreferredStream(providers, settings(), true), undefined);
+  assert.equal(selectReadyPreferredStream(providers, settings({ provider: 'last' })), undefined);
+  providers[2].loading = false;
+  assert.equal(selectReadyPreferredStream(providers, settings({ provider: 'last' })), fallback);
 });
 
 test('manual episode choice overrides saved filters and preserves its release when names are generic', () => {

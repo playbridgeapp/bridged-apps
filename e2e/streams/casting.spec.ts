@@ -78,6 +78,69 @@ test.beforeEach(async ({ page }) => {
   await manager.getByRole('button', { name: 'Close' }).click();
 });
 
+test('opens cached catalogs, title details, and URL search while an addon manifest is still restoring', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/manifest.json`, async (route) => {
+    requested();
+    await gate;
+    await route.fallback();
+  });
+  try {
+    await page.reload();
+    await requestStarted;
+    await page.getByRole('button', { name: 'View all Films from Test Catalog' }).click();
+    await expect(page.getByRole('dialog', { name: 'Films catalog' })).toBeVisible();
+    await page.getByRole('dialog', { name: 'Films catalog' }).getByRole('button', { name: 'View details for Sample Film' }).click();
+    await expect(page.locator('.detail-play')).toBeEnabled();
+    await page.locator('.detail-play').click();
+    await expect(page.getByText('Film Source', { exact: true })).toBeVisible();
+    await page.goto('/#/search?q=Sample');
+    await expect(page.locator('.search-results').getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+  } finally { release(); }
+});
+
+test('plays a ready source and returns to its list without waiting for an unfinished provider', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  let streamRequests = 0;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route('https://slow.test/**', async (route) => {
+    if (route.request().url().endsWith('/manifest.json')) {
+      await route.fulfill({ json: { id: 'slow', name: 'Slow Provider', version: '1.0.0', types: ['movie'],
+        resources: ['stream'], catalogs: [] }, headers: { 'access-control-allow-origin': '*' } });
+    } else {
+      streamRequests += 1;
+      requested();
+      await gate;
+      await route.fulfill({ json: { streams: [{ name: 'Slow Source', url: 'https://media.test/slow.mp4' }] },
+        headers: { 'access-control-allow-origin': '*' } });
+    }
+  });
+  await openAddons(page);
+  await page.getByLabel('Addon manifest URL').fill('https://slow.test/manifest.json');
+  await page.getByRole('button', { name: 'Install', exact: true }).first().click();
+  await expect(page.locator('.addon-management-card').getByText('Slow Provider', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  try {
+    await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+    await page.locator('.detail-play').click();
+    await requestStarted;
+    await page.locator('.stream-result').filter({ hasText: 'Film Source' }).getByRole('button', { name: 'Play', exact: true }).click();
+    await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
+    await page.getByRole('button', { name: 'Choose another stream' }).click();
+    await expect(page.locator('.stream-panel')).toBeVisible();
+    await expect(page.locator('movi-player')).toHaveCount(0);
+    await expect(page.getByText('Film Source', { exact: true })).toBeVisible();
+    expect(streamRequests).toBe(1);
+  } finally { release(); }
+  await expect(page.getByText('Slow Source', { exact: true })).toBeVisible();
+});
+
 test('automatically plays a matching release, saves preferences, and leaves Back and reload manual', async ({ page }) => {
   await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
     { name: '720p WEB-DL', url: 'https://media.test/low.mp4' },
@@ -150,6 +213,46 @@ test('waits for the preferred provider instead of starting a faster matching pro
     await expect(page.locator('movi-player')).toHaveCount(0);
   } finally { release(); }
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/preferred.mp4');
+});
+
+test('automatically starts a ready preferred source without waiting for unrelated providers', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: '1080p WEB-DL', url: 'https://media.test/ready.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await page.route('https://slow.test/**', async (route) => {
+    if (route.request().url().endsWith('/manifest.json')) {
+      await route.fulfill({ json: { id: 'slow', name: 'Slow Provider', version: '1.0.0', types: ['movie'],
+        resources: ['stream'], catalogs: [] }, headers: { 'access-control-allow-origin': '*' } });
+    } else {
+      requested();
+      await gate;
+      await route.fulfill({ json: { streams: [] }, headers: { 'access-control-allow-origin': '*' } });
+    }
+  });
+  await enableStreamSelection(page);
+  await openAddons(page);
+  await page.getByLabel('Addon manifest URL').fill('https://slow.test/manifest.json');
+  await page.getByRole('button', { name: 'Install', exact: true }).first().click();
+  await expect(page.locator('.addon-management-card').getByText('Slow Provider', { exact: true })).toBeVisible();
+  await page.getByLabel('Preferred provider', { exact: true }).selectOption(`${addon}/manifest.json`);
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  try {
+    await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+    await page.locator('.detail-play').click();
+    await requestStarted;
+    await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/ready.mp4');
+    await expect(page).toHaveURL(/#\/movie\/tt100\/player$/);
+    await page.getByRole('button', { name: 'Choose another stream' }).click();
+    await expect(page.locator('movi-player')).toHaveCount(0);
+    await expect(page.locator('.stream-result')).toHaveCount(1);
+  } finally { release(); }
+  await expect(page.getByRole('button', { name: 'Refresh all streams' }).locator('svg')).not.toHaveClass(/spin/);
+  await expect(page).toHaveURL(/#\/movie\/tt100\/streams$/);
 });
 
 test('uses automatic selection only for an explicit cast action', async ({ page }) => {
@@ -542,7 +645,9 @@ test('loads required year catalogs and browses and casts sport titles', async ({
   expect(calls.at(-1)).toMatchObject({ method: 'cast', payload: { url: 'https://media.test/live.m3u8' } });
 });
 
-test('uses a browser-compatible Nuvio scraper for an IMDb movie', async ({ page }) => {
+for (const delayedRestore of [false, true]) {
+test(delayedRestore ? 'adds a Nuvio scraper restored after its stream page opens'
+  : 'uses a browser-compatible Nuvio scraper for an IMDb movie', async ({ page }) => {
   await page.route('https://api.themoviedb.org/**', (route) => route.fulfill({ json: { movie_results: [{ id: 321 }] }, headers: { 'access-control-allow-origin': '*' } }));
   await page.route('https://plugins.test/**', (route) => {
     if (route.request().url().endsWith('/manifest.json')) {
@@ -557,10 +662,29 @@ test('uses a browser-compatible Nuvio scraper for an IMDb movie', async ({ page 
   await page.getByLabel('TMDB API key').fill('test-key');
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
-  await page.getByRole('button', { name: 'View details for Sample Film' }).click();
-  await page.locator('.detail-play').click();
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  if (delayedRestore) {
+    await page.route('https://plugins.test/manifest.json', async (route) => {
+      requested();
+      await gate;
+      await route.fallback();
+    });
+  }
+  try {
+    if (delayedRestore) { await page.reload(); await requestStarted; }
+    await page.getByRole('button', { name: 'View details for Sample Film' }).click();
+    await page.locator('.detail-play').click();
+    if (delayedRestore) {
+      await expect(page.getByText('Film Source', { exact: true })).toBeVisible();
+      await expect(page.getByText('Plugin Source 321')).toHaveCount(0);
+    }
+  } finally { release(); }
   await expect(page.getByText('Plugin Source 321')).toBeVisible();
 });
+}
 
 test('imports Stremio account addons, library, and progress without removing local addons', async ({ page }) => {
   const accountManifest = {

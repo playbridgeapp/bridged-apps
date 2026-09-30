@@ -15,6 +15,8 @@ Open `http://127.0.0.1:5182`. Install at least one Stremio-compatible addon with
 
 ## Navigation and shared links
 
+Cached addons and available catalogs open while account and manifest refreshes run in the background. The player keeps its source screen and unfinished provider requests alive, so starting a ready source or returning to its list does not repeat the lookups. Sources restored later are added to the open stream list.
+
 Screens use URL routes with browser Back and Forward support. Hash routes work on the static Cloudflare deployment and the local server without rewrite configuration:
 
 - `/#/search?q=Avengers`, `/#/library`, and `/#/settings`
@@ -63,7 +65,7 @@ Local addon order and switches stay in this browser. Stremio addon order syncs t
 
 Open **Settings → Addons and playback → Auto-select stream**. It is off by default. Choose a resolution (Any, 4K, 1080p, or 720p), an addon or Nuvio scraper as the preferred provider, and one or more release types (Remux, BluRay, WEB-DL, WEBRip, HDTV, DVD, CAM/TS). No selected release types means Any. Settings stay in this browser.
 
-With auto-selection enabled, Play, Resume, Continue Watching, and choosing an episode resolve streams and start a matching source in the browser. Use the detail page's Cast button for automatic casting; on an untracked series it first asks you to choose an episode. The stream page also offers **Play/Resume best match** and **Cast best match**. Resolution and release types are required matches, inferred from stream names and descriptions; unknown values cannot satisfy a specific filter. The preferred provider is tried first among matching streams, followed by other providers. If nothing matches, the complete stream list remains available for manual selection.
+With auto-selection enabled, Play, Resume, Continue Watching, and choosing an episode resolve streams and start a matching source in the browser. Use the detail page's Cast button for automatic casting; on an untracked series it first asks you to choose an episode. The stream page also offers **Play/Resume best match** and **Cast best match**. Resolution and release types are required matches, inferred from stream names and descriptions; unknown values cannot satisfy a specific filter. The preferred provider is tried first among matching streams, followed by other providers. A ready matching preferred provider starts without waiting for unrelated providers. Fallback selection waits for higher priority providers to finish. If nothing matches, the complete stream list remains available for manual selection.
 
 **Choose another stream** returns from playback to that list. Refreshing, following a shared URL, or going Back does not trigger automatic playback. A manual stream selection takes priority for that playback session. Subsequent episodes first try its release group or matching provider/name and quality; if that release is unavailable, they use the saved preferences. Automatically selected episodes continue to respect the required filters. Casting remains lazy: the next episode resolves when the receiver requests it. Existing resume positions and progress reporting apply to both selection methods.
 

@@ -61,6 +61,23 @@ export function selectPreferredStream(streams: Stream[], preferences: StreamSele
   return matches.find((stream) => preferences.provider && stream.addonUrl === preferences.provider) || matches[0];
 }
 
+// A ready preferred provider wins immediately. Otherwise wait only for providers
+// that could still outrank the first match, preserving the normal provider order.
+export function selectReadyPreferredStream(providers: { id: string; streams: Stream[]; loading: boolean }[],
+  preferences: StreamSelectionPreferences, restoring = false): Stream | undefined {
+  const preferred = providers.find((provider) => provider.id === preferences.provider);
+  if (preferred && !preferred.loading) {
+    const match = selectPreferredStream(preferred.streams, preferences);
+    if (match) return match;
+  }
+  if (restoring || preferred?.loading) return;
+  for (const provider of providers) {
+    if (provider.loading) return;
+    const match = selectPreferredStream(provider.streams, preferences);
+    if (match) return match;
+  }
+}
+
 export function selectionContext(stream: Stream, preferences: StreamSelectionPreferences, manual = true): StreamSelectionContext {
   return { initialStream: stream, manual, preferences: { ...preferences, releaseTypes: [...preferences.releaseTypes] } };
 }
