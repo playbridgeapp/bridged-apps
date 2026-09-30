@@ -6,6 +6,8 @@
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
+  import TitleSkeleton from './lib/TitleSkeleton.svelte';
+  import { cachedDetailPreview, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
   import { cachedCatalog, clearCatalogCache, saveCatalogCache, savedCatalogRefresh, saveCatalogRefresh } from './lib/catalog-cache';
   import { readPersistentSession, writePersistentSession } from './lib/persistent-session';
@@ -20,11 +22,12 @@
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioSession } from './lib/nuvio';
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
+  import { HashRouter, parseRoute, routeHash } from './lib/router';
+  import type { AppRoute, MediaRoute, Tab } from './lib/router';
   import moviWasmUrl from 'movi-player/movi.wasm?url';
 
   type CatalogRow = { key: string; title: string; addon: InstalledAddon; catalog: AddonCatalog; items: MetaPreview[]; loading?: boolean; error?: string; nextSkip?: number | null; loadingMore?: boolean; duplicatePages?: number; pageError?: string };
   type StreamSource = { key: string; name: string; addon?: InstalledAddon; plugin?: PluginRepository };
-  type Tab = 'home' | 'search' | 'library' | 'settings';
   type DiscoverDropdown = 'type' | 'catalog' | 'genre';
   const NUVIO_PROFILE_KEY = 'bridged-streams.nuvio-profile.v1';
   const DISCOVER_CATALOG_KEY = 'bridged-streams.discover-catalog.v1';
@@ -124,6 +127,14 @@
   let catalogPageDuplicatePages = 0;
   let catalogPageRequest = 0;
   let tab: Tab = 'home';
+  let currentRoute: AppRoute = parseRoute(window.location.hash);
+  let router: HashRouter | null = null;
+  let restoreReady: Promise<unknown> = Promise.resolve();
+  let routeRequest = 0;
+  const detailMemory = new Map<string, Meta>();
+  const previewMemory = new Map<string, MetaPreview>();
+  const playerMemory = new Map<string, Stream>();
+  const routePositions = new Map<string, { window: number; panel: number; episodes: number }>();
   const tabScrollPositions: Record<Tab, number> = { home: 0, search: 0, library: 0, settings: 0 };
   let navigationRequest = 0;
   let dockElement: HTMLElement | null = null;
@@ -347,6 +358,7 @@
     .filter((item) => item.progress > 0 && item.progress < 95).map((item) => [`${item.type}:${item.id}`, item])).values()]
     .sort((a, b) => (b.lastWatched || '').localeCompare(a.lastWatched || ''));
   $: selectedInLibrary = selected ? accountLibrary.some((item) => item.id === selected?.id && !item.removed && !item.temp) : false;
+  $: detailIdentityReady = !!selected && selected.name !== selected.id;
   $: selectedInNuvioLibrary = selected ? nuvioLibrary.some((item) => item.id === selected?.id && item.type === selected?.type) : false;
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
@@ -474,6 +486,11 @@
   }
 
   onMount(() => {
+    router = new HashRouter((route) => {
+      rememberRoutePosition();
+      currentRoute = route;
+      void applyRoute(route);
+    });
     bridge = bridgeAvailable();
     updateDockIndicator();
     const dockObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateDockIndicator);
@@ -511,6 +528,11 @@
       if (openDiscoverDropdown) closeDiscoverMenu();
       else if (seasonPickerOpen) seasonPickerOpen = false;
       else if (searchHistoryOpen) searchHistoryOpen = false;
+      else if (playing) closePlayer();
+      else if (accountPanel || managing) closeSettingsPanel();
+      else if (selected && streamScreen) closeStreamScreen();
+      else if (selected) closeDetail();
+      else if (catalogPage) closeCatalogPage();
     };
     const closeMenusOnOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
@@ -530,9 +552,9 @@
     catalogRefreshInterval = refreshSettings.intervalMinutes;
     const detector = window.setInterval(() => { bridge = bridgeAvailable(); }, 1000);
     if (addons.length) void loadCatalogs();
-    void restorePlugins();
-    void Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio()])
+    restoreReady = Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio(), restorePlugins()])
       .then(() => { startupLoading = false; });
+    void applyRoute(currentRoute);
     const syncTimer = window.setInterval(() => { if (account && !accountSyncing) void syncAccount(); }, 10 * 60 * 1000);
     const nuvioTimer = window.setInterval(() => { if (nuvioSession && !nuvioSyncing && nuvioProfileReady) void syncNuvio(); }, 10 * 60 * 1000);
     const catalogTimer = window.setInterval(() => {
@@ -545,7 +567,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
+    return () => { router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
   });
 
   async function restoreAddons() {
@@ -970,7 +992,11 @@
     return { destroy: () => rail.removeEventListener('scroll', onScroll) };
   }
 
-  function openCatalogPage(row: CatalogRow) {
+  function openCatalogPage(row: CatalogRow, recordHistory = true) {
+    if (recordHistory) {
+      router?.push({ kind: 'catalog', addonId: row.addon.manifest.id, type: row.catalog.type, id: row.catalog.id });
+      return;
+    }
     catalogPage = row;
     catalogPageItems = row.items;
     catalogPageNextSkip = row.nextSkip ?? null;
@@ -982,6 +1008,10 @@
   }
 
   function closeCatalogPage() {
+    router?.back({ kind: 'tab', tab: 'home' });
+  }
+
+  function resetCatalogPage() {
     ++catalogPageRequest;
     catalogPage = null;
     catalogPageItems = [];
@@ -1439,6 +1469,9 @@
   async function runSearch() {
     const query = search.trim();
     tab = 'search';
+    if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
+      replaceRoute({ ...currentRoute, query: query || undefined });
+    }
     const request = ++searchRequest;
     searchResults = [];
     if (!query) { searching = false; return; }
@@ -1485,6 +1518,7 @@
 
   function scheduleSearch(value: string) {
     search = value;
+    if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') replaceRoute({ ...currentRoute, query: value || undefined });
     searchHistoryOpen = false;
     if (searchTimer) window.clearTimeout(searchTimer);
     window.clearTimeout(searchHistoryTimer);
@@ -1587,11 +1621,144 @@
     return { destroy: () => observer.disconnect() };
   }
 
-  async function openDetail(preview: MetaPreview, fromContinue = false) {
+  function rememberRoutePosition() {
+    routePositions.set(routeHash(currentRoute), { window: window.scrollY,
+      panel: routePanel()?.scrollTop || 0,
+      episodes: episodeListElement?.scrollLeft || 0 });
+  }
+
+  function routePanel() {
+    const selector = selected ? streamScreen ? '.stream-panel' : '.detail-panel' : '.catalog-page-panel';
+    return [...document.querySelectorAll<HTMLElement>(selector)].at(-1);
+  }
+
+  function replaceRoute(route: AppRoute) {
+    const oldPosition = routePositions.get(routeHash(currentRoute));
+    currentRoute = route;
+    router?.replace(route);
+    if (oldPosition) routePositions.set(routeHash(route), oldPosition);
+  }
+
+  function mediaRoute(kind: MediaRoute['kind'], video = episode): MediaRoute {
+    return { kind, type: selected!.type, id: selected!.id,
+      videoId: video?.id, season: selected?.type === 'series' ? video?.season ?? season : undefined,
+      episode: video?.episode };
+  }
+
+  function openSettingsPanel(panel: 'accounts' | 'addons') {
+    router?.push({ kind: 'tab', tab: 'settings', panel });
+  }
+
+  function closeSettingsPanel() {
+    router?.back({ kind: 'tab', tab: 'settings' });
+  }
+
+  async function applyRoute(route: AppRoute) {
+    const request = ++routeRequest;
+    const previousMeta = loadingDetail ? undefined : selected;
+    window.clearTimeout(searchTimer);
+    const retainedStreams = route.kind !== 'tab' && route.kind !== 'catalog' && route.kind !== 'detail'
+      && streamScreen && !loadingStreams && selected?.id === route.id && selected?.type === route.type
+      && episode?.id === route.videoId
+      ? { streams, activeStreamSources, selectedStreamSource, sourceStreams, sourceLoading, sourceWarnings, sourceError } : null;
+    resetPlayer();
+    resetDetail();
+    if (route.kind === 'tab' || (route.kind === 'catalog' && (catalogPage?.addon.manifest.id !== route.addonId
+      || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
+    accountPanel = false;
+    managing = false;
+    openDiscoverDropdown = null;
+    searchHistoryOpen = false;
+    if (route.kind === 'tab') {
+      selectTab(route.tab);
+      accountPanel = route.panel === 'accounts';
+      managing = route.panel === 'addons';
+      if (route.tab === 'search' && search !== (route.query || '')) {
+        search = route.query || '';
+        await restoreReady;
+        if (request !== routeRequest) return;
+        await tick();
+        void runSearch();
+      }
+    } else {
+      // Show a loading title immediately, but resolve only after account sources restore.
+      if (route.kind !== 'catalog') {
+        const key = `${route.type}:${route.id}`;
+        selected = detailMemory.get(key) || previewMemory.get(key) || cachedDetailPreview(route.type, route.id)
+          || initialAccountLibrary.find((item) => item.type === route.type && item.id === route.id)
+          || catalogs([...initialAccountAddons, ...initialLocalAddons]).flatMap(({ addon, catalog }) =>
+            cachedCatalog(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`))
+            .find((item) => item.type === route.type && item.id === route.id)
+          || { type: route.type, id: route.id, name: route.id };
+        loadingDetail = true;
+        streamScreen = route.kind !== 'detail';
+      }
+      await restoreReady;
+      await tick();
+      if (request !== routeRequest) return;
+      if (route.kind === 'catalog') {
+        const row = rows.find((row) => row.addon.manifest.id === route.addonId
+          && row.catalog.type === route.type && row.catalog.id === route.id);
+        if (row) {
+          // Retain the catalog's loaded pages beneath title details.
+          if (catalogPage?.key !== row.key) openCatalogPage(row, false);
+        } else {
+          // The link cannot install a configured addon on someone else's device.
+          addonError = 'This catalog is not available. Install or enable its addon first.';
+          replaceRoute({ kind: 'tab', tab: 'settings', panel: 'addons' });
+          selectTab('settings');
+          managing = true;
+        }
+      } else {
+        const key = `${route.type}:${route.id}`;
+        const preview = detailMemory.get(key) || previewMemory.get(key) || cachedDetailPreview(route.type, route.id)
+          || rows.flatMap((row) => row.items).find((item) => item.type === route.type && item.id === route.id)
+          || savedLibrary.find((item) => item.type === route.type && item.id === route.id)
+          || { type: route.type, id: route.id, name: route.id };
+        streamBackToDetail = router?.parent()?.kind === 'detail';
+        await loadDetail(preview, route, previousMeta?.type === route.type && previousMeta?.id === route.id ? previousMeta : undefined,
+          !!retainedStreams);
+        if (request !== routeRequest) return;
+        if (retainedStreams) {
+          ({ streams, activeStreamSources, selectedStreamSource, sourceStreams, sourceLoading, sourceWarnings, sourceError } = retainedStreams);
+        }
+        if (route.kind === 'player') {
+          const stream = playerMemory.get(routeHash(route));
+          if (stream) await playInBrowser(stream, false);
+          else {
+            const fallback = mediaRoute('streams');
+            const parent = router?.parent();
+            // Reuse the existing stream entry so reloading a player does not add a duplicate Back step.
+            if (parent && routeHash(parent) === routeHash(fallback)) {
+              router?.back(fallback);
+              return;
+            }
+            replaceRoute(fallback); // Shared player links require a fresh stream selection.
+          }
+        }
+      }
+    }
+    await tick();
+    if (request !== routeRequest) return;
+    const position = routePositions.get(routeHash(currentRoute));
+    if (position) {
+      window.scrollTo(0, position.window);
+      const panel = routePanel();
+      if (panel) panel.scrollTop = position.panel;
+      if (episodeListElement) episodeListElement.scrollLeft = position.episodes;
+    } else if (selected && !streamScreen) revealSelectedEpisode();
+  }
+
+  function openDetail(preview: MetaPreview, fromContinue = false) {
+    previewMemory.set(`${preview.type}:${preview.id}`, preview);
+    router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id });
+  }
+
+  async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, retainStreams = false) {
+    const fromContinue = route.kind !== 'detail';
     const request = ++detailRequest;
     selected = preview;
     streamScreen = fromContinue;
-    streamBackToDetail = false;
     detailError = '';
     streams = [];
     activeStreamSources = [];
@@ -1601,17 +1768,28 @@
     detailExpanded = false;
     loadingDetail = true;
     try {
-      const meta = await fetchMeta(addons, preview);
+      const meta = cached || detailMemory.get(`${preview.type}:${preview.id}`) || await fetchMeta(addons, preview);
       if (request !== detailRequest) return;
       selected = meta;
-      season = defaultSeason(meta.videos);
+      saveDetailPreview(meta);
+      if (meta.name === meta.id) detailError = 'Could not load this title. Check that its metadata addon is enabled and reachable.';
+      if (!addons.some((addon) => supports(addon, 'meta', meta.type, meta.id)) && !meta.videos?.length) {
+        detailError = 'Install or enable an addon that provides metadata for this title.';
+      }
+      detailMemory.set(`${meta.type}:${meta.id}`, meta);
+      season = route.season ?? defaultSeason(meta.videos);
       const recentProgress = nuvioProgress.filter((entry) => entry.content_id === meta.id && entry.content_type === meta.type
         && entry.position > 0 && entry.duration > 0 && entry.position < entry.duration * .95)
         .sort((a, b) => b.last_watched - a.last_watched)[0];
       const fallbackId = recentProgress?.video_id || accountLibrary.find((item) => item.id === meta.id)?.lastVideoId
         || (preview as MetaPreview & { lastVideoId?: string }).lastVideoId;
       const fallbackCoordinates = fallbackId?.match(/:(\d+):(\d+)$/);
-      const resumeVideo = resumeEpisode(meta, accountLibrary, nuvioLibrary, nuvioProgress)
+      const linkedVideo = (route.videoId ? meta.videos?.find((video) => video.id === route.videoId) : null)
+        || meta.videos?.find((video) => route.season !== undefined && route.episode !== undefined
+          && video.season === route.season && video.episode === route.episode)
+        || (route.videoId ? { id: route.videoId, season: route.season, episode: route.episode } : null);
+      const resumeVideo = linkedVideo || (route.season !== undefined && route.kind === 'detail' ? null
+        : resumeEpisode(meta, accountLibrary, nuvioLibrary, nuvioProgress))
         || (fromContinue && meta.type === 'series' && fallbackId
           ? { id: fallbackId, season: recentProgress?.season ?? (fallbackCoordinates ? Number(fallbackCoordinates[1]) : undefined),
             episode: recentProgress?.episode ?? (fallbackCoordinates ? Number(fallbackCoordinates[2]) : undefined) } : null);
@@ -1622,13 +1800,16 @@
         if (request !== detailRequest) return;
         if (fromContinue) {
           loadingDetail = false;
-          await loadStreams('series', resumeVideo.id);
+          if (!retainStreams) await loadStreams('series', resumeVideo.id);
         }
         else revealSelectedEpisode();
       }
       if (fromContinue && meta.type !== 'series') {
         loadingDetail = false;
-        await loadStreams(meta.type, meta.id);
+        if (!retainStreams) await loadStreams(meta.type, meta.id);
+      }
+      if (request === detailRequest && currentRoute.kind !== 'tab' && currentRoute.kind !== 'catalog') {
+        replaceRoute(mediaRoute(route.kind));
       }
     } catch (error) {
       if (request === detailRequest) detailError = message(error);
@@ -1638,6 +1819,10 @@
   }
 
   function closeDetail() {
+    router?.back({ kind: 'tab', tab });
+  }
+
+  function resetDetail() {
     detailRequest += 1;
     streamRequest += 1;
     selected = null;
@@ -1645,17 +1830,23 @@
     seasonPickerOpen = false;
     episode = null;
     streams = [];
+    loadingStreams = false;
+    loadingDetail = false;
   }
 
   function navigate(next: Tab) {
+    const target: AppRoute = { kind: 'tab', tab: next, query: next === 'search' ? search || undefined : undefined };
+    if (routeHash(target) === routeHash(currentRoute)) return;
+    router?.push(target);
+  }
+
+  function selectTab(next: Tab) {
     openDiscoverDropdown = null;
-    closeCatalogPage();
-    if (next === tab) { closeDetail(); return; }
+    if (next === tab) return;
     tabScrollPositions[tab] = window.scrollY;
     const request = ++navigationRequest;
     dockRestoringScroll = true;
     tab = next;
-    closeDetail();
     void tick().then(() => {
       if (request !== navigationRequest) return;
       window.scrollTo(0, tabScrollPositions[next]);
@@ -1686,19 +1877,13 @@
 
   function openStreamScreen(video: Video | null) {
     if (!selected) return;
-    episode = video;
-    streamBackToDetail = true;
-    streamScreen = true;
-    selectedStreamSource = '';
-    void loadStreams(selected.type, video?.id || selected.id);
+    // Preserve the selected episode and season in the detail history entry as well.
+    replaceRoute(mediaRoute('detail', video));
+    router?.push(mediaRoute('streams', video));
   }
 
   function closeStreamScreen() {
-    if (!streamBackToDetail) { closeDetail(); return; }
-    streamScreen = false;
-    streamRequest += 1;
-    loadingStreams = false;
-    void tick().then(revealSelectedEpisode);
+    router?.back(selected ? mediaRoute('detail') : { kind: 'tab', tab });
   }
 
   function playbackClock(positionMs: number): string {
@@ -1746,6 +1931,7 @@
       streamRequest += 1;
     }
     if (close) seasonPickerOpen = false;
+    if (selected && currentRoute.kind === 'detail') replaceRoute(mediaRoute('detail'));
   }
 
   function seasonWheelScrolled() {
@@ -1837,8 +2023,14 @@
     }
   }
 
-  async function playInBrowser(stream: Stream) {
+  async function playInBrowser(stream: Stream, recordHistory = true) {
     if (!selected || !playableStream(stream)) return;
+    if (recordHistory) {
+      const route = mediaRoute('player');
+      playerMemory.set(routeHash(route), stream);
+      router?.push(route);
+      return;
+    }
     if (selected.type === 'series' && !episode) {
       sourceError = 'Choose an episode first.';
       return;
@@ -1895,6 +2087,10 @@
   }
 
   function closePlayer() {
+    router?.back(selected ? mediaRoute('streams') : { kind: 'tab', tab });
+  }
+
+  function resetPlayer() {
     if (playing) logPlayback('player closed');
     if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
     playerElement?.removeAttribute('src');
@@ -1995,6 +2191,10 @@
         playing = { meta: current.meta, video: next, stream,
           resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress), resumeApplied: false };
         episode = next;
+        season = next.season ?? season;
+        const route = mediaRoute('player', next);
+        playerMemory.set(routeHash(route), stream);
+        replaceRoute(route);
         void loadStreams('series', next.id);
         playerError = '';
       } else playerError = `No matching browser stream for ${next.title || `S${next.season}E${next.episode}`}.`;
@@ -2003,7 +2203,7 @@
 </script>
 
 <svelte:head>
-  <title>{selected ? `${selected.name} · Bridged Streams` : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
+  <title>{selected ? detailIdentityReady ? `${selected.name} · Bridged Streams` : 'Loading title · Bridged Streams' : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
 </svelte:head>
 
 <div class:detail-open={!!selected && !accountPanel && !managing} class:content-open={!!selected || !!catalogPage} class="app-shell">
@@ -2024,7 +2224,7 @@
     {#if tab === 'library'}
       <section class="browse tab-page">
         <div class="page-intro"><div class="eyebrow">CONNECTED ACCOUNTS</div><h1>Library</h1><p>{account || nuvioSession ? `${savedLibrary.length} synced titles` : 'Sign in to Stremio or Nuvio to see your library and watch progress.'}</p></div>
-        {#if !account && !nuvioSession}<div class="empty-state">Connect Stremio or Nuvio to bring in your library and Continue Watching.<br /><button class="primary-button inline-action" onclick={() => accountPanel = true}><UserRound size={17} /> Connect an account</button></div>
+        {#if !account && !nuvioSession}<div class="empty-state">Connect Stremio or Nuvio to bring in your library and Continue Watching.<br /><button class="primary-button inline-action" onclick={() => openSettingsPanel('accounts')}><UserRound size={17} /> Connect an account</button></div>
         {:else if (accountSyncing || nuvioSyncing) && !savedLibrary.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Syncing your library…</div>
         {:else if savedLibrary.length}<div class="poster-grid">{#each savedLibrary as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={item.progress ? `${item.progress}% watched` : undefined} onSelect={() => void openDetail(item)} />{/each}</div>
         {:else}<div class="empty-state">Your connected library is empty. Add a title, then sync again.</div>{/if}
@@ -2033,8 +2233,8 @@
       <section class="settings-page browse tab-page">
         <div class="page-intro"><div class="eyebrow">YOUR SPACE</div><h1>Settings</h1><p>Manage your accounts, addons, and playback preferences.</p></div>
         <div class="settings-grid">
-          <button class="settings-card" onclick={() => accountPanel = true}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
-          <button class="settings-card" onclick={() => managing = true}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
         </div>
       </section>
     {:else if tab === 'search'}
@@ -2090,9 +2290,9 @@
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
           <div class="eyebrow">ACCOUNT CONNECTED</div><h1>Your space is ready.<br /><em>Add a source to watch.</em></h1><p>Your account is connected. Add a catalog addon to browse movies, shows, and sports here.</p>
-          <div class="welcome-actions"><button class="primary-button" onclick={() => managing = true}><Plus size={18} /> Add an addon</button>{#if nuvioSession && !nuvioProfiles.length}<button class="outline-button" onclick={() => accountPanel = true}><UserRound size={18} /> Set up Nuvio profile</button>{/if}</div>
+          <div class="welcome-actions"><button class="primary-button" onclick={() => openSettingsPanel('addons')}><Plus size={18} /> Add an addon</button>{#if nuvioSession && !nuvioProfiles.length}<button class="outline-button" onclick={() => openSettingsPanel('accounts')}><UserRound size={18} /> Set up Nuvio profile</button>{/if}</div>
         {:else}
-          <div class="eyebrow">YOUR STREAMING, CONNECTED</div><h1>All your addons.<br /><em>One place to watch.</em></h1><p>Connect Stremio or Nuvio to bring in your addons and library, or install a compatible addon URL yourself. Browse, play, and pick up where you left off in your browser.</p><div class="welcome-actions"><button class="primary-button" onclick={() => accountPanel = true}><UserRound size={19} /> Connect an account</button><button class="outline-button" onclick={() => managing = true}><Plus size={18} /> Add an addon</button></div>
+          <div class="eyebrow">YOUR STREAMING, CONNECTED</div><h1>All your addons.<br /><em>One place to watch.</em></h1><p>Connect Stremio or Nuvio to bring in your addons and library, or install a compatible addon URL yourself. Browse, play, and pick up where you left off in your browser.</p><div class="welcome-actions"><button class="primary-button" onclick={() => openSettingsPanel('accounts')}><UserRound size={19} /> Connect an account</button><button class="outline-button" onclick={() => openSettingsPanel('addons')}><Plus size={18} /> Add an addon</button></div>
         {/if}
       </section>
       {:else}
@@ -2169,9 +2369,9 @@
 {#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => status = ''} aria-label="Dismiss"><X size={16} /></button></div>{/if}
 
 {#if accountPanel}
-  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) accountPanel = false; }}>
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
     <div class="manage-panel account-panel" role="dialog" aria-modal="true" aria-label="Accounts">
-      <div class="panel-header"><div><div class="eyebrow">ACCOUNT SYNC</div><h2>Connected accounts</h2></div><button class="icon-button" onclick={() => accountPanel = false} aria-label="Close account"><X size={22} /></button></div>
+      <div class="panel-header"><div><div class="eyebrow">ACCOUNT SYNC</div><h2>Connected accounts</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close account"><X size={22} /></button></div>
       <h3 class="account-section-title">Stremio</h3>
       {#if account}
         <div class="signed-in-card"><div class="account-avatar"><UserRound size={24} /></div><div><strong>{account.user.email}</strong><small>{stremioRestoring ? 'Restoring Stremio session…' : 'Connected to Stremio'}</small></div></div>
@@ -2240,8 +2440,8 @@
 {/if}
 
 {#if managing}
-  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) managing = false; }}>
-    <div class="manage-panel" role="dialog" aria-modal="true" aria-label="Manage addons"><div class="panel-header"><div><div class="eyebrow">YOUR SOURCES</div><h2>Manage addons</h2></div><button class="icon-button" onclick={() => managing = false} aria-label="Close"><X size={22} /></button></div>
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
+    <div class="manage-panel" role="dialog" aria-modal="true" aria-label="Manage addons"><div class="panel-header"><div><div class="eyebrow">YOUR SOURCES</div><h2>Manage addons</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={22} /></button></div>
       <p class="panel-copy">Set addon priority, enable the resources each addon provides, refresh its manifest, or open its configuration page. Nuvio plugin repositories add browser-compatible stream scrapers.</p>
       <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
       <div class="catalog-cache-controls"><strong>Catalog refresh</strong><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
@@ -2252,7 +2452,7 @@
       {#if addonError}<p class="error-message" role="alert">{addonError}</p>{/if}
       <div class="installed-label">STREMIO ACCOUNT · {accountAddons.length}</div>
       {#each accountAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="stremio" {index} total={accountAddons.length} busy={addonWorking !== ''} onToggle={(enabled) => void setAddonEnabled('stremio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('stremio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('stremio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('stremio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'stremio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
-      {#if !account}<div class="row-empty">Connect Stremio to import your account addons. <button class="text-action" onclick={() => { managing = false; accountPanel = true; }}>Sign in <ArrowRight size={16} /></button></div>{/if}
+      {#if !account}<div class="row-empty">Connect Stremio to import your account addons. <button class="text-action" onclick={() => openSettingsPanel('accounts')}>Sign in <ArrowRight size={16} /></button></div>{/if}
       {#if nuvioSession && nuvioProfileReady}<div class="installed-label">NUVIO PROFILE ADDONS · {nuvioAddons.length}</div>
         {#each nuvioAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="nuvio" {index} total={nuvioAddons.length} busy={addonWorking !== ''} readOnly={activeNuvioProfile?.uses_primary_addons === true && nuvioProfileIndex !== 1} onToggle={(enabled) => void setAddonEnabled('nuvio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('nuvio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('nuvio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('nuvio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'nuvio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
       {/if}
@@ -2281,17 +2481,17 @@
 
 {#if selected && streamScreen}
   <div class="overlay stream-overlay" role="presentation" in:fade={{ duration: motionDuration(240), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeStreamScreen(); }}>
-    <div class="stream-panel" role="dialog" aria-modal="true" aria-label={`Streams for ${selected.name}`}>
+    <div class="stream-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? `Streams for ${selected.name}` : 'Title streams'}>
       <div class="stream-screen-hero" class:without-art={!episode?.thumbnail && !selected.background && !selected.poster} style:background-image={(episode?.thumbnail || selected.background || selected.poster) ? `linear-gradient(0deg, #090b0f 0%, #090b0f5c 100%), url('${(episode?.thumbnail || selected.background || selected.poster || '').replaceAll("'", '%27')}')` : ''}>
         <button class="stream-back" onclick={closeStreamScreen}><ArrowLeft size={20} /> {streamBackToDetail ? 'Details' : 'Back'}</button>
-        <div class="stream-hero-copy"><span class="section-type">CHOOSE A STREAM</span><h1>{selected.name}</h1>{#if episode}<p>S{episode.season ?? '?'} E{episode.episode ?? '?'} · {episode.title || `Episode ${episode.episode ?? '?'}`}</p>{/if}</div>
+        <div class="stream-hero-copy">{#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}<span class="section-type">CHOOSE A STREAM</span><h1>{selected.name}</h1>{#if episode}<p>S{episode.season ?? '?'} E{episode.episode ?? '?'} · {episode.title || `Episode ${episode.episode ?? '?'}`}</p>{/if}{/if}</div>
       </div>
       <div class="stream-screen-body">
         {#if detailResumeMs > 0}<div class="stream-resume-banner"><Play size={17} fill="currentColor" /> Resume from {playbackClock(detailResumeMs)}</div>{/if}
         {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding your {selected.type === 'series' ? 'episode' : 'streams'}…</div>{/if}
         {#if detailError}<div class="error-message" role="alert">{detailError}</div>{/if}
-        {#if selected.type === 'series' && !episode && !loadingDetail}<button class="stream-choose-episode" onclick={() => { streamBackToDetail = true; closeStreamScreen(); }}>Choose an episode <ArrowRight size={17} /></button>{/if}
-        {#if selected.type !== 'series' || episode}
+        {#if selected.type === 'series' && !episode && !loadingDetail}<button class="stream-choose-episode" onclick={() => router?.push(mediaRoute('detail'))}>Choose an episode <ArrowRight size={17} /></button>{/if}
+        {#if detailIdentityReady && (selected.type !== 'series' || episode)}
           <div class="stream-screen-heading"><div><span class="section-type">AVAILABLE SOURCES</span><h2>Streams <small>{visiblePlayable.length}</small></h2></div></div>
           <div class="stream-provider-row" role="group" aria-label="Filter and refresh stream sources">
             <button class="stream-refresh-all" onclick={refreshAllStreams} disabled={loadingDetail} aria-label="Refresh all streams" title="Refresh all streams"><RefreshCw size={17} class={loadingStreams ? 'spin' : ''} /></button>
@@ -2324,28 +2524,30 @@
 
 {#if selected && !streamScreen}
   <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:fade={{ duration: motionDuration(260), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
-    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={selected.name}>
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'}>
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>
       <div class="detail-hero" style:background-image={selected.background ? `linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%), linear-gradient(0deg, #090b0f 0%, transparent 55%), url('${selected.background.replaceAll("'", '%27')}')` : selected.poster ? `linear-gradient(90deg, #090b0ff2, #090b0f99), linear-gradient(0deg, #090b0f, transparent), url('${selected.poster.replaceAll("'", '%27')}')` : ''}>
         <div class="detail-intro">
+          {#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}><Play size={21} fill="currentColor" /> {selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
+          {/if}
         </div>
         {#if selected.director || selected.cast?.length || selected.country || selected.status}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{selected.cast.slice(0, 3).join(', ')}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}</aside>{/if}
       </div>
       <div id="detail-about" class="detail-content">
         {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading details…</div>{/if}
         {#if detailError}<div class="error-message">{detailError}</div>{/if}
-        {#if selected.type === 'series'}
+        {#if detailIdentityReady && selected.type === 'series'}
           <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2></div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
           {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
         {#if selected.cast?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
-        {#if relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
+        {#if detailIdentityReady && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
       </div>
       {#if seasonPickerOpen}
         <div class="season-mobile-sheet" role="dialog" aria-modal="true" aria-label="Choose season">

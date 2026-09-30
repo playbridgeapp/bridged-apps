@@ -68,6 +68,156 @@ test.beforeEach(async ({ page }) => {
   await manager.getByRole('button', { name: 'Close' }).click();
 });
 
+test('shows a skeleton for an uncached deep link instead of exposing its media ID', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/meta/series/ttCold.json`, async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ json: { meta: { ...series, id: 'ttCold', name: 'Cold Series', videos: [
+      { id: 'ttCold:1:1', season: 1, episode: 1, title: 'Cold Pilot' }
+    ] } }, headers: { 'access-control-allow-origin': '*' } });
+  });
+  await page.goto('/#/series/ttCold?season=1');
+  await requestStarted;
+  try {
+    await expect(page.locator('.detail-intro .title-skeleton')).toBeVisible();
+    await expect(page.locator('.detail-intro')).not.toContainText('ttCold');
+    await expect(page.locator('.detail-play')).toHaveCount(0);
+    await expect(page).toHaveTitle('Loading title · Bridged Streams');
+  } finally { release(); }
+  await expect(page.getByRole('heading', { name: 'Cold Series', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-intro .title-skeleton')).toHaveCount(0);
+  await expect(page.locator('.season-trigger')).toContainText('Season 1');
+});
+
+test('keeps the cached title on refresh while updating its metadata', async ({ page }) => {
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/meta/series/tt200.json`, async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ json: { meta: { ...series, name: 'Updated Sample Series' } },
+      headers: { 'access-control-allow-origin': '*' } });
+  });
+  await page.reload();
+  await requestStarted;
+  try {
+    await expect(page.getByRole('heading', { name: 'Sample Series', exact: true })).toBeVisible();
+    await expect(page.locator('.detail-intro')).not.toContainText('tt200');
+    await expect(page.locator('.detail-play')).toHaveText('Loading…');
+    await expect(page.locator('.detail-play')).toBeDisabled();
+  } finally { release(); }
+  await expect(page.getByRole('heading', { name: 'Updated Sample Series', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+});
+
+test('routes movie details and streams through browser Back and Forward', async ({ page }) => {
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page).toHaveURL(/#\/movie\/tt100$/);
+  await page.locator('.detail-play').click();
+  await expect(page).toHaveURL(/#\/movie\/tt100\/streams$/);
+  await expect(page.getByText('Film Source')).toBeVisible();
+  await page.goBack();
+  await expect(page.getByRole('dialog', { name: 'Sample Film', exact: true })).toBeVisible();
+  await page.goBack();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+  await page.goForward();
+  await expect(page).toHaveTitle('Sample Film · Bridged Streams');
+  await page.goForward();
+  await expect(page.getByText('Film Source')).toBeVisible();
+});
+
+test('restores linked episodes after reload and returns to their selected season', async ({ page }) => {
+  await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [
+    { id: 'tt200:1:1', season: 1, episode: 1, title: 'Pilot' },
+    { id: 'tt200:2:1', season: 2, episode: 1, title: 'Season Two Premiere' }
+  ] } }, headers: { 'access-control-allow-origin': '*' } }));
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.locator('.season-trigger').click();
+  await page.locator('#season-options').getByRole('button', { name: /Season 2/ }).click();
+  await expect(page).toHaveURL(/#\/series\/tt200\?season=2$/);
+  await page.getByRole('button', { name: /Season Two Premiere/ }).click();
+  await expect(page).toHaveURL(/#\/series\/tt200\/streams\?video=tt200%3A2%3A1&season=2&episode=1$/);
+  await page.reload();
+  await expect(page.getByRole('dialog', { name: 'Streams for Sample Series' })).toContainText('Season Two Premiere');
+  await page.locator('.stream-back').click();
+  await expect(page.locator('.season-trigger')).toContainText('Season 2');
+  await expect(page.locator('.episode-row.selected')).toContainText('Season Two Premiere');
+});
+
+test('opens a direct movie link and gives its back button a safe home fallback', async ({ page }) => {
+  await page.goto('/#/movie/tt100');
+  await expect(page.getByRole('dialog', { name: 'Sample Film', exact: true })).toBeVisible();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
+});
+
+test('routes catalogs and settings panels and restores them with browser Back', async ({ page }) => {
+  await page.getByRole('button', { name: 'View all Films from Test Catalog' }).click();
+  await expect(page).toHaveURL(/#\/catalog\/test\/movie\/top$/);
+  await page.reload();
+  const catalog = page.getByRole('dialog', { name: 'Films catalog' });
+  await expect(catalog).toBeVisible();
+  await catalog.getByRole('button', { name: 'View details for Sample Film' }).click();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await page.goBack();
+  await expect(catalog).toBeVisible();
+  await page.goBack();
+  await openAccounts(page);
+  await expect(page).toHaveURL(/#\/settings\/accounts$/);
+  await page.goBack();
+  await expect(page.getByRole('dialog', { name: 'Connected accounts' })).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+});
+
+test('browser Back closes playback and reloaded playback links require source selection', async ({ page }) => {
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await page.locator('.stream-overlay .watch-button').click();
+  await expect(page).toHaveURL(/#\/movie\/tt100\/player$/);
+  await expect(page.getByRole('dialog', { name: 'Now playing Sample Film' })).toBeVisible();
+  await page.goBack();
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  await expect(page.getByText('Film Source')).toBeVisible();
+  await page.goForward();
+  await expect(page.getByRole('dialog', { name: 'Now playing Sample Film' })).toBeVisible();
+  await page.reload();
+  await expect(page).toHaveURL(/#\/movie\/tt100\/streams$/);
+  await expect(page.getByText('Film Source')).toBeVisible();
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  await page.goBack();
+  await expect(page.getByRole('dialog', { name: 'Sample Film', exact: true })).toBeVisible();
+});
+
+test('restores a search query from its URL without creating a history entry per keystroke', async ({ page }) => {
+  await goTab(page, 'Search');
+  const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  const initialLength = await page.evaluate(() => history.length);
+  await input.fill('Sample');
+  await page.locator('.search-submit').click();
+  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  expect(await page.evaluate(() => history.length)).toBe(initialLength);
+  await page.reload();
+  await expect(input).toHaveValue('Sample');
+  const result = page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' });
+  await expect(result).toBeVisible();
+  await result.click();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await page.goBack();
+  await expect(input).toHaveValue('Sample');
+  await expect(result).toBeVisible();
+});
+
 test('casts a selected movie as one tracked item', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await page.locator('.detail-play').click();
@@ -110,7 +260,8 @@ test('keeps a copyable report when the MoviPlayer module fails to load', async (
   await expect(report).toHaveValue(/"event": "WASM compile"/, { timeout: 20000 });
   await expect(player.getByRole('status')).toContainText('Player engine check passed');
   await page.reload();
-  await openAddons(page);
+  await expect(page.getByRole('dialog', { name: 'Streams for Sample Film' })).toBeVisible();
+  await page.goto('/#/settings/addons');
   await page.getByRole('dialog', { name: 'Manage addons' }).locator('details.playback-diagnostics summary').click();
   const settingsReport = page.getByRole('dialog', { name: 'Manage addons' }).getByRole('textbox', { name: 'Playback diagnostic report' });
   await expect(settingsReport).toHaveValue(/player import failed/);

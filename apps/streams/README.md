@@ -13,6 +13,20 @@ pnpm dev:streams
 
 Open `http://127.0.0.1:5182`. Install at least one Stremio-compatible addon with a catalog and metadata resource to browse titles. Add configured manifest URLs directly. Home shows featured titles, Continue Watching, Browse by Addon, and catalog rows. Search has a search bar and a Discover feed with Type, Catalog, and Genre dropdowns; compatible catalogs load more titles as you scroll. Catalogs that require an option use the addon's first listed option by default, such as the current year in Cinemeta's New rows. Nuvio plugin repositories add stream sources to those titles; they do not supply catalogs.
 
+## Navigation and shared links
+
+Screens use URL routes with browser Back and Forward support. Hash routes work on the static Cloudflare deployment and the local server without rewrite configuration:
+
+- `/#/search?q=Avengers`, `/#/library`, and `/#/settings`
+- `/#/movie/tt1234567` for a movie's details
+- `/#/series/tt1234567?season=2` for a selected season
+- `/#/series/tt1234567/streams?video=tt1234567%3A2%3A3&season=2&episode=3` for episode streams
+- `/#/catalog/ADDON_ID/movie/CATALOG_ID` for one catalog
+
+Links resolve metadata and streams using the recipient's enabled addons. They do not install addons or contain account credentials or resolved stream URLs. Season and episode choices survive refreshes. Back returns from the player to streams, from streams to details (or the originating Continue Watching page), and from details to the originating catalog or tab. Scroll positions and loaded catalog pages are retained during navigation in the current page session. The player also has a route; reloading or sharing it opens stream selection so a fresh source can be chosen.
+
+Refresh restores a recently opened title's name and artwork from a session cache (up to 24 titles for six hours), then loads fresh metadata. Uncached title links show a loading skeleton rather than a raw media ID. Playback actions remain disabled while details and account sources restore.
+
 ## Bridged Apps on Android
 
 The site serves `/.well-known/playbridge-app.json`, which opts it into PlayBridge's Bridged Apps launcher. Open the deployed HTTPS site, or a local development server at a private LAN address such as `http://192.168.1.23:5182`, in PlayBridge's Android browser and choose **Add Bridged App** from the menu. Its tile then appears on the PlayBridge dashboard. Tapping the tile opens the site without browser chrome; Android Back returns to the dashboard after the site's own navigation history. Long press the tile to remove it. Installation and casting permission are separate.
