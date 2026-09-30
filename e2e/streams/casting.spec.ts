@@ -152,6 +152,68 @@ async function mockTmdb(page: Page) {
   return requests;
 }
 
+test('waits for addon metadata before showing the detail backdrop', async ({ page }) => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  await page.route('https://art.test/**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route(`${addon}/meta/movie/tt100.json`, async (route) => {
+    await gate;
+    await route.fulfill({ json: { meta: { ...movie, background: 'https://art.test/detail.jpg' } },
+      headers: { 'access-control-allow-origin': '*' } });
+  });
+  await page.evaluate(() => sessionStorage.setItem('bridged-streams.detail-preview.v1', JSON.stringify([
+    { preview: { id: 'tt100', type: 'movie', name: 'Sample Film', background: 'https://art.test/catalog.jpg' }, savedAt: Date.now() }
+  ])));
+  try {
+    await page.goto('/#/movie/tt100');
+    await expect(page.locator('.detail-hero')).toBeVisible();
+    await expect(page.locator('.detail-play')).toBeDisabled();
+    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', 'none');
+  } finally { release(); }
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect(page.locator('.detail-hero')).toHaveCSS('background-image', /art\.test\/detail\.jpg/);
+});
+
+for (const artwork of [true, false]) {
+  test(`keeps the detail backdrop stable with delayed TMDB and artwork ${artwork ? 'enabled' : 'disabled'}`, async ({ page }) => {
+    await mockTmdb(page);
+    await page.route('https://art.test/**', (route) => route.fulfill({ status: 404, body: '' }));
+    await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+      json: { meta: { ...movie, background: 'https://art.test/addon.jpg' } },
+      headers: { 'access-control-allow-origin': '*' }
+    }));
+    let release!: () => void;
+    let requested!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+    await page.route('https://api.themoviedb.org/3/movie/321?**', async (route) => {
+      requested();
+      await gate;
+      await route.fallback();
+    });
+    await enableTmdbEnrichment(page);
+    if (!artwork) {
+      await page.goto('/#/settings/integrations');
+      await page.getByRole('checkbox', { name: /^Artwork / }).uncheck();
+      await page.getByRole('dialog', { name: 'Integrations' }).getByRole('button', { name: 'Close', exact: true }).click();
+      await goTab(page, 'Home');
+    }
+    try {
+      await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+      await requestStarted;
+      await expect(page.locator('.detail-play')).toBeEnabled();
+      await expect(page.locator('.detail-hero')).toHaveCSS('background-image', artwork ? 'none' : /art\.test\/addon\.jpg/);
+    } finally { release(); }
+    await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+    const expected = artwork ? /image\.tmdb\.org\/t\/p\/w1280\/backdrop\.jpg/ : /art\.test\/addon\.jpg/;
+    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', expected);
+    await page.getByRole('button', { name: 'Back to browsing' }).click();
+    await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+    await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
+    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', expected);
+  });
+}
+
 test('enriches movie details, caches TMDB results, and opens recommendations with addon playback IDs', async ({ page }) => {
   const requests = await mockTmdb(page);
   await enableTmdbEnrichment(page);
@@ -230,6 +292,11 @@ test('slow TMDB enrichment does not block details, stream selection, or browser 
 
 test('TMDB failures leave addon details playable and can be retried', async ({ page }) => {
   await mockTmdb(page);
+  await page.route('https://art.test/**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+    json: { meta: { ...movie, background: 'https://art.test/fallback.jpg' } },
+    headers: { 'access-control-allow-origin': '*' }
+  }));
   let fail = true;
   await page.route('https://api.themoviedb.org/3/find/tt100?**', (route) => fail
     ? route.fulfill({ status: 401, json: { status_message: 'Invalid key' }, headers: { 'access-control-allow-origin': '*' } })
@@ -238,6 +305,7 @@ test('TMDB failures leave addon details playable and can be retried', async ({ p
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await expect(page.locator('.tmdb-detail-status')).toContainText('HTTP 401');
   await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect(page.locator('.detail-hero')).toHaveCSS('background-image', /art\.test\/fallback\.jpg/);
   fail = false;
   await page.getByRole('button', { name: 'Retry TMDB details' }).click();
   await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();

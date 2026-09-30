@@ -396,6 +396,10 @@
     .sort((a, b) => (b.lastWatched || '').localeCompare(a.lastWatched || ''));
   $: selectedInLibrary = selected ? accountLibrary.some((item) => item.id === selected?.id && !item.removed && !item.temp) : false;
   $: detailIdentityReady = !!selected && selected.name !== selected.id;
+  // Catalog artwork and addon artwork can both be replaced during detail loading.
+  // Publish the chosen backdrop once, while text and playback stay independent.
+  $: detailBackdrop = loadingDetail || (enrichmentBusy && tmdbSettings.artwork)
+    ? '' : selected?.background || selected?.poster || '';
   $: selectedInNuvioLibrary = selected ? nuvioLibrary.some((item) => item.id === selected?.id && item.type === selected?.type) : false;
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
@@ -2775,7 +2779,7 @@
   <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:fade={{ duration: motionDuration(260), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
     <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'}>
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>
-      <div class="detail-hero" style:background-image={selected.background ? `linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%), linear-gradient(0deg, #090b0f 0%, transparent 55%), url('${selected.background.replaceAll("'", '%27')}')` : selected.poster ? `linear-gradient(90deg, #090b0ff2, #090b0f99), linear-gradient(0deg, #090b0f, transparent), url('${selected.poster.replaceAll("'", '%27')}')` : ''}>
+      <div class="detail-hero" style:background-image={detailBackdrop ? `${selected.background ? 'linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%), linear-gradient(0deg, #090b0f 0%, transparent 55%)' : 'linear-gradient(90deg, #090b0ff2, #090b0f99), linear-gradient(0deg, #090b0f, transparent)'}, url('${detailBackdrop.replaceAll("'", '%27')}')` : ''}>
         <div class="detail-intro">
           {#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
