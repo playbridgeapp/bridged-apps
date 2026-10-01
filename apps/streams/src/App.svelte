@@ -545,9 +545,10 @@
 
   onMount(() => {
     router = new HashRouter((route) => {
+      const returningToTab = currentRoute.kind !== 'tab' && route.kind === 'tab' && route.tab === tab;
       rememberRoutePosition();
       currentRoute = route;
-      void applyRoute(route);
+      void applyRoute(route, returningToTab);
     });
     bridge = bridgeAvailable();
     updateDockIndicator();
@@ -1711,8 +1712,7 @@
   }
 
   function rememberRoutePosition() {
-    // Tabs always start at the top; only content screens retain route positions.
-    if (currentRoute.kind === 'tab') return;
+    // Remember browsing positions for returns from content, alongside content panel positions.
     routePositions.set(routeHash(currentRoute), { window: window.scrollY,
       panel: routePanel()?.scrollTop || 0,
       episodes: episodeListElement?.scrollLeft || 0 });
@@ -1745,7 +1745,7 @@
     router?.back({ kind: 'tab', tab: 'settings' });
   }
 
-  async function applyRoute(route: AppRoute) {
+  async function applyRoute(route: AppRoute, returningToTab = false) {
     activeTrailer = null;
     const request = ++routeRequest;
     const actionToken = ++streamActionRequest;
@@ -1855,9 +1855,12 @@
     await tick();
     if (request !== routeRequest) return;
     if (route.kind === 'tab') {
-      window.scrollTo(0, 0);
       dockCompact = false;
-      return;
+      // Switching tabs starts fresh; closing content restores the tab beneath it.
+      if (!returningToTab) {
+        window.scrollTo(0, 0);
+        return;
+      }
     }
     const position = routePositions.get(routeHash(currentRoute));
     if (position) {
