@@ -199,11 +199,11 @@
   let openDiscoverDropdown: DiscoverDropdown | null = null;
   let discoverDropdownTrigger: HTMLButtonElement | null = null;
   let search = '';
+  let submittedSearch = '';
   let searchHistory = savedSearchHistory();
   let searchHistoryOpen = false;
   let searchResults: MetaPreview[] = [];
   let searching = false;
-  let searchTimer: number | undefined;
   let searchHistoryTimer: number | undefined;
   let loadingCatalogs = false;
   let managing = false;
@@ -387,7 +387,7 @@
     : openDiscoverDropdown === 'catalog' ? selectedDiscoverCatalog?.key || '' : effectiveDiscoverGenre;
   $: activeDiscoverRequestKey = selectedDiscoverCatalog
     ? `${selectedDiscoverCatalog.key}|${effectiveDiscoverGenre}|${catalogRequest}` : '';
-  $: if (tab === 'search' && !search.trim() && activeDiscoverRequestKey && activeDiscoverRequestKey !== lastDiscoverRequestKey) {
+  $: if (tab === 'search' && !submittedSearch && activeDiscoverRequestKey && activeDiscoverRequestKey !== lastDiscoverRequestKey) {
     lastDiscoverRequestKey = activeDiscoverRequestKey;
     void loadDiscoverFeed(true);
   }
@@ -627,7 +627,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
+    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); };
   });
 
   async function restoreAddons() {
@@ -1570,16 +1570,17 @@
 
   async function runSearch() {
     const query = search.trim();
+    submittedSearch = query;
     selectTab('search');
     if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
       replaceRoute({ ...currentRoute, query: query || undefined });
     }
     const request = ++searchRequest;
     searchResults = [];
-    if (!query) { searching = false; return; }
     window.clearTimeout(searchHistoryTimer);
+    if (!query) { searching = false; return; }
     searchHistoryTimer = window.setTimeout(() => {
-      if (search.trim() !== query) return;
+      if (submittedSearch !== query) return;
       searchHistory = [query, ...searchHistory.filter((item) => item.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 8);
       saveSearchHistory();
     }, SEARCH_HISTORY_DELAY_MS);
@@ -1606,28 +1607,25 @@
   }
 
   function useSearchHistory(query: string) {
-    scheduleSearch(query);
-    window.clearTimeout(searchTimer);
+    updateSearch(query);
     searchHistoryOpen = false;
     void runSearch();
   }
 
   function removeSearchHistory(query: string) {
-    if (search.trim() === query) window.clearTimeout(searchHistoryTimer);
+    if (submittedSearch === query) window.clearTimeout(searchHistoryTimer);
     searchHistory = searchHistory.filter((item) => item !== query);
     saveSearchHistory();
   }
 
-  function scheduleSearch(value: string) {
+  function updateSearch(value: string) {
     search = value;
-    if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') replaceRoute({ ...currentRoute, query: value || undefined });
     searchHistoryOpen = false;
-    if (searchTimer) window.clearTimeout(searchTimer);
-    window.clearTimeout(searchHistoryTimer);
-    ++searchRequest;
-    searchResults = [];
-    searching = !!value.trim();
-    if (searching) searchTimer = window.setTimeout(() => void runSearch(), 350);
+  }
+
+  function clearSearch() {
+    updateSearch('');
+    void runSearch();
   }
 
   function discoverTypeLabel(type: string): string {
@@ -1717,7 +1715,7 @@
   function observeDiscoverEnd(node: HTMLElement) {
     if (typeof IntersectionObserver === 'undefined') return;
     const observer = new IntersectionObserver((entries) => {
-      if (entries[0]?.isIntersecting && tab === 'search' && !search.trim() && !discoverError) void loadDiscoverFeed(false);
+      if (entries[0]?.isIntersecting && tab === 'search' && !submittedSearch && !discoverError) void loadDiscoverFeed(false);
     }, { rootMargin: '500px' });
     observer.observe(node);
     return { destroy: () => observer.disconnect() };
@@ -1763,7 +1761,6 @@
     const automaticAction = pendingAutoAction;
     pendingAutoAction = null;
     const previousMeta = loadingDetail ? undefined : selected;
-    window.clearTimeout(searchTimer);
     // Keep the same source screen alive beneath the player, including unfinished lookups.
     const retainMedia = (route.kind === 'streams' || route.kind === 'player')
       && streamScreen && !loadingDetail && selected?.id === route.id && selected?.type === route.type
@@ -1783,7 +1780,7 @@
       accountPanel = route.panel === 'accounts';
       managing = route.panel === 'addons';
       integrationsPanel = route.panel === 'integrations';
-      if (route.tab === 'search' && search !== (route.query || '')) {
+      if (route.tab === 'search' && submittedSearch !== (route.query || '')) {
         search = route.query || '';
         if (!catalogs(addons).some(({ catalog }) => requiredCatalogExtras(catalog, search.trim())?.search)) await restoreReady;
         if (request !== routeRequest) return;
@@ -2026,7 +2023,7 @@
   }
 
   function navigate(next: Tab) {
-    const target: AppRoute = { kind: 'tab', tab: next, query: next === 'search' ? search || undefined : undefined };
+    const target: AppRoute = { kind: 'tab', tab: next, query: next === 'search' ? submittedSearch || undefined : undefined };
     if (routeHash(target) === routeHash(currentRoute)) return;
     router?.push(target);
   }
@@ -2482,11 +2479,11 @@
         <div class="eyebrow">FIND SOMETHING TO WATCH</div>
         <h1>Search</h1>
         <div class="search-entry" onfocusout={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) searchHistoryOpen = false; }}>
-          <form class="search-form" onsubmit={(event) => { event.preventDefault(); if (searchTimer) window.clearTimeout(searchTimer); searchHistoryOpen = false; void runSearch(); }}>
+          <form class="search-form" onsubmit={(event) => { event.preventDefault(); searchHistoryOpen = false; void runSearch(); }}>
             <Search size={21} />
-            <input value={search} oninput={(event) => scheduleSearch(event.currentTarget.value)} placeholder="Movies, TV shows, sports..." aria-label="Search movies, TV shows, and sports" autocomplete="off" />
+            <input value={search} oninput={(event) => updateSearch(event.currentTarget.value)} placeholder="Movies, TV shows, sports..." aria-label="Search movies, TV shows, and sports" autocomplete="off" />
             <button class="search-history-toggle" type="button" onclick={() => searchHistoryOpen = !searchHistoryOpen} disabled={!searchHistory.length} aria-label="Recent searches" aria-expanded={searchHistoryOpen} aria-controls="search-history-list" title={searchHistory.length ? 'Recent searches' : 'No recent searches'}><History size={18} /></button>
-            {#if search}<button class="search-clear" type="button" onclick={() => scheduleSearch('')} aria-label="Clear search"><X size={18} /></button>{/if}
+            {#if search || submittedSearch}<button class="search-clear" type="button" onclick={clearSearch} aria-label="Clear search"><X size={18} /></button>{/if}
             <button class="search-submit" type="submit">Search <ArrowRight size={18} /></button>
           </form>
           {#if searchHistoryOpen && searchHistory.length}
@@ -2499,7 +2496,7 @@
           {/if}
         </div>
       </section>
-      {#if search.trim()}
+      {#if submittedSearch}
         <section class="search-results browse" aria-label="Search results">
           <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching ? 'Searching…' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div></div>
           {#if searching}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}

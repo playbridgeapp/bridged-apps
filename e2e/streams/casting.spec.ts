@@ -726,6 +726,43 @@ test('browser Back closes playback and reloaded playback links require source se
   await expect(page.getByRole('dialog', { name: 'Sample Film', exact: true })).toBeVisible();
 });
 
+test('searches only on submit and preserves focus and URL while typing', async ({ page }) => {
+  await goTab(page, 'Search');
+  await page.clock.install();
+  const requests: string[] = [];
+  page.on('request', (request) => {
+    if (request.url().startsWith(`${addon}/catalog/`) && request.url().includes('search=')) requests.push(request.url());
+  });
+  const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
+  for (const partial of ['S', 'Sa', 'Sample']) {
+    await input.fill(partial);
+    await page.clock.runFor(1000);
+    await expect(input).toBeFocused();
+    await expect(page).toHaveURL(/#\/search$/);
+    await expect(page.getByRole('region', { name: 'Search results' })).toHaveCount(0);
+    expect(requests).toEqual([]);
+  }
+  await page.locator('.search-submit').click();
+  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  const results = page.getByRole('region', { name: 'Search results' });
+  await expect(results.getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+  expect(requests.length).toBeGreaterThan(0);
+  const completedRequests = requests.length;
+  await input.fill('Other');
+  await page.clock.runFor(1000);
+  await expect(input).toBeFocused();
+  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  await expect(results.getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
+  expect(requests).toHaveLength(completedRequests);
+  await input.press('Enter');
+  await expect(page).toHaveURL(/#\/search\?q=Other$/);
+  await expect.poll(() => requests.length).toBeGreaterThan(completedRequests);
+  await page.getByRole('button', { name: 'Clear search', exact: true }).click();
+  await expect(input).toHaveValue('');
+  await expect(page).toHaveURL(/#\/search$/);
+  await expect(results).toHaveCount(0);
+});
+
 test('restores a search query from its URL without creating a history entry per keystroke', async ({ page }) => {
   await goTab(page, 'Search');
   const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
@@ -862,7 +899,7 @@ test('shows recent searches only when the history button is opened', async ({ pa
   await expect(page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
 });
 
-test('saves only the settled search text to history', async ({ page }) => {
+test('saves only the submitted search text to history', async ({ page }) => {
   await goTab(page, 'Search');
   const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
   for (const partial of ['a', 'av', 'ave']) {
@@ -870,6 +907,8 @@ test('saves only the settled search text to history', async ({ page }) => {
     await page.waitForTimeout(450);
   }
   await input.fill('avengers');
+  await expect(page.getByRole('region', { name: 'Search results' })).toHaveCount(0);
+  await page.locator('.search-submit').click();
   await expect(page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
   const historyButton = page.locator('.search-form').getByRole('button', { name: 'Recent searches' });
   await expect(historyButton).toBeDisabled();
