@@ -33,9 +33,13 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       });
 
       await page.goto('/');
-      await expect(page.locator('.home-panel .media-row img')).toHaveCount(192);
+      await expect(page.locator('.home-panel .catalog-section')).toHaveCount(8);
       const rail = page.locator('.home-panel .media-row').first();
       await rail.scrollIntoViewIfNeeded();
+      await expect(rail.locator('img')).toHaveCount(12);
+      await expect(page.locator('.home-panel .media-row').last().locator('img')).toHaveCount(0);
+      await rail.evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+      await expect(rail.locator('img')).toHaveCount(24);
       await rail.evaluate((element) => { element.scrollLeft = 350; });
       await expect.poll(() => rail.evaluate((element) => element.scrollLeft)).toBe(350);
       await page.evaluate(() => window.scrollTo(0, 700));
@@ -58,11 +62,32 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await expect(page.locator('.library-panel')).toBeVisible();
       await expect(page.locator('.settings-page')).toHaveCount(0);
 
+      await page.evaluate(() => {
+        (window as any).__homePaint = null;
+        const observer = new MutationObserver(() => {
+          const home = document.querySelector('.home-panel');
+          if (!home) return;
+          observer.disconnect();
+          requestAnimationFrame(() => {
+            (window as any).__homePaint = {
+              images: home.querySelectorAll('img').length,
+              placeholder: !!home.querySelector('.home-loading'),
+              searchPresent: !!document.querySelector('.search-panel'),
+              activeTab: document.querySelector('.mobile-nav [aria-current="page"]')?.getAttribute('aria-label')
+            };
+          });
+        });
+        observer.observe(document.querySelector('main')!, { childList: true, subtree: true });
+      });
       await goTab(page, 'Home');
-      await expect(page.locator('.home-panel .media-row img')).toHaveCount(192);
+      await expect(page.locator('.home-panel .catalog-section')).toHaveCount(8);
+      expect(await page.evaluate(() => (window as any).__homePaint)).toEqual({
+        images: 0, placeholder: true, searchPresent: false, activeTab: 'Home'
+      });
       await expect(page.locator('.library-panel')).toHaveCount(0);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
       await rail.scrollIntoViewIfNeeded();
+      await expect(rail.locator('img')).toHaveCount(12);
       await expect.poll(() => rail.evaluate((element) => element.scrollLeft)).toBe(0);
 
       await goTab(page, 'Search');

@@ -960,9 +960,11 @@ test('loads required year catalogs and browses and casts sport titles', async ({
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
   await expect(page.getByRole('heading', { name: 'New Films' })).toBeVisible();
+  await page.getByRole('heading', { name: 'New Films' }).scrollIntoViewIfNeeded();
   await expect(page.getByRole('button', { name: 'View details for New Film' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'New Shows' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Live Now' })).toBeVisible();
+  await page.getByRole('heading', { name: 'Live Now' }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: 'View details for Live Match' }).click();
   await page.locator('.detail-play').click();
   await expect(page.getByText('Live Feed')).toBeVisible();
@@ -1296,6 +1298,7 @@ test('writes account addon changes, library membership, and linked TV progress t
   expect(libraryWrites[1]).toMatchObject({ _id: 'tt100', removed: true, temp: false });
   await page.getByRole('button', { name: 'Back to browsing' }).click();
 
+  await page.getByRole('heading', { name: 'Shows', exact: true }).scrollIntoViewIfNeeded();
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.getByRole('button', { name: /Pilot/ }).click();
   await expect(page.getByText('Episode Source')).toBeVisible();
@@ -1354,7 +1357,12 @@ test('loads more titles in a catalog row and its dedicated page', async ({ page 
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
 
   const row = page.locator('.catalog-section').filter({ has: page.getByRole('heading', { name: 'Paged Movies' }) });
-  await row.locator('.media-row').evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+  await row.scrollIntoViewIfNeeded();
+  await expect(row.locator('.media-card')).toHaveCount(12);
+  for (const count of [24, 25, 27]) {
+    await row.locator('.media-row').evaluate((element) => { element.scrollLeft = element.scrollWidth; });
+    await expect(row.locator('.media-card')).toHaveCount(count);
+  }
   await expect(row.getByRole('button', { name: 'View details for Paged Film 27', exact: true })).toBeVisible();
   expect(secondPageRequests).toBeGreaterThanOrEqual(2);
 });

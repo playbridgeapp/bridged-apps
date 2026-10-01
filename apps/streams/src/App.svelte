@@ -6,6 +6,8 @@
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
+  import HomeContent from './lib/HomeContent.svelte';
+  import CatalogRail from './lib/CatalogRail.svelte';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
   import TmdbDetails from './lib/TmdbDetails.svelte';
@@ -1049,17 +1051,6 @@
       if (request === catalogRequest) rows = rows.map((item) => item.key === key
         ? { ...item, loadingMore: false, pageError: message(error) } : item);
     }
-  }
-
-  function observeCatalogRowEnd(node: HTMLElement, key: string) {
-    const rail = node.closest<HTMLElement>('.media-row');
-    if (!rail) return;
-    const onScroll = () => {
-      if (tab !== 'home' || catalogPage || selected || rail.scrollLeft <= 0) return;
-      if (rail.scrollWidth - rail.clientWidth - rail.scrollLeft < 280) void loadMoreCatalogRow(key);
-    };
-    rail.addEventListener('scroll', onScroll, { passive: true });
-    return { destroy: () => rail.removeEventListener('scroll', onScroll) };
   }
 
   function openCatalogPage(row: CatalogRow, recordHistory = true) {
@@ -2526,6 +2517,7 @@
     {/if}
     {#if tab === 'home'}
     <div class="home-panel tab-page">
+      <HomeContent>
       {#if addons.length === 0 && !localAddons.length && !accountAddons.length && !nuvioAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
@@ -2558,13 +2550,14 @@
         {#if loadingCatalogs && !visibleRows.some((row) => row.items.length)}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading catalogs…</div>{/if}
         {#each visibleRows as row (row.key)}
           <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : 'LIBRARY'} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><button class="catalog-view-all" onclick={() => openCatalogPage(row)} aria-label={`View all ${row.title} from ${row.addon.manifest.name}`} title={`View all ${row.title}`}><ArrowRight size={20} /></button></div>
-            {#if row.items.length}<div class="media-row">{#each row.items as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}{#if row.nextSkip != null}<div class="catalog-row-end" use:observeCatalogRowEnd={row.key}>{#if row.loadingMore}<LoaderCircle size={21} class="spin" />{:else}<button onclick={() => void loadMoreCatalogRow(row.key)} aria-label={`Load more ${row.title}`}>{row.pageError ? 'Retry' : 'More'} <ArrowRight size={17} /></button>{/if}</div>{/if}</div>{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
+            {#if row.items.length}<CatalogRail items={row.items} title={row.title} onSelect={(item) => void openDetail(item)} onLoadMore={() => loadMoreCatalogRow(row.key)} canLoadMore={row.nextSkip != null} loadingMore={!!row.loadingMore} pageError={row.pageError || ''} active={!catalogPage && !selected} />{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
             {:else if row.loading}<div class="card-skeletons" aria-label={`Loading ${row.title}`}><span></span><span></span><span></span><span></span><span></span></div>{:else if row.error}<div class="row-empty">{row.error}</div>{:else}<div class="row-empty">No titles in this catalog.</div>{/if}
           </section>
         {/each}
         {#if !loadingCatalogs && !visibleRows.length}<div class="empty-state">{addons.length ? 'No catalogs match this filter. Choose another category or addon.' : 'All installed addons are disabled. Open Settings to turn one on.'}</div>{/if}
       </section>
       {/if}
+      </HomeContent>
     </div>
     {/if}
     {/if}
