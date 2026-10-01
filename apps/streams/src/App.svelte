@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
+  import { onDestroy, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
   import { ArrowLeft, ArrowRight, Bookmark, Cast, Check, ChevronDown, Clapperboard, Film, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
@@ -81,6 +81,10 @@
   let accountLibrary: StremioLibraryItem[] = initialAccountLibrary;
   let nuvioLibrary: NuvioLibraryItem[] = [];
   let nuvioProgress: NuvioProgress[] = [];
+  let nuvioProgressMetadata = new Map<string, MetaPreview>();
+  let nuvioMetadataController: AbortController | null = null;
+  let lastNuvioMetadataKey = '';
+  let resolvedNuvioMetadataScope = '';
   let nuvioSession: NuvioSession | null = initialNuvioSession;
   let nuvioProfiles: NuvioProfile[] = [];
   let nuvioProfileIndex = 1;
@@ -402,7 +406,7 @@
     .sort((a, b) => (b.genres || []).filter((genre) => selected?.genres?.includes(genre)).length
       - (a.genres || []).filter((genre) => selected?.genres?.includes(genre)).length).slice(0, 16) : [];
   $: savedLibrary = [...new Map([...nuvioLibrary, ...accountLibrary.filter((item) => !item.removed && !item.temp)].map((item) => [`${item.type}:${item.id}`, item])).values()];
-  $: nuvioProgressItems = progressPreviews(nuvioProgress, rows, nuvioLibrary);
+  $: nuvioProgressItems = progressPreviews(nuvioProgress, rows, nuvioLibrary, nuvioProgressMetadata);
   $: continueWatching = [...new Map([...nuvioProgressItems, ...nuvioLibrary, ...accountLibrary.filter((item) => !item.removed || item.temp)]
     .filter((item) => item.progress > 0 && item.progress < 95).map((item) => [`${item.type}:${item.id}`, item])).values()]
     .sort((a, b) => (b.lastWatched || '').localeCompare(a.lastWatched || ''));
@@ -416,6 +420,20 @@
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
+  $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
+  $: nuvioMetadataProviders = addons.filter((addon) => supports(addon, 'meta', 'movie') || supports(addon, 'meta', 'series'));
+  $: nuvioMetadataTargets = latestNuvioProgress(nuvioProgress)
+    .filter((entry) => entry.content_type === 'movie' || entry.content_type === 'series')
+    .sort((a, b) => b.last_watched - a.last_watched).slice(0, 16)
+    .filter((entry) => !nuvioLibrary.some((item) => item.type === entry.content_type && item.id === entry.content_id)
+      && !rows.some((row) => row.items.some((item) => item.type === entry.content_type && item.id === entry.content_id)));
+  $: nuvioMetadataKey = JSON.stringify([nuvioMetadataScope, nuvioGeneration, nuvioSyncRequest,
+    nuvioMetadataProviders.map((addon) => [addon.manifestUrl, addon.manifest.version, addon.manifest.resources, addon.manifest.types, addon.manifest.idPrefixes]),
+    nuvioMetadataTargets.map((entry) => [entry.content_type, entry.content_id])]);
+  $: if (nuvioMetadataKey !== lastNuvioMetadataKey) {
+    lastNuvioMetadataKey = nuvioMetadataKey;
+    void resolveNuvioProgressMetadata(nuvioMetadataScope, nuvioMetadataTargets, nuvioMetadataProviders);
+  }
   $: seasons = selected?.videos
     ? [...new Set(selected.videos.map((video) => video.season).filter((value): value is number => value != null))].sort((a, b) => a - b)
     : [];
@@ -542,6 +560,8 @@
       window.setTimeout(() => { suppressDockClick = false; }, 0);
     } else updateDockIndicator();
   }
+
+  onDestroy(() => nuvioMetadataController?.abort());
 
   onMount(() => {
     router = new HashRouter((route) => {
@@ -1148,20 +1168,70 @@
     showStatus('Cached catalog rows cleared.');
   }
 
-  function progressPreviews(progress: NuvioProgress[], catalogRows: CatalogRow[], library: NuvioLibraryItem[]) {
-    const catalogItems = new Map<string, MetaPreview>(catalogRows.flatMap((row) => row.items).map((item) => [`${item.type}:${item.id}`, item]));
+  function latestNuvioProgress(progress: NuvioProgress[]): NuvioProgress[] {
     const latest = new Map<string, NuvioProgress>();
     progress.forEach((entry) => {
       if (entry.duration <= 0 || entry.position <= 0 || entry.position >= entry.duration * .95) return;
       const key = `${entry.content_type}:${entry.content_id}`;
       if ((latest.get(key)?.last_watched || 0) < entry.last_watched) latest.set(key, entry);
     });
-    return [...latest].flatMap(([key, entry]) => {
+    return [...latest.values()];
+  }
+
+  function progressPreviews(progress: NuvioProgress[], catalogRows: CatalogRow[], library: NuvioLibraryItem[], metadata: Map<string, MetaPreview>) {
+    const catalogItems = new Map<string, MetaPreview>(catalogRows.flatMap((row) => row.items).map((item) => [`${item.type}:${item.id}`, item]));
+    return latestNuvioProgress(progress).flatMap((entry) => {
+      const key = `${entry.content_type}:${entry.content_id}`;
       if (library.some((item) => `${item.type}:${item.id}` === key)) return [];
-      const item = catalogItems.get(key);
+      const item = catalogItems.get(key) || metadata.get(key);
       return item ? [{ ...item, progress: Math.min(100, Math.round(entry.position / entry.duration * 100)),
         lastVideoId: entry.video_id, lastWatched: new Date(entry.last_watched).toISOString() }] : [];
     });
+  }
+
+  async function resolveNuvioProgressMetadata(scope: string, entries: NuvioProgress[], providers: InstalledAddon[]) {
+    nuvioMetadataController?.abort();
+    const controller = new AbortController();
+    nuvioMetadataController = controller;
+    if (scope !== resolvedNuvioMetadataScope) {
+      resolvedNuvioMetadataScope = scope;
+      nuvioProgressMetadata = new Map();
+    }
+    if (!scope) return;
+    const pending = entries.filter((entry) => !nuvioProgressMetadata.has(`${entry.content_type}:${entry.content_id}`));
+    // Resolve only the visible row's recent titles, with at most two requests in flight.
+    async function worker() {
+      while (pending.length && !controller.signal.aborted) {
+        const entry = pending.shift()!;
+        const key = `${entry.content_type}:${entry.content_id}`;
+        const type = entry.content_type as 'movie' | 'series';
+        const cached = previewMemory.get(key) || cachedDetailPreview(type, entry.content_id);
+        if (cached && cached.name && cached.name !== entry.content_id) {
+          nuvioProgressMetadata = new Map(nuvioProgressMetadata).set(key, cached);
+          continue;
+        }
+        if (!providers.some((addon) => supports(addon, 'meta', type, entry.content_id))) continue;
+        const lookup = new AbortController();
+        const abort = () => lookup.abort();
+        controller.signal.addEventListener('abort', abort, { once: true });
+        const timeout = window.setTimeout(abort, 15_000);
+        try {
+          const meta = await fetchMeta(providers, { id: entry.content_id, type, name: entry.content_id }, lookup.signal);
+          if (controller.signal.aborted || lookup.signal.aborted) return;
+          if (!meta.name || meta.name === entry.content_id || meta.id !== entry.content_id || meta.type !== type) continue;
+          nuvioProgressMetadata = new Map(nuvioProgressMetadata).set(key, meta);
+          previewMemory.set(key, meta);
+          detailMemory.set(key, meta);
+          saveDetailPreview(meta);
+        } catch {
+          // A later sync or metadata-provider change can retry unavailable titles.
+        } finally {
+          window.clearTimeout(timeout);
+          controller.signal.removeEventListener('abort', abort);
+        }
+      }
+    }
+    await Promise.all([worker(), worker()]);
   }
 
   async function addAddon() {
