@@ -1359,7 +1359,7 @@ test('loads more titles in a catalog row and its dedicated page', async ({ page 
   expect(secondPageRequests).toBeGreaterThanOrEqual(2);
 });
 
-test('keeps the dock expanded when returning to a scrolled tab', async ({ page }) => {
+test('resets a previously scrolled tab to the top and expands the dock', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 780 });
   const dock = page.getByRole('navigation', { name: 'Main navigation' });
   await page.mouse.move(195, 450);
@@ -1370,11 +1370,11 @@ test('keeps the dock expanded when returning to a scrolled tab', async ({ page }
   await goTab(page, 'Settings');
   await expect(dock).not.toHaveClass(/compact/);
   await goTab(page, 'Home');
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await expect(dock).not.toHaveClass(/compact/);
 });
 
-test('retains visited tab content and restores search without rebuilding or fetching it again', async ({ page }) => {
+test('unmounts inactive tabs and restores cached search without fetching it again', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   let searchRequests = 0;
   await page.route(`${addon}/catalog/movie/**`, async (route) => {
@@ -1396,19 +1396,20 @@ test('retains visited tab content and restores search without rebuilding or fetc
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(600);
 
   await goTab(page, 'Settings');
-  await expect(input).toBeHidden();
+  await expect(page.locator('.search-panel')).toHaveCount(0);
+  expect(await firstCard!.evaluate((node) => node.isConnected)).toBe(false);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await goTab(page, 'Library');
   await expect(page.getByRole('heading', { name: 'Library', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeHidden();
+  await expect(page.locator('.settings-page')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
   await goTab(page, 'Home');
   await expect(page.getByRole('heading', { name: 'Films', exact: true })).toBeVisible();
   await goTab(page, 'Search');
   await expect(input).toHaveValue('Film');
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(600);
-  expect(await firstCard!.evaluate((node) => node.isConnected)).toBe(true);
-  expect(await cards.first().evaluate((node, original) => node === original, firstCard!)).toBe(true);
+  await expect(cards).toHaveCount(41);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  expect(await cards.first().evaluate((node, original) => node === original, firstCard!)).toBe(false);
   expect(searchRequests).toBe(completedSearchRequests);
   await firstCard!.dispose();
 });

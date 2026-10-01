@@ -357,14 +357,7 @@ main{width:100%;min-height:100vh}
 .discover-sheet-option svg{flex:none;color:#8fe2c2}
 @keyframes discover-scrim-in{from{opacity:0}to{opacity:1}}
 @keyframes discover-dialog-in{from{opacity:0;transform:translate(-50%,15px) scale(.97)}to{opacity:1;transform:translate(-50%,0) scale(1)}}
-.tab-page[hidden]{display:none}
-/* Retain visited tabs without painting or extending the active tab's scroll area.
-   display:none discards the layout of every catalog card on each tab switch. */
-@supports(content-visibility:hidden){
-  .tab-page[hidden]{display:block;position:fixed;top:0;left:0;right:0;max-height:100dvh;overflow:clip;content-visibility:hidden;visibility:hidden;pointer-events:none}
-}
 .tab-page{animation:none}
-.tab-page[hidden] *{animation-play-state:paused}
 .tab-page .poster-grid .media-card{animation:none}
 .home-panel .catalog-section{content-visibility:auto;contain-intrinsic-size:auto 340px}
 .discover-context{margin:19px 0 0;color:#aab5b8;font-size:12px}

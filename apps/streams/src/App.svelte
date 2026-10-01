@@ -152,7 +152,6 @@
   let catalogPageDuplicatePages = 0;
   let catalogPageRequest = 0;
   let tab: Tab = 'home';
-  let visitedTabs = new Set<Tab>(['home']);
   let currentRoute: AppRoute = parseRoute(window.location.hash);
   let router: HashRouter | null = null;
   let restoreReady: Promise<unknown> = Promise.resolve();
@@ -167,7 +166,6 @@
   let pendingEpisodeAction: 'play' | 'cast' = 'play';
   let streamActionRequest = 0;
   const routePositions = new Map<string, { window: number; panel: number; episodes: number }>();
-  const tabScrollPositions: Record<Tab, number> = { home: 0, search: 0, library: 0, settings: 0 };
   let navigationRequest = 0;
   let dockElement: HTMLElement | null = null;
   let dockIndicatorX = 0;
@@ -1722,6 +1720,8 @@
   }
 
   function rememberRoutePosition() {
+    // Tabs always start at the top; only content screens retain route positions.
+    if (currentRoute.kind === 'tab') return;
     routePositions.set(routeHash(currentRoute), { window: window.scrollY,
       panel: routePanel()?.scrollTop || 0,
       episodes: episodeListElement?.scrollLeft || 0 });
@@ -1863,6 +1863,11 @@
     }
     await tick();
     if (request !== routeRequest) return;
+    if (route.kind === 'tab') {
+      window.scrollTo(0, 0);
+      dockCompact = false;
+      return;
+    }
     const position = routePositions.get(routeHash(currentRoute));
     if (position) {
       window.scrollTo(0, position.window);
@@ -2031,14 +2036,12 @@
   function selectTab(next: Tab) {
     openDiscoverDropdown = null;
     if (next === tab) return;
-    if (!visitedTabs.has(next)) visitedTabs = new Set([...visitedTabs, next]);
-    tabScrollPositions[tab] = window.scrollY;
     const request = ++navigationRequest;
     dockRestoringScroll = true;
     tab = next;
     void tick().then(() => {
       if (request !== navigationRequest) return;
-      window.scrollTo(0, tabScrollPositions[next]);
+      window.scrollTo(0, 0);
       window.requestAnimationFrame(() => {
         if (request !== navigationRequest) return;
         if (window.scrollY < 48) dockCompact = false;
@@ -2454,8 +2457,8 @@
         <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
       </section>
     {:else}
-    {#if visitedTabs.has('library')}
-      <section class="library-panel browse tab-page" hidden={tab !== 'library'}>
+    {#if tab === 'library'}
+      <section class="library-panel browse tab-page">
         <div class="page-intro"><div class="eyebrow">CONNECTED ACCOUNTS</div><h1>Library</h1><p>{account || nuvioSession ? `${savedLibrary.length} synced titles` : 'Sign in to Stremio or Nuvio to see your library and watch progress.'}</p></div>
         {#if !account && !nuvioSession}<div class="empty-state">Connect Stremio or Nuvio to bring in your library and Continue Watching.<br /><button class="primary-button inline-action" onclick={() => openSettingsPanel('accounts')}><UserRound size={17} /> Connect an account</button></div>
         {:else if (accountSyncing || nuvioSyncing) && !savedLibrary.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Syncing your library…</div>
@@ -2463,8 +2466,8 @@
         {:else}<div class="empty-state">Your connected library is empty. Add a title, then sync again.</div>{/if}
       </section>
     {/if}
-    {#if visitedTabs.has('settings')}
-      <section class="settings-page browse tab-page" hidden={tab !== 'settings'}>
+    {#if tab === 'settings'}
+      <section class="settings-page browse tab-page">
         <div class="page-intro"><div class="eyebrow">YOUR SPACE</div><h1>Settings</h1><p>Manage your accounts, addons, and playback preferences.</p></div>
         <div class="settings-grid">
           <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
@@ -2473,8 +2476,8 @@
         </div>
       </section>
     {/if}
-    {#if visitedTabs.has('search')}
-      <div class="search-panel tab-page" hidden={tab !== 'search'}>
+    {#if tab === 'search'}
+      <div class="search-panel tab-page">
       <section class="search-page search-home">
         <div class="eyebrow">FIND SOMETHING TO WATCH</div>
         <h1>Search</h1>
@@ -2521,7 +2524,8 @@
       {/if}
       </div>
     {/if}
-    <div class="home-panel tab-page" hidden={tab !== 'home'}>
+    {#if tab === 'home'}
+    <div class="home-panel tab-page">
       {#if addons.length === 0 && !localAddons.length && !accountAddons.length && !nuvioAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
@@ -2562,6 +2566,7 @@
       </section>
       {/if}
     </div>
+    {/if}
     {/if}
   </main>
 
