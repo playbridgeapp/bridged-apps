@@ -20,7 +20,7 @@
   import { fetchTmdbMetadata, fetchTmdbSeason, applyTmdbMetadata, applyTmdbSeason } from './lib/tmdb';
   import type { TmdbMetadata } from './lib/tmdb';
   import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
-  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext } from './lib/stream-selection';
+  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext, sortStreamsByPreference, matchesAllStreamPreferences } from './lib/stream-selection';
   import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
   import { cachedDetailPreview, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
@@ -469,8 +469,8 @@
   $: episodes = (selected?.videos || []).filter((video) => video.season === season)
     .sort((a, b) => (a.episode ?? 0) - (b.episode ?? 0));
   $: playable = streams.filter(playableStream);
-  $: visiblePlayable = playable.filter((stream) => !selectedStreamSource ||
-    sourceStreams[selectedStreamSource]?.includes(stream));
+  $: visiblePlayable = sortStreamsByPreference(playable.filter((stream) => !selectedStreamSource ||
+    sourceStreams[selectedStreamSource]?.includes(stream)), streamSelection);
   $: visibleSourcesLoading = selectedStreamSource ? !!sourceLoading[selectedStreamSource] : loadingStreams;
   $: detailResumeMs = selected ? resumePositionMs(selected, episode, accountLibrary, nuvioProgress, nuvioWatched) : 0;
   $: detailNuvioAction = selected ? nuvioSeriesAction(selected, nuvioProgress, nuvioWatched) : null;
@@ -3057,7 +3057,7 @@
           {#if visibleSourcesLoading && !visiblePlayable.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding streams…</div>{/if}
           <div class="stream-results">
             {#each visiblePlayable as stream, index (`${stream.addonUrl}:${stream.url}:${index}`)}
-              <div class="stream-result" style:--reveal-index={Math.min(index, 8)}><div class="stream-result-copy"><strong>{streamHeading(stream, index)}</strong>{#if streamDetails(stream, streamHeading(stream, index))}<p>{streamDetails(stream, streamHeading(stream, index))}</p>{/if}<small>{stream.addonName}</small></div><div class="source-actions"><button class="watch-button" onclick={() => void playInBrowser(stream)} disabled={playerLoading}>{#if playerLoading}<LoaderCircle size={17} class="spin" /> Opening…{:else}<Play size={17} fill="currentColor" /> {stream.behaviorHints?.notWebReady ? 'Try in browser' : 'Play'}{/if}</button><button class="cast-button" onclick={() => void cast(stream)} disabled={!bridge} title={bridge ? 'Cast with PlayBridge' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast</button></div></div>
+              <div class="stream-result" style:--reveal-index={Math.min(index, 8)}><div class="stream-result-copy"><strong>{streamHeading(stream, index)}</strong>{#if streamDetails(stream, streamHeading(stream, index))}<p>{streamDetails(stream, streamHeading(stream, index))}</p>{/if}<small>{stream.addonName}</small>{#if streamSelection.sortByPreference && matchesAllStreamPreferences(stream, streamSelection)}<span class="stream-match-badge">Matches preferences</span>{/if}</div><div class="source-actions"><button class="watch-button" onclick={() => void playInBrowser(stream)} disabled={playerLoading}>{#if playerLoading}<LoaderCircle size={17} class="spin" /> Opening…{:else}<Play size={17} fill="currentColor" /> {stream.behaviorHints?.notWebReady ? 'Try in browser' : 'Play'}{/if}</button><button class="cast-button" onclick={() => void cast(stream)} disabled={!bridge} title={bridge ? 'Cast with PlayBridge' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast</button></div></div>
             {/each}
           </div>
           {#if !visibleSourcesLoading && !visiblePlayable.length}<div class="row-empty">No direct HTTP streams found{selectedStreamSource ? ' from this source' : ''}. Try refreshing or choose another source.</div>{/if}

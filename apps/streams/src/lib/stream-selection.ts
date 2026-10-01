@@ -12,15 +12,15 @@ export const RELEASE_TYPES = [
 ] as const;
 export type Resolution = typeof RESOLUTIONS[number];
 export type ReleaseType = typeof RELEASE_TYPES[number]['key'];
-export type StreamSelectionPreferences = { enabled: boolean; resolution: Resolution; provider: string; releaseTypes: ReleaseType[] };
+export type StreamSelectionPreferences = { enabled: boolean; sortByPreference: boolean; resolution: Resolution; provider: string; releaseTypes: ReleaseType[] };
 export type StreamSelectionContext = { preferences: StreamSelectionPreferences; manual: boolean; initialStream: Stream };
 const SETTINGS_KEY = 'bridged-streams.stream-selection.v1';
-export const defaultStreamSelection = (): StreamSelectionPreferences => ({ enabled: false, resolution: 'any', provider: '', releaseTypes: [] });
+export const defaultStreamSelection = (): StreamSelectionPreferences => ({ enabled: false, sortByPreference: false, resolution: 'any', provider: '', releaseTypes: [] });
 
 export function savedStreamSelection(): StreamSelectionPreferences {
   try {
     const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') as Partial<StreamSelectionPreferences> | null;
-    return { enabled: value?.enabled === true,
+    return { enabled: value?.enabled === true, sortByPreference: value?.sortByPreference === true,
       resolution: RESOLUTIONS.includes(value?.resolution as Resolution) ? value!.resolution! : 'any',
       provider: typeof value?.provider === 'string' ? value.provider : '',
       releaseTypes: Array.isArray(value?.releaseTypes)
@@ -53,6 +53,26 @@ export function streamReleaseType(stream: Stream): ReleaseType | undefined {
 export function matchesStreamPreferences(stream: Stream, preferences: StreamSelectionPreferences): boolean {
   return (preferences.resolution === 'any' || streamResolution(stream) === preferences.resolution)
     && (!preferences.releaseTypes.length || preferences.releaseTypes.includes(streamReleaseType(stream)!));
+}
+
+export function matchesAllStreamPreferences(stream: Stream, preferences: StreamSelectionPreferences): boolean {
+  return !!(preferences.resolution !== 'any' || preferences.releaseTypes.length || preferences.provider)
+    && matchesStreamPreferences(stream, preferences)
+    && (!preferences.provider || stream.addonUrl === preferences.provider);
+}
+
+// Sort only the displayed list; automatic playback continues to use its original order.
+export function sortStreamsByPreference(streams: Stream[], preferences: StreamSelectionPreferences): Stream[] {
+  if (!preferences.sortByPreference) return streams;
+  return streams.map((stream, index) => {
+    const providerMatch = !!preferences.provider && stream.addonUrl === preferences.provider;
+    const fullMatch = matchesStreamPreferences(stream, preferences);
+    const score = Number(providerMatch)
+      + Number(preferences.resolution !== 'any' && streamResolution(stream) === preferences.resolution)
+      + Number(!!preferences.releaseTypes.length && preferences.releaseTypes.includes(streamReleaseType(stream)!));
+    return { stream, index, group: fullMatch ? (providerMatch ? 3 : 2) : 1, score };
+  }).sort((a, b) => b.group - a.group || b.score - a.score || a.index - b.index)
+    .map(({ stream }) => stream);
 }
 
 // Callers supply only streams eligible for playback/casting, in stable provider order.

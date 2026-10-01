@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { defaultStreamSelection, matchesStreamPreferences, selectPreferredStream, selectReadyPreferredStream, selectNextStream,
-  selectionContext, streamReleaseType, streamResolution } from '../src/lib/stream-selection.ts';
+  selectionContext, streamReleaseType, streamResolution, sortStreamsByPreference, matchesAllStreamPreferences,
+  savedStreamSelection, saveStreamSelection } from '../src/lib/stream-selection.ts';
 
 const stream = (name, provider = 'a', extra = {}) => ({ name, addonName: provider, addonUrl: provider, url: 'https://media.test/video', ...extra });
 const settings = (extra = {}) => ({ ...defaultStreamSelection(), enabled: true, resolution: '1080p', releaseTypes: ['web-dl'], ...extra });
@@ -90,4 +91,49 @@ test('playback sessions retain their settings snapshot and original manual choic
   assert.deepEqual(context.preferences.releaseTypes, ['web-dl']);
   assert.equal(context.preferences.resolution, '1080p');
   assert.equal(context.initialStream, original);
+});
+
+test('display sorting prioritizes full matches before partial matches and preserves ties and input order', () => {
+  const none = stream('Unknown quality', 'other');
+  const one = stream('720p WEB-DL', 'other');
+  const two = stream('1080p BluRay', 'preferred');
+  const fullOther = stream('1080p WEB-DL', 'other');
+  const fullPreferred = stream('1080p WEB-DL', 'preferred');
+  const tied = stream('1080p WEB-DL second', 'preferred');
+  const unknownPreferred = stream('Unknown quality', 'preferred');
+  const input = [none, one, two, fullOther, fullPreferred, tied, unknownPreferred];
+  const preferences = settings({ enabled: false, sortByPreference: true, provider: 'preferred' });
+  assert.deepEqual(sortStreamsByPreference(input, preferences), [fullPreferred, tied, fullOther, two, one, unknownPreferred, none]);
+  assert.deepEqual(input, [none, one, two, fullOther, fullPreferred, tied, unknownPreferred]);
+  assert.equal(selectPreferredStream(input, preferences), fullPreferred);
+  assert.equal(matchesAllStreamPreferences(fullPreferred, preferences), true);
+  assert.equal(matchesAllStreamPreferences(fullOther, preferences), false);
+  assert.equal(matchesAllStreamPreferences(two, preferences), false);
+});
+
+test('sorting can be disabled, handles provider-only and multiple release preferences, and keeps unfiltered order', () => {
+  const input = [stream('Unknown quality', 'other'), stream('1080p WEBRip'), stream('1080p WEB-DL'), stream('720p WEB-DL')];
+  assert.equal(sortStreamsByPreference(input, settings()), input);
+  assert.deepEqual(sortStreamsByPreference(input, { ...defaultStreamSelection(), sortByPreference: true }), input);
+  assert.equal(matchesAllStreamPreferences(input[0], defaultStreamSelection()), false);
+  const providerOnly = { ...defaultStreamSelection(), sortByPreference: true, provider: 'other' };
+  assert.deepEqual(sortStreamsByPreference([...input.slice(1), input[0]], providerOnly), input);
+  assert.equal(matchesAllStreamPreferences(input[0], providerOnly), true);
+  assert.deepEqual(sortStreamsByPreference(input, settings({ sortByPreference: true, releaseTypes: ['web-dl', 'webrip'] })),
+    [input[1], input[2], input[3], input[0]]);
+});
+
+test('existing saved preferences keep sorting off and the two switches persist independently', () => {
+  const oldStorage = globalThis.localStorage;
+  let stored = JSON.stringify({ enabled: true, resolution: '1080p', releaseTypes: ['web-dl'], provider: 'a' });
+  globalThis.localStorage = { getItem: () => stored, setItem: (_key, value) => { stored = value; } };
+  try {
+    assert.equal(savedStreamSelection().sortByPreference, false);
+    assert.equal(savedStreamSelection().enabled, true);
+    saveStreamSelection({ ...savedStreamSelection(), enabled: false, sortByPreference: true });
+    assert.deepEqual(savedStreamSelection(), settings({ enabled: false, sortByPreference: true, provider: 'a' }));
+  } finally {
+    if (oldStorage === undefined) delete globalThis.localStorage;
+    else globalThis.localStorage = oldStorage;
+  }
 });

@@ -484,6 +484,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 .stream-result-copy strong{display:block;overflow-wrap:anywhere;font-size:14px;font-weight:750;line-height:1.35}
 .stream-result-copy p{margin:4px 0 0;color:#aeb8ba;font-size:12px;line-height:1.4;overflow-wrap:anywhere}
 .stream-result-copy small{display:block;margin-top:6px;color:#7fd8bd;font-size:11px;font-weight:700}
+.stream-match-badge{display:inline-block;margin-top:7px;padding:3px 8px;border:1px solid #9debd247;border-radius:999px;background:#9debd212;color:#b4f3df;font-size:10px;font-weight:700}
 .stream-result .source-actions{margin-left:auto}
 .stream-choose-episode{display:flex;align-items:center;gap:8px;padding:11px 16px;border:1px solid #ffffff43;border-radius:999px;background:#ffffff15;color:#fff;font-weight:700}
 @media(max-width:800px){
