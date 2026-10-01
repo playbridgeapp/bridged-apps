@@ -91,7 +91,7 @@ async function responseJson<T>(response: Response): Promise<T> {
   return data as T;
 }
 
-class NuvioApiError extends Error {
+export class NuvioApiError extends Error {
   constructor(message: string, readonly status: number, readonly code: unknown) { super(message); }
 }
 
@@ -114,33 +114,56 @@ export async function fetchNuvioPluginPreferences(session: NuvioSession, profile
   return preferencesFromSnapshot(await pluginSettingsSnapshot(session, profileIndex));
 }
 const pluginSettingsWrites = new Map<string, Promise<unknown>>();
-export function changeNuvioScraperPreference(session: NuvioSession, profileIndex: number, url: string, id: string,
-  patch: Omit<ScraperPreference, 'id'>): Promise<PluginPreferences> {
+async function updateNuvioSettings(session: NuvioSession, profileIndex: number,
+  update: (settings: Record<string, unknown>) => Record<string, unknown>): Promise<Record<string, unknown>> {
   const scope = `${session.backendUrl}:${session.user.id}:${profileIndex}`;
   const operation = (pluginSettingsWrites.get(scope) || Promise.resolve()).catch(() => {}).then(async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const snapshot = await pluginSettingsSnapshot(session, profileIndex);
-      const preferences = updatePluginPreference(preferencesFromSnapshot(snapshot), url, id, patch);
-      const features = objectValue(snapshot.settings_json.features);
-      const settings = { ...snapshot.settings_json, version: snapshot.settings_json.version ?? 1,
-        features: { ...features, plugins: { ...objectValue(features.plugins), repositories: preferences } } };
+      const settings = update(snapshot.settings_json);
       const body = { p_profile_id: profileIndex, p_platform: PLUGIN_SETTINGS_PLATFORM, p_settings_json: settings };
       try {
         await rpc(session, 'sync_push_profile_settings_blob_guarded', { ...body, p_expected_updated_at: snapshot.updated_at });
       } catch (error) {
         if (error instanceof NuvioApiError && error.code === '40001' && attempt < 2) continue;
-        if (error instanceof NuvioApiError && error.code === 'PGRST202') {
-          // Older cloud/self-host releases expose only the original settings RPC.
-          await rpc(session, 'sync_push_profile_settings_blob', body);
-        } else throw error;
+        if (error instanceof NuvioApiError && error.code === 'PGRST202') await rpc(session, 'sync_push_profile_settings_blob', body);
+        else throw error;
       }
-      return preferences;
+      return settings;
     }
-    throw new Error('Plugin settings changed on another device. Sync and try again.');
+    throw new Error('Profile settings changed on another device. Sync and try again.');
   });
   pluginSettingsWrites.set(scope, operation);
   void operation.finally(() => { if (pluginSettingsWrites.get(scope) === operation) pluginSettingsWrites.delete(scope); }).catch(() => {});
   return operation;
+}
+
+export async function changeNuvioScraperPreference(session: NuvioSession, profileIndex: number, url: string, id: string,
+  patch: Omit<ScraperPreference, 'id'>): Promise<PluginPreferences> {
+  const settings = await updateNuvioSettings(session, profileIndex, (original) => {
+    const preferences = updatePluginPreference(preferencesFromSnapshot({ settings_json: original, updated_at: null }), url, id, patch);
+    const features = objectValue(original.features);
+    return { ...original, version: original.version ?? 1,
+      features: { ...features, plugins: { ...objectValue(features.plugins), repositories: preferences } } };
+  });
+  return preferencesFromSnapshot({ settings_json: settings, updated_at: null });
+}
+
+function dismissalSettings(settings: Record<string, unknown>): Record<string, number> {
+  const value = objectValue(objectValue(objectValue(settings.features).watching).dismissedUntil);
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] =>
+    typeof entry[1] === 'number' && Number.isFinite(entry[1])));
+}
+export async function fetchNuvioDismissals(session: NuvioSession, profileIndex: number): Promise<Record<string, number>> {
+  return dismissalSettings((await pluginSettingsSnapshot(session, profileIndex)).settings_json);
+}
+export async function saveNuvioDismissal(session: NuvioSession, profileIndex: number, key: string, stamp: number): Promise<Record<string, number>> {
+  const settings = await updateNuvioSettings(session, profileIndex, (original) => {
+    const features = objectValue(original.features);
+    return { ...original, version: original.version ?? 1, features: { ...features,
+      watching: { ...objectValue(features.watching), dismissedUntil: { ...dismissalSettings(original), [key]: stamp } } } };
+  });
+  return dismissalSettings(settings);
 }
 
 type AuthResponse = { access_token: string; refresh_token: string; expires_in: number; user: { id: string; email: string } };
@@ -196,13 +219,20 @@ export async function freshNuvioSession(session: NuvioSession): Promise<NuvioSes
 
 async function request<T>(session: NuvioSession, path: string, body?: Record<string, unknown>): Promise<T> {
   const current = await freshNuvioSession(session);
-  const response = await fetch(`${current.backendUrl}${path}`, {
-    method: body ? 'POST' : 'GET',
-    headers: { apikey: current.publishableKey, authorization: `Bearer ${current.accessToken}`,
-      accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-  return responseJson<T>(response);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(`${current.backendUrl}${path}`, {
+      signal: controller.signal, method: body ? 'POST' : 'GET',
+      headers: { apikey: current.publishableKey, authorization: `Bearer ${current.accessToken}`,
+        accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) },
+      ...(body ? { body: JSON.stringify(body) } : {})
+    });
+    return await responseJson<T>(response);
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error('Nuvio request timed out. Please retry.');
+    throw error;
+  } finally { clearTimeout(timeout); }
 }
 
 function rpc<T>(session: NuvioSession, name: string, body: Record<string, unknown> = {}): Promise<T> {
@@ -327,6 +357,34 @@ export async function fetchNuvioWatched(session: NuvioSession, profileIndex: num
     if (items.length < 100) return result;
   }
   throw new Error('Nuvio watched-history pagination limit exceeded.');
+}
+
+export function pushNuvioWatched(session: NuvioSession, profileIndex: number, items: NuvioWatchedItem[]): Promise<unknown> {
+  return rpc(session, 'sync_push_watched_items', { p_profile_id: profileIndex, p_items: items });
+}
+
+export function deleteNuvioWatched(session: NuvioSession, profileIndex: number, items: NuvioWatchedItem[]): Promise<unknown> {
+  return rpc(session, 'sync_delete_watched_items', { p_profile_id: profileIndex,
+    p_keys: items.map((item) => ({ content_id: item.content_id, season: item.season ?? null, episode: item.episode ?? null })) });
+}
+
+export function deleteNuvioProgress(session: NuvioSession, profileIndex: number, keys: string[]): Promise<unknown> {
+  return rpc(session, 'sync_delete_watch_progress', { p_profile_id: profileIndex, p_keys: keys });
+}
+
+export function pushNuvioProgressEntries(session: NuvioSession, profileIndex: number, entries: NuvioProgress[]): Promise<unknown> {
+  return rpc(session, 'sync_push_watch_progress', { p_profile_id: profileIndex, p_entries: entries });
+}
+
+export async function nuvioDeltaCursor(session: NuvioSession, profileIndex: number, kind: 'watch_progress' | 'watched_items'): Promise<number> {
+  const value = await rpc<unknown>(session, `sync_get_${kind}_delta_cursor`, { p_profile_id: profileIndex });
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new Error('Nuvio delta sync is unavailable.');
+  return value as number;
+}
+
+export type NuvioDelta<T> = T & { event_id: number; operation: string };
+export function fetchNuvioDelta<T>(session: NuvioSession, profileIndex: number, kind: 'watch_progress' | 'watched_items', cursor: number, limit: number): Promise<NuvioDelta<T>[]> {
+  return rpc(session, `sync_pull_${kind}_delta`, { p_profile_id: profileIndex, p_since_event_id: cursor, p_limit: limit });
 }
 
 export function decorateNuvioLibrary(items: NuvioLibraryItem[], progress: NuvioProgress[]): NuvioLibraryItem[] {

@@ -30,24 +30,28 @@ interface ApiEnvelope<T> {
 }
 
 async function request<T>(method: string, body: Record<string, unknown>): Promise<T> {
-  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
-    response = await fetch(`${API_BASE}${method}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-  } catch {
-    throw new Error('Could not reach Stremio. Check your network connection.');
-  }
-  if (!response.ok) throw new Error(`Stremio returned HTTP ${response.status}.`);
-  const envelope = await response.json() as ApiEnvelope<T>;
-  if (envelope.error) {
-    const error = envelope.error;
-    throw new Error(typeof error === 'string' ? error : error.message || 'Stremio rejected the request.');
-  }
-  if (envelope.result === undefined) throw new Error('Stremio returned an invalid response.');
-  return envelope.result;
+    let response: Response;
+    try {
+      response = await fetch(`${API_BASE}${method}`, {
+        signal: controller.signal, method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch {
+      throw new Error('Could not reach Stremio. Check your network connection.');
+    }
+    if (!response.ok) throw new Error(`Stremio returned HTTP ${response.status}.`);
+    const envelope = await response.json() as ApiEnvelope<T>;
+    if (envelope.error) {
+      const error = envelope.error;
+      throw new Error(typeof error === 'string' ? error : error.message || 'Stremio rejected the request.');
+    }
+    if (envelope.result === undefined) throw new Error('Stremio returned an invalid response.');
+    return envelope.result;
+  } finally { clearTimeout(timeout); }
 }
 
 function validSession(value: unknown): value is StremioSession {
@@ -207,11 +211,11 @@ export async function setLibraryMembership(
 
 export async function saveWatchProgress(
   authKey: string, meta: MetaPreview, existing: StremioLibraryItem | undefined,
-  videoId: string, positionMs: number, durationMs: number
+  videoId: string, positionMs: number, durationMs: number, observedAt = Date.now()
 ): Promise<StremioLibraryItem> {
   const original = existing?.record || baseLibraryRecord(meta);
   const previous = (original.state && typeof original.state === 'object') ? original.state as Record<string, unknown> : {};
-  const now = new Date().toISOString();
+  const now = new Date(observedAt).toISOString();
   const record = { ...original, _mtime: now, state: {
     ...previous, lastWatched: now, video_id: videoId,
     timeOffset: Math.max(0, Math.floor(positionMs)),

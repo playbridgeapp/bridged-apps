@@ -11,9 +11,27 @@ async function goTab(page: Page, name: 'Home' | 'Search' | 'Library' | 'Settings
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name, exact: true }).click();
 }
 
+async function clickWithPosition(locator: import('@playwright/test').Locator) {
+  // Capture after click preparation, immediately before the app route handler.
+  await locator.evaluate((element) => element.addEventListener('click', () => {
+    const hooks = (window as any).__bridgedTest ||= {};
+    hooks.browsingDeparture = { window: window.scrollY,
+      rail: element.closest('.media-row')?.scrollLeft || 0,
+      panel: element.closest('.catalog-page-panel')?.scrollTop || 0 };
+  }, { capture: true, once: true }));
+  await locator.click();
+  return locator.page().evaluate(() => (window as any).__bridgedTest.browsingDeparture);
+}
+
 for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 }]) {
   test.describe(`${viewport.width}px tab lifecycle`, () => {
     test.use({ viewport, reducedMotion: 'reduce' });
+    test.beforeEach(async ({ page }) => {
+      // Font swaps change row heights independently of navigation. Keep exact
+      // pixel restoration assertions independent of third-party font timing.
+      await page.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ contentType: 'text/css', body: '' }));
+    });
+
 
     test('returns from titles and catalogs to the browsing position while tab switches reset it', async ({ page }) => {
       const browsingCatalogs = catalogs.map((catalog, index) => ({ ...catalog, type: index % 2 ? 'series' : 'movie' }));
@@ -44,12 +62,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
         await rail.evaluate((element) => { element.scrollLeft = 350; });
         const card = rail.locator('.media-card').nth(3);
         await card.scrollIntoViewIfNeeded();
-        const position = await page.evaluate(() => window.scrollY);
-        const horizontal = await rail.evaluate((element) => element.scrollLeft);
-        expect(position).toBeGreaterThan(700);
+        expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(700);
         const originalCard = await card.elementHandle();
-
-        await card.click();
+        const departure = await clickWithPosition(card);
+        const position = departure.window;
+        const horizontal = departure.rail;
         await expect(page.getByRole('dialog', { name: `Title ${row}-3`, exact: true })).toBeVisible();
         await expect(page.locator('.detail-play')).toBeEnabled();
         if (row === 4) await page.locator('.detail-back').click();
@@ -63,16 +80,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
 
       const catalogButton = page.getByRole('button', { name: 'View all Catalog 6 from Tab Lifecycle' });
       await catalogButton.scrollIntoViewIfNeeded();
-      const homePosition = await page.evaluate(() => window.scrollY);
-      await catalogButton.click();
+      const homePosition = (await clickWithPosition(catalogButton)).window;
       const catalog = page.getByRole('dialog', { name: 'Catalog 6 catalog' });
       await expect(catalog).toBeVisible();
       const catalogCard = catalog.locator('.media-card').nth(18);
       await catalogCard.scrollIntoViewIfNeeded();
       const panel = page.locator('.catalog-page-panel');
-      const catalogPosition = await panel.evaluate((element) => element.scrollTop);
-      expect(catalogPosition).toBeGreaterThan(0);
-      await catalogCard.click();
+      expect(await panel.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+      const catalogPosition = (await clickWithPosition(catalogCard)).panel;
       await expect(page.locator('.detail-play')).toBeEnabled();
       await page.goBack();
       await expect(page).toHaveURL(/#\/catalog\//);
@@ -87,9 +102,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await page.locator('.search-submit').click();
       const searchCard = page.locator('.search-results .media-card').nth(36);
       await searchCard.scrollIntoViewIfNeeded();
-      const searchPosition = await page.evaluate(() => window.scrollY);
-      expect(searchPosition).toBeGreaterThan(700);
-      await searchCard.click();
+      expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(700);
+      const searchPosition = (await clickWithPosition(searchCard)).window;
       await expect(page.locator('.detail-play')).toBeEnabled();
       await page.locator('.detail-back').click();
       await expect(page).toHaveURL(/#\/search\?q=Title$/);

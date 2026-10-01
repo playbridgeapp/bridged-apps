@@ -59,6 +59,7 @@ export function unavailableAddon(url: string, name: string | undefined, error: u
 
 export function supportedFeatures(addon: InstalledAddon): AddonFeature[] {
   const resources = new Set(addon.manifest.resources.map((resource) => typeof resource === 'string' ? resource : resource.name));
+  if (resources.has('subtitle')) resources.add('subtitles');
   if (addon.manifest.catalogs?.length) resources.add('catalog');
   return FEATURES.filter((feature) => resources.has(feature));
 }

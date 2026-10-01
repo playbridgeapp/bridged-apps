@@ -691,3 +691,21 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 @media(prefers-reduced-motion:reduce){.catalog-view-all,.catalog-page-skeletons span{transition:none;animation:none}}
 
 .stream-auto-actions{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 20px}.stream-auto-actions button{min-height:42px}.episode-action-hint{color:#a5c6bb;font-size:12px;margin:9px 0 0}.episode-action-hint button{border:0;background:none;color:#9debd2;font:inherit;cursor:pointer;text-decoration:underline}
+
+.watching-card{position:relative;flex:none}
+.watching-options{position:absolute;right:9px;top:9px;z-index:4;border:1px solid #ffffff50;border-radius:20px;background:#10151ddd;color:white;min-width:36px;min-height:36px;font-weight:700}
+.episode-card{flex:none;width:min(315px,75vw)}
+.episode-card .episode-row{width:100%}
+.episode-watching-action,.season-watching-actions button{border:1px solid #ffffff26;border-radius:8px;background:#ffffff0b;color:#d8e1e5;padding:9px 12px;margin-top:8px}
+.season-watching-actions{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px}
+.watching-overlay{position:fixed;inset:0;z-index:250;display:grid;place-items:center;padding:22px;background:#000b;overflow:auto}
+.watching-dialog{position:relative;width:min(440px,100%);max-height:90dvh;overflow:auto;padding:26px;border:1px solid #ffffff30;border-radius:20px;background:#182027;color:white;box-shadow:0 25px 90px #0008}
+.watching-dialog h2{padding-right:30px;font-size:23px;margin:4px 0 12px}
+.watching-dialog p{font-size:13px;color:#adbdc7;line-height:1.5}
+.watching-choice{display:block;width:100%;text-align:left;border:1px solid #ffffff30;border-radius:10px;padding:13px;margin:12px 0;background:#ffffff0b;color:white}
+.watching-close{position:absolute;right:16px;top:16px;border:0;background:transparent;color:white;padding:6px}
+.addon-subtitles{display:flex;flex-wrap:wrap;align-items:center;gap:12px;padding:0 28px 20px;color:#bbc9d4;font-size:13px}
+.addon-subtitles label{display:flex;align-items:center;gap:10px}
+.addon-subtitles select{max-width:min(65vw,450px);border:1px solid #ffffff35;border-radius:8px;padding:8px;color:white;background:#182027}
+.addon-subtitles button{background:transparent;border:0;color:white;text-decoration:underline}
+@media(max-width:700px){.episode-card{width:min(275px,76vw)}.addon-subtitles{padding:0 16px 16px}}

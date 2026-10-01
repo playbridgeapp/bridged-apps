@@ -1157,7 +1157,7 @@ test('isolates Nuvio scraper controls by profile and protects shared plugins', a
   await openAddons(page);
   await expect(page.getByRole('button', { name: 'Configured Scraper enabled' })).toBeDisabled();
   await expect(page.getByRole('button', { name: 'Configure Configured Scraper' })).toBeDisabled();
-  expect(state.settingsReads.at(-1)).toBe(1);
+  expect(state.settingsReads.slice(-2)).toEqual([1, 3]);
   expect(state.writes).toHaveLength(1);
 });
 
@@ -1304,12 +1304,12 @@ test('writes account addon changes, library membership, and linked TV progress t
   await expect(page.getByText('Episode Source')).toBeVisible();
   await page.getByRole('button', { name: 'Cast' }).click();
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('statechange', {
-    detail: { state: 'playing', positionMs: 30_000, durationMs: 100_000,
+    detail: { state: 'playing', positionMs: 30_000, durationMs: 300_000,
       currentIndex: 0, items: [{ id: 'tt200:1:1' }] }
   })));
   await expect.poll(() => libraryWrites.length).toBe(3);
   expect(libraryWrites[2]).toMatchObject({
-    _id: 'tt200', state: { video_id: 'tt200:1:1', timeOffset: 30_000, duration: 100_000 }
+    _id: 'tt200', state: { video_id: 'tt200:1:1', timeOffset: 30_000, duration: 300_000 }
   });
 });
 

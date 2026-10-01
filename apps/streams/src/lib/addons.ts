@@ -75,7 +75,7 @@ function resources(manifest: AddonManifest): AddonResource[] {
 
 export function supports(addon: InstalledAddon, name: string, type: string, id?: string): boolean {
   return addon.enabled !== false && !addon.disabledFeatures?.includes(name as 'catalog' | 'meta' | 'stream' | 'subtitles')
-    && (resources(addon.manifest).some((resource) => resource.name === name
+    && (resources(addon.manifest).some((resource) => (resource.name === name || (name === 'subtitles' && resource.name === 'subtitle'))
     && (resource.types.length === 0 || resource.types.includes(type))
     && (!id || resource.idPrefixes.length === 0 || resource.idPrefixes.some((prefix) => id.startsWith(prefix))))
     || (name === 'catalog' && addon.manifest.catalogs?.some((catalog) => catalog.type === type) === true));
