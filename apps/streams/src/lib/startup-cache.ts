@@ -1,9 +1,9 @@
-import type { NuvioLibraryItem, NuvioProgress } from './nuvio';
+import type { NuvioLibraryItem, NuvioProgress, NuvioWatchedItem } from './nuvio';
 import type { StremioLibraryItem } from './stremio';
 import type { InstalledAddon, PluginRepository } from './types';
 
 type CacheName = 'local-addons' | 'stremio-addons' | 'stremio-library'
-  | 'nuvio-addons' | 'nuvio-plugins' | 'nuvio-library' | 'nuvio-progress';
+  | 'nuvio-addons' | 'nuvio-plugins' | 'nuvio-library' | 'nuvio-progress' | 'nuvio-watched';
 type CacheEntry = { scope: string; value: unknown };
 const key = (name: CacheName) => `bridged-streams.startup-cache.v1.${name}`;
 
@@ -89,4 +89,17 @@ export function cachedNuvioProgress(scope: string): NuvioProgress[] | null {
 
 export function saveNuvioProgress(scope: string, progress: NuvioProgress[]): void {
   writeArray('nuvio-progress', scope, progress);
+}
+
+export function cachedNuvioWatched(scope: string): NuvioWatchedItem[] | null {
+  return readArray('nuvio-watched', scope, (value): value is NuvioWatchedItem => {
+    if (!value || typeof value !== 'object') return false;
+    const item = value as Partial<NuvioWatchedItem>;
+    return typeof item.content_id === 'string' && typeof item.content_type === 'string'
+      && typeof item.watched_at === 'number';
+  });
+}
+
+export function saveNuvioWatched(scope: string, watched: NuvioWatchedItem[]): void {
+  writeArray('nuvio-watched', scope, watched);
 }

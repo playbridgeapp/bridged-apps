@@ -53,6 +53,8 @@ Open **Settings → Accounts and profiles → Nuvio** and sign in with your Nuvi
 
 Choose a Nuvio profile after signing in. If the account has no profiles, create a primary profile here or in Nuvio Mobile; if the profile request fails, use **Retry profiles** to see the error and try again. PIN-protected profiles must be unlocked in this tab before their data loads. The app imports addons, enabled plugin repositories, library titles, and watch progress on sign-in and every 10 minutes. Disabled addons remain visible in Manage addons. The Nuvio **Sync now** button refreshes them immediately. Imported sources are combined with local and Stremio sources for browsing. Browser CORS and scraper runtime limitations still apply.
 
+Nuvio Continue Watching includes unfinished titles outside the library and **Next up** after a completed episode. Watched history from the selected profile also contributes, including episodes marked watched in Nuvio. Episodes count as complete at 90%; tiny positive progress still appears as **<1% watched**. A newer partial episode resumes; otherwise the next available episode opens at position zero. A new season needs a known past release date. Episode metadata resolves in the background for up to 16 recent title candidates with two lookups at a time. See [Nuvio feature gaps](NUVIO_FEATURE_GAPS.md) for remaining controls and integration differences.
+
 Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV movie and episode casts report watch progress to both connected accounts; each account keeps its own library actions. Direct movie casts on older PlayBridge versions do not provide playback callbacks.
 
 ### Scraper controls and configuration sync
@@ -111,5 +113,6 @@ For IMDb-based catalog IDs, enter your own TMDB API key in Addons. The key stays
 ```bash
 pnpm --filter @bridged-apps/streams check
 pnpm --filter @bridged-apps/streams build
+pnpm exec node --test apps/streams/test/*.test.mjs
 pnpm test:e2e:streams
 ```

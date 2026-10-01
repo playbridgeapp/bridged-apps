@@ -51,6 +51,15 @@ export interface NuvioProgress {
   last_watched: number;
 }
 
+export interface NuvioWatchedItem {
+  content_id: string;
+  content_type: string;
+  title?: string;
+  season?: number | null;
+  episode?: number | null;
+  watched_at: number;
+}
+
 export function normalizeBackendUrl(raw: string): string {
   const url = new URL(raw.trim());
   if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Enter a valid Nuvio backend URL.');
@@ -308,6 +317,18 @@ export async function fetchNuvioProgress(session: NuvioSession, profileIndex: nu
   return rpc<NuvioProgress[]>(session, 'sync_pull_watch_progress', { p_profile_id: profileIndex });
 }
 
+export async function fetchNuvioWatched(session: NuvioSession, profileIndex: number): Promise<NuvioWatchedItem[]> {
+  const result: NuvioWatchedItem[] = [];
+  for (let page = 1; page <= 100; page++) {
+    const items = await rpc<NuvioWatchedItem[]>(session, 'sync_pull_watched_items', {
+      p_profile_id: profileIndex, p_page: page, p_page_size: 100
+    });
+    result.push(...items);
+    if (items.length < 100) return result;
+  }
+  throw new Error('Nuvio watched-history pagination limit exceeded.');
+}
+
 export function decorateNuvioLibrary(items: NuvioLibraryItem[], progress: NuvioProgress[]): NuvioLibraryItem[] {
   const latest = new Map<string, NuvioProgress>();
   progress.forEach((entry) => {
@@ -315,7 +336,8 @@ export function decorateNuvioLibrary(items: NuvioLibraryItem[], progress: NuvioP
   });
   return items.map((item) => {
     const entry = latest.get(item.id);
-    return entry ? { ...item, progress: entry.duration > 0 ? Math.min(100, Math.round(entry.position / entry.duration * 100)) : 0,
+    // Continue Watching uses this ratio; round only when displaying its caption.
+    return entry ? { ...item, progress: entry.duration > 0 ? Math.min(100, entry.position / entry.duration * 100) : 0,
       lastVideoId: entry.video_id, lastWatched: new Date(entry.last_watched).toISOString() } : item;
   });
 }

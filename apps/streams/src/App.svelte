@@ -25,15 +25,17 @@
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
   import { cachedCatalog, clearCatalogCache, saveCatalogCache, savedCatalogRefresh, saveCatalogRefresh } from './lib/catalog-cache';
   import { readPersistentSession, writePersistentSession } from './lib/persistent-session';
-  import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveStremioLibrary } from './lib/startup-cache';
+  import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedNuvioWatched, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveNuvioWatched, saveStremioLibrary } from './lib/startup-cache';
   import { appendPlaybackDiagnostic, clearPlaybackDiagnostics, readPlaybackDiagnostics, safeDiagnosticText } from './lib/playback-diagnostics';
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
   import { bridgeAvailable, castMovie, directCast, lazyCastSeries, stopLinkedCast } from './lib/cast';
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
+  import { NUVIO_COMPLETION_FRACTION, nuvioSeriesAction, nuvioWatchingItems, nuvioWatchingTargets, watchingCaption } from './lib/nuvio-watching';
+  import type { NuvioWatchingTarget } from './lib/nuvio-watching';
   import { browserCompatible, installPlugin, platformCompatible, savedPluginUrls, savedTmdbKey, savePluginUrls, saveTmdbKey, toggleScraper } from './lib/plugins';
   import { addAccountAddon, fetchAccountAddons, fetchAccountLibrary, login, loginWithKey, moveAccountAddon, refreshUser, removeAccountAddon, savedSession, saveSession, saveWatchProgress, setLibraryMembership } from './lib/stremio';
-  import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioProgress, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, pushNuvioProgress, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
-  import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioSession } from './lib/nuvio';
+  import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioProgress, fetchNuvioWatched, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, pushNuvioProgress, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
+  import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioWatchedItem, NuvioSession } from './lib/nuvio';
   import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video } from './lib/types';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
@@ -81,7 +83,8 @@
   let accountLibrary: StremioLibraryItem[] = initialAccountLibrary;
   let nuvioLibrary: NuvioLibraryItem[] = [];
   let nuvioProgress: NuvioProgress[] = [];
-  let nuvioProgressMetadata = new Map<string, MetaPreview>();
+  let nuvioWatched: NuvioWatchedItem[] = [];
+  let nuvioProgressMetadata = new Map<string, Meta>();
   let nuvioMetadataController: AbortController | null = null;
   let lastNuvioMetadataKey = '';
   let resolvedNuvioMetadataScope = '';
@@ -406,9 +409,11 @@
     .sort((a, b) => (b.genres || []).filter((genre) => selected?.genres?.includes(genre)).length
       - (a.genres || []).filter((genre) => selected?.genres?.includes(genre)).length).slice(0, 16) : [];
   $: savedLibrary = [...new Map([...nuvioLibrary, ...accountLibrary.filter((item) => !item.removed && !item.temp)].map((item) => [`${item.type}:${item.id}`, item])).values()];
-  $: nuvioProgressItems = progressPreviews(nuvioProgress, rows, nuvioLibrary, nuvioProgressMetadata);
-  $: continueWatching = [...new Map([...nuvioProgressItems, ...nuvioLibrary, ...accountLibrary.filter((item) => !item.removed || item.temp)]
-    .filter((item) => item.progress > 0 && item.progress < 95).map((item) => [`${item.type}:${item.id}`, item])).values()]
+  $: nuvioProgressItems = nuvioWatchingItems(nuvioProgress, nuvioWatched,
+    [...rows.flatMap((row) => row.items), ...nuvioLibrary], nuvioProgressMetadata);
+  $: continueWatching = [...new Map([...nuvioProgressItems,
+    ...accountLibrary.filter((item) => (!item.removed || item.temp) && item.progress > 0 && item.progress < 95)]
+    .map((item) => [`${item.type}:${item.id}`, item])).values()]
     .sort((a, b) => (b.lastWatched || '').localeCompare(a.lastWatched || ''));
   $: selectedInLibrary = selected ? accountLibrary.some((item) => item.id === selected?.id && !item.removed && !item.temp) : false;
   $: detailIdentityReady = !!selected && selected.name !== selected.id;
@@ -422,14 +427,14 @@
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
   $: nuvioMetadataProviders = addons.filter((addon) => supports(addon, 'meta', 'movie') || supports(addon, 'meta', 'series'));
-  $: nuvioMetadataTargets = latestNuvioProgress(nuvioProgress)
+  $: nuvioMetadataTargets = nuvioWatchingTargets(nuvioProgress, nuvioWatched)
     .filter((entry) => entry.content_type === 'movie' || entry.content_type === 'series')
     .sort((a, b) => b.last_watched - a.last_watched).slice(0, 16)
-    .filter((entry) => !nuvioLibrary.some((item) => item.type === entry.content_type && item.id === entry.content_id)
-      && !rows.some((row) => row.items.some((item) => item.type === entry.content_type && item.id === entry.content_id)));
+    .filter((entry) => entry.needsEpisodes || (!nuvioLibrary.some((item) => item.type === entry.content_type && item.id === entry.content_id)
+      && !rows.some((row) => row.items.some((item) => item.type === entry.content_type && item.id === entry.content_id))));
   $: nuvioMetadataKey = JSON.stringify([nuvioMetadataScope, nuvioGeneration, nuvioSyncRequest,
     nuvioMetadataProviders.map((addon) => [addon.manifestUrl, addon.manifest.version, addon.manifest.resources, addon.manifest.types, addon.manifest.idPrefixes]),
-    nuvioMetadataTargets.map((entry) => [entry.content_type, entry.content_id])]);
+    nuvioMetadataTargets.map((entry) => [entry.content_type, entry.content_id, entry.needsEpisodes])]);
   $: if (nuvioMetadataKey !== lastNuvioMetadataKey) {
     lastNuvioMetadataKey = nuvioMetadataKey;
     void resolveNuvioProgressMetadata(nuvioMetadataScope, nuvioMetadataTargets, nuvioMetadataProviders);
@@ -448,7 +453,9 @@
   $: visiblePlayable = playable.filter((stream) => !selectedStreamSource ||
     sourceStreams[selectedStreamSource]?.includes(stream));
   $: visibleSourcesLoading = selectedStreamSource ? !!sourceLoading[selectedStreamSource] : loadingStreams;
-  $: detailResumeMs = selected ? resumePositionMs(selected, episode, accountLibrary, nuvioProgress) : 0;
+  $: detailResumeMs = selected ? resumePositionMs(selected, episode, accountLibrary, nuvioProgress, nuvioWatched) : 0;
+  $: detailNuvioAction = selected ? nuvioSeriesAction(selected, nuvioProgress, nuvioWatched) : null;
+  $: detailNextUp = detailNuvioAction?.kind === 'next-up' && detailNuvioAction.video.id === episode?.id;
   $: unavailable = streams.length - playable.length;
   $: browserUncertain = playable.filter((stream) => stream.behaviorHints?.notWebReady).length;
   $: if (tab) void tick().then(updateDockIndicator);
@@ -857,6 +864,7 @@
     nuvioPlugins = [];
     nuvioLibrary = [];
     nuvioProgress = [];
+    nuvioWatched = [];
     nuvioProgressLastWrite.clear();
     nuvioProgressLastPosition.clear();
     nuvioProgressInFlight.clear();
@@ -900,11 +908,12 @@
     const profile = selectedProfile;
     nuvioSyncing = true;
     nuvioError = '';
-    const [addonsResult, pluginsResult, libraryResult, progressResult, pluginPreferencesResult] = await Promise.allSettled([
+    const [addonsResult, pluginsResult, libraryResult, progressResult, pluginPreferencesResult, watchedResult] = await Promise.allSettled([
       fetchNuvioSources(current, 'addons', profile?.uses_primary_addons ? 1 : index),
       fetchNuvioSources(current, 'plugins', profile?.uses_primary_plugins ? 1 : index),
       fetchNuvioLibrary(current, index), fetchNuvioProgress(current, index),
-      fetchNuvioPluginPreferences(current, profile.uses_primary_plugins ? 1 : index)
+      fetchNuvioPluginPreferences(current, profile.uses_primary_plugins ? 1 : index),
+      fetchNuvioWatched(current, index)
     ]);
     if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
     const failures: string[] = [];
@@ -930,6 +939,8 @@
       if (resolved.some((result) => result.status === 'rejected')) failures.push('Some Nuvio plugin repositories could not be loaded in this browser.');
     } else failures.push(`Plugins: ${message(pluginsResult.reason)}`);
     if (pluginPreferencesResult.status === 'rejected') failures.push(`Plugin settings: ${message(pluginPreferencesResult.reason)}`);
+    if (watchedResult.status === 'fulfilled') nuvioWatched = watchedResult.value;
+    else failures.push(`Watched history: ${message(watchedResult.reason)}`);
     if (progressResult.status === 'fulfilled') nuvioProgress = progressResult.value;
     else failures.push(`Progress: ${message(progressResult.reason)}`);
     if (libraryResult.status === 'fulfilled') nuvioLibrary = decorateNuvioLibrary(libraryResult.value, nuvioProgress);
@@ -957,6 +968,7 @@
     nuvioPlugins = [];
     nuvioLibrary = [];
     nuvioProgress = [];
+    nuvioWatched = [];
     nuvioProgressLastWrite.clear();
     nuvioProgressLastPosition.clear();
     nuvioProgressInFlight.clear();
@@ -966,7 +978,7 @@
     nuvioMessage = '';
     saveNuvioSession(null);
     writePersistentSession(NUVIO_PROFILE_KEY, null);
-    clearStartupCache(['nuvio-addons', 'nuvio-plugins', 'nuvio-library', 'nuvio-progress']);
+    clearStartupCache(['nuvio-addons', 'nuvio-plugins', 'nuvio-library', 'nuvio-progress', 'nuvio-watched']);
     void loadCatalogs();
   }
 
@@ -980,6 +992,7 @@
       .map((addon) => configuredAddon(addon, 'nuvio', addon.enabled, scope));
     nuvioPlugins = cachedNuvioPlugins(scope) || [];
     nuvioProgress = cachedNuvioProgress(scope) || [];
+    nuvioWatched = cachedNuvioWatched(scope) || [];
     nuvioLibrary = cachedNuvioLibrary(scope) || [];
   }
 
@@ -988,6 +1001,7 @@
     saveAddons('nuvio-addons', scope, nuvioAddons);
     saveNuvioPlugins(scope, nuvioPlugins);
     saveNuvioProgress(scope, nuvioProgress);
+    saveNuvioWatched(scope, nuvioWatched);
     saveNuvioLibrary(scope, nuvioLibrary);
   }
 
@@ -1168,28 +1182,7 @@
     showStatus('Cached catalog rows cleared.');
   }
 
-  function latestNuvioProgress(progress: NuvioProgress[]): NuvioProgress[] {
-    const latest = new Map<string, NuvioProgress>();
-    progress.forEach((entry) => {
-      if (entry.duration <= 0 || entry.position <= 0 || entry.position >= entry.duration * .95) return;
-      const key = `${entry.content_type}:${entry.content_id}`;
-      if ((latest.get(key)?.last_watched || 0) < entry.last_watched) latest.set(key, entry);
-    });
-    return [...latest.values()];
-  }
-
-  function progressPreviews(progress: NuvioProgress[], catalogRows: CatalogRow[], library: NuvioLibraryItem[], metadata: Map<string, MetaPreview>) {
-    const catalogItems = new Map<string, MetaPreview>(catalogRows.flatMap((row) => row.items).map((item) => [`${item.type}:${item.id}`, item]));
-    return latestNuvioProgress(progress).flatMap((entry) => {
-      const key = `${entry.content_type}:${entry.content_id}`;
-      if (library.some((item) => `${item.type}:${item.id}` === key)) return [];
-      const item = catalogItems.get(key) || metadata.get(key);
-      return item ? [{ ...item, progress: Math.min(100, Math.round(entry.position / entry.duration * 100)),
-        lastVideoId: entry.video_id, lastWatched: new Date(entry.last_watched).toISOString() }] : [];
-    });
-  }
-
-  async function resolveNuvioProgressMetadata(scope: string, entries: NuvioProgress[], providers: InstalledAddon[]) {
+  async function resolveNuvioProgressMetadata(scope: string, entries: NuvioWatchingTarget[], providers: InstalledAddon[]) {
     nuvioMetadataController?.abort();
     const controller = new AbortController();
     nuvioMetadataController = controller;
@@ -1198,15 +1191,19 @@
       nuvioProgressMetadata = new Map();
     }
     if (!scope) return;
-    const pending = entries.filter((entry) => !nuvioProgressMetadata.has(`${entry.content_type}:${entry.content_id}`));
+    const pending = entries.filter((entry) => {
+      const meta = nuvioProgressMetadata.get(`${entry.content_type}:${entry.content_id}`);
+      return !meta || (entry.needsEpisodes && !meta.videos?.length);
+    });
     // Resolve only the visible row's recent titles, with at most two requests in flight.
     async function worker() {
       while (pending.length && !controller.signal.aborted) {
         const entry = pending.shift()!;
         const key = `${entry.content_type}:${entry.content_id}`;
         const type = entry.content_type as 'movie' | 'series';
-        const cached = previewMemory.get(key) || cachedDetailPreview(type, entry.content_id);
-        if (cached && cached.name && cached.name !== entry.content_id) {
+        const cached = detailMemory.get(key) || previewMemory.get(key) || cachedDetailPreview(type, entry.content_id);
+        if (cached && cached.name && cached.name !== entry.content_id
+          && (!entry.needsEpisodes || (cached as Meta).videos?.length)) {
           nuvioProgressMetadata = new Map(nuvioProgressMetadata).set(key, cached);
           continue;
         }
@@ -1943,9 +1940,11 @@
 
   function openDetail(preview: MetaPreview, fromContinue = false) {
     previewMemory.set(`${preview.type}:${preview.id}`, preview);
+    const nextUp = fromContinue ? (preview as MetaPreview & { nextUp?: Video }).nextUp : undefined;
     pendingAutoAction = streamSelection.enabled && fromContinue
-      ? { type: preview.type, id: preview.id, action: 'play' } : null;
-    router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id });
+      ? { type: preview.type, id: preview.id, videoId: nextUp?.id, action: 'play' } : null;
+    router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id,
+      ...(nextUp ? { videoId: nextUp.id, season: nextUp.season, episode: nextUp.episode } : {}) });
   }
 
   async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, onStreamsUpdate?: () => void) {
@@ -1986,7 +1985,7 @@
       if (preview.id !== meta.id) detailMemory.set(`${preview.type}:${preview.id}`, meta);
       season = route.season ?? defaultSeason(meta.videos);
       const recentProgress = nuvioProgress.filter((entry) => entry.content_id === meta.id && entry.content_type === meta.type
-        && entry.position > 0 && entry.duration > 0 && entry.position < entry.duration * .95)
+        && entry.position > 0 && entry.duration > 0 && entry.position < entry.duration * NUVIO_COMPLETION_FRACTION)
         .sort((a, b) => b.last_watched - a.last_watched)[0];
       const fallbackId = recentProgress?.video_id || accountLibrary.find((item) => item.id === meta.id)?.lastVideoId
         || (preview as MetaPreview & { lastVideoId?: string }).lastVideoId;
@@ -1996,7 +1995,7 @@
           && video.season === route.season && video.episode === route.episode)
         || (route.videoId ? { id: route.videoId, season: route.season, episode: route.episode } : null);
       const resumeVideo = linkedVideo || (route.season !== undefined && route.kind === 'detail' ? null
-        : resumeEpisode(meta, accountLibrary, nuvioLibrary, nuvioProgress))
+        : resumeEpisode(meta, accountLibrary, nuvioLibrary, nuvioProgress, nuvioWatched))
         || (fromContinue && meta.type === 'series' && fallbackId
           ? { id: fallbackId, season: recentProgress?.season ?? (fallbackCoordinates ? Number(fallbackCoordinates[1]) : undefined),
             episode: recentProgress?.episode ?? (fallbackCoordinates ? Number(fallbackCoordinates[2]) : undefined) } : null);
@@ -2121,7 +2120,7 @@
   async function detailPlay(action: 'play' | 'cast' = 'play') {
     if (!selected || loadingDetail) return;
     if (selected.type === 'series') {
-      if (episode && (detailResumeMs > 0 || action === 'cast')) {
+      if (episode && (detailResumeMs > 0 || detailNextUp || action === 'cast')) {
         openStreamScreen(episode, action);
         return;
       }
@@ -2304,11 +2303,11 @@
         if (!episode) throw new Error('Choose an episode first.');
         const meta = selected;
         await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [episode], episode, stream, addons, plugins, tmdbKey,
-          resumePositionMs(meta, episode, accountLibrary, nuvioProgress),
+          resumePositionMs(meta, episode, accountLibrary, nuvioProgress, nuvioWatched),
           (value) => { showStatus(value); }, (progress) => reportWatchProgress(meta, progress), selection);
       } else if (selected.type === 'movie') {
         const meta = selected;
-        const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress),
+        const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress, nuvioWatched),
           (progress) => reportWatchProgress(meta, progress));
         showStatus(tracked ? `Casting ${meta.name} · watch progress sync is on.`
           : `Casting ${meta.name} · progress sync is unavailable for this target.`);
@@ -2361,7 +2360,7 @@
       return;
     }
     const video = meta.type === 'series' ? chosenEpisode : null;
-    playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress), resumeApplied: false };
+    playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress, nuvioWatched), resumeApplied: false };
   }
 
   async function castPlaying() {
@@ -2371,11 +2370,11 @@
       if (current.meta.type === 'series') {
         if (!current.video) throw new Error('Choose an episode first.');
         await lazyCastSeries(current.meta, current.meta.videos?.length ? current.meta.videos : [current.video], current.video, current.stream, addons, plugins, tmdbKey,
-          browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress),
+          browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress, nuvioWatched),
           (value) => { showStatus(value); }, (progress) => reportWatchProgress(current.meta, progress), current.selection);
       } else if (current.meta.type === 'movie') {
         const tracked = await castMovie(current.meta, current.stream,
-          browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress),
+          browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress, nuvioWatched),
           (progress) => reportWatchProgress(current.meta, progress));
         showStatus(tracked ? `Casting ${current.meta.name} · watch progress sync is on.`
           : `Casting ${current.meta.name} · progress sync is unavailable for this target.`);
@@ -2489,7 +2488,7 @@
         playbackAttempt += 1;
         logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
         playing = { meta: current.meta, video: next, stream, selection: current.selection,
-          resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress), resumeApplied: false };
+          resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress, nuvioWatched), resumeApplied: false };
         episode = next;
         season = next.season ?? season;
         const route = mediaRoute('player', next);
@@ -2526,7 +2525,7 @@
         <div class="page-intro"><div class="eyebrow">CONNECTED ACCOUNTS</div><h1>Library</h1><p>{account || nuvioSession ? `${savedLibrary.length} synced titles` : 'Sign in to Stremio or Nuvio to see your library and watch progress.'}</p></div>
         {#if !account && !nuvioSession}<div class="empty-state">Connect Stremio or Nuvio to bring in your library and Continue Watching.<br /><button class="primary-button inline-action" onclick={() => openSettingsPanel('accounts')}><UserRound size={17} /> Connect an account</button></div>
         {:else if (accountSyncing || nuvioSyncing) && !savedLibrary.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Syncing your library…</div>
-        {:else if savedLibrary.length}<div class="poster-grid">{#each savedLibrary as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={item.progress ? `${item.progress}% watched` : undefined} onSelect={() => void openDetail(item)} />{/each}</div>
+        {:else if savedLibrary.length}<div class="poster-grid">{#each savedLibrary as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={item.progress ? watchingCaption(item) : undefined} onSelect={() => void openDetail(item)} />{/each}</div>
         {:else}<div class="empty-state">Your connected library is empty. Add a title, then sync again.</div>{/if}
       </section>
     {/if}
@@ -2616,7 +2615,7 @@
         </section>
       {/if}
       <section class="browse">
-        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={`${item.progress}% watched`} onSelect={() => void openDetail(item, true)} />{/each}</div></section>{/if}
+        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<MediaTile {item} progress={item.progress} subtitle={watchingCaption(item)} onSelect={() => void openDetail(item, true)} />{/each}</div></section>{/if}
         {#if browsableAddons.length}
           <section class="provider-section" aria-label="Browse by addon"><div class="section-heading"><div><h2>Browse by Addon</h2><p>Explore catalogs from your connected sources</p></div></div><div class="provider-rail"><button class:active={!effectiveAddonFilter} class="provider-tile" aria-pressed={!effectiveAddonFilter} onclick={() => activeAddonFilter = ''}><span class="provider-mark all-mark"><Clapperboard size={27} /></span><strong>All sources</strong></button>{#each browsableAddons as addon (addon.manifestUrl)}<button class:active={effectiveAddonFilter === addon.manifestUrl} class="provider-tile" aria-pressed={effectiveAddonFilter === addon.manifestUrl} onclick={() => activeAddonFilter = addon.manifestUrl}><span class="provider-mark">{#if addon.manifest.logo}<img src={addon.manifest.logo} alt="" loading="lazy" />{:else}{addon.manifest.name.slice(0, 2).toUpperCase()}{/if}</span><strong>{addon.manifest.name}</strong></button>{/each}</div></section>
         {/if}
@@ -2718,7 +2717,7 @@
           <p class="panel-copy">This profile has a PIN. Unlock it to import its sources, library, and progress.</p>
           <form class="login-form" onsubmit={(event) => { event.preventDefault(); void unlockNuvioProfile(); }}><label>Profile PIN<input type="password" inputmode="numeric" bind:value={nuvioPin} autocomplete="off" required /></label><button class="primary-button" type="submit" disabled={nuvioBusy}>Unlock profile</button></form>
         {:else if nuvioProfileReady}
-          <p class="panel-copy">Nuvio addons, plugin repositories, library, and progress refresh every 10 minutes. Library changes and playback progress made here sync to this profile.</p>
+          <p class="panel-copy">Nuvio addons, plugin repositories, library, progress, and watched history refresh every 10 minutes. Library changes and playback progress made here sync to this profile.</p>
           <button class="sync-button" onclick={() => void syncNuvio()} disabled={nuvioSyncing || !!pluginSaving}>{#if nuvioSyncing}<LoaderCircle size={18} class="spin" />{:else}<RefreshCw size={18} />{/if} Sync Nuvio now</button>
           <div class="sync-summary"><span><strong>{nuvioAddons.length}</strong> addons</span><span><strong>{nuvioPlugins.length}</strong> plugins</span><span><strong>{nuvioLibrary.length}</strong> titles</span></div>
         {/if}
@@ -2869,7 +2868,7 @@
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if streamSelection.enabled}<button class="detail-action-icon" onclick={() => void detailPlay('cast')} disabled={loadingDetail || !bridge} aria-label="Cast with auto-selection" title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={21} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if streamSelection.enabled}<button class="detail-action-icon" onclick={() => void detailPlay('cast')} disabled={loadingDetail || !bridge} aria-label="Cast with auto-selection" title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={21} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10{selected.ratingSource ? ` · ${selected.ratingSource}` : ''}</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}{#if selected.ageRating}<span>{selected.ageRating}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
           {/if}

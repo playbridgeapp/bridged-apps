@@ -60,6 +60,7 @@ export interface Video {
   season?: number;
   episode?: number;
   released?: string;
+  available?: boolean;
   thumbnail?: string;
   runtime?: number;
   seasonPoster?: string;
