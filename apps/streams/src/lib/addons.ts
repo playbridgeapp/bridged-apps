@@ -1,6 +1,7 @@
-import type { AddonCatalog, AddonManifest, AddonResource, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream } from './types';
-import { browserCompatible, fetchPluginStreams } from './plugins';
-import { cachedStreamLookup } from './stream-cache';
+import type { AddonCatalog, AddonManifest, AddonResource, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, NativePluginsBridge, NativePluginsStatus } from './types';
+import { browserCompatible, fetchPluginStreams, platformCompatible } from './plugins.ts';
+import { cachedStreamLookup } from './stream-cache.ts';
+import { fetchNativePluginsStatus, hasNativePluginsApi, matchNativeProvider, getResolutionGeneration } from './native-plugins.ts';
 
 const STORAGE_KEY = 'bridged-streams.addons.v1';
 
@@ -124,7 +125,19 @@ export async function fetchMeta(addons: InstalledAddon[], preview: MetaPreview, 
   return { ...preview, videos: [] };
 }
 
-export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id: string, plugins: PluginRepository[] = [], tmdbKey = '', onWarning?: (message: string) => void, signal?: AbortSignal, forceRefresh = false): Promise<Stream[]> {
+export async function fetchStreams(
+  addons: InstalledAddon[],
+  type: MediaType,
+  id: string,
+  plugins: PluginRepository[] = [],
+  tmdbKey = '',
+  onWarning?: (message: string) => void,
+  signal?: AbortSignal,
+  forceRefresh = false,
+  bridge?: NativePluginsBridge | null,
+  includeDeviceProviders = true
+): Promise<Stream[]> {
+  const generation = getResolutionGeneration();
   const candidates = addons.filter((addon) => supports(addon, 'stream', type, id));
   const results = await Promise.allSettled(candidates.map((addon) => {
     const url = resourceUrl(addon, 'stream', type, id);
@@ -139,24 +152,85 @@ export async function fetchStreams(addons: InstalledAddon[], type: MediaType, id
     }
   });
   const addonStreams = results.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
+  if (generation !== getResolutionGeneration()) return addonStreams;
+  // App.svelte resolves each source separately; merging all device providers into
+  // each source would duplicate lookups and mislabel results under other addons.
+  if (!includeDeviceProviders && plugins.length === 0) return addonStreams;
   const parts = id.match(/^(tt\d+|tmdb:\d+):(\d+):(\d+)$/);
   const pluginId = parts?.[1] || id;
-  const scrapers = type === 'movie' || type === 'series' ? plugins.flatMap((repo) => repo.scrapers
-    .filter((scraper) => browserCompatible(scraper) &&
-      scraper.supportedTypes?.some((value) => value === (type === 'series' ? 'tv' : 'movie') || value === type))
+
+  const nativeApiPresent = hasNativePluginsApi(bridge);
+  let nativeStatus: NativePluginsStatus | null = null;
+  if (nativeApiPresent) {
+    try {
+      nativeStatus = await fetchNativePluginsStatus(bridge);
+    } catch {
+      onWarning?.('Device plugin engine is unavailable.');
+    }
+  }
+  const nativeProviders = nativeStatus?.available ? nativeStatus.providers : [];
+
+  const effectivePlugins: PluginRepository[] = plugins.map((repo) => ({
+    ...repo,
+    scrapers: repo.scrapers.map((s) => ({ ...s }))
+  }));
+
+  for (const provider of includeDeviceProviders ? nativeProviders : []) {
+    const existingRepo = effectivePlugins.find((r) => r.manifestUrl === provider.repoUrl);
+    if (!existingRepo) {
+      effectivePlugins.push({
+        manifestUrl: provider.repoUrl,
+        name: provider.name,
+        scrapers: [{
+          id: provider.scraperId,
+          name: provider.name,
+          filename: '',
+          supportedTypes: ['movie', 'tv', 'series'],
+          enabled: provider.enabled
+        }]
+      });
+    } else if (!existingRepo.scrapers.some((s) => s.id === provider.scraperId)) {
+      existingRepo.scrapers.push({
+        id: provider.scraperId,
+        name: provider.name,
+        filename: '',
+        supportedTypes: ['movie', 'tv', 'series'],
+        enabled: provider.enabled
+      });
+    }
+  }
+
+  const mediaType: 'movie' | 'tv' = type === 'series' ? 'tv' : 'movie';
+  const scrapers = type === 'movie' || type === 'series' ? effectivePlugins.flatMap((repo) => repo.scrapers
+    .filter((scraper) => {
+      const isDevice = Boolean(matchNativeProvider(repo.manifestUrl, scraper.id, nativeProviders));
+      const supportsType = scraper.supportedTypes?.some((value) => value === mediaType || value === type);
+      if (!supportsType) return false;
+      return (nativeApiPresent && isDevice) || browserCompatible(scraper) || (!platformCompatible(scraper) && nativeApiPresent);
+    })
     .map((scraper) => ({ repo, scraper }))) : [];
+
   const pluginResults = await Promise.allSettled(scrapers.map(({ repo, scraper }) => {
+    if (generation !== getResolutionGeneration()) return Promise.resolve([]);
     let warned = false;
+    const isDevice = Boolean(matchNativeProvider(repo.manifestUrl, scraper.id, nativeProviders));
+    if (nativeApiPresent) {
+      // Native approvals/toggles are evaluated by the host on every resolution.
+      // Never let the browser cache bypass a changed device policy.
+      return fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
+        parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined, onWarning, bridge);
+    }
     return cachedStreamLookup(
-      JSON.stringify(['plugin', repo.manifestUrl, scraper.id, scraper.filename, scraper.enabled, scraper.supportedPlatforms,
-        type, pluginId, parts?.[2], parts?.[3], tmdbKey, scraper.settings]),
+      JSON.stringify(['plugin', repo.manifestUrl, scraper.id, isDevice ? 'device' : scraper.filename, scraper.enabled, scraper.supportedPlatforms,
+        type, pluginId, parts?.[2], parts?.[3], isDevice ? '' : tmdbKey, isDevice ? '' : scraper.settings]),
       () => fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
         parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined,
-        (warning) => { warned = true; onWarning?.(warning); }), forceRefresh || !!signal, () => !warned);
+        (warning) => { warned = true; onWarning?.(warning); }, bridge), forceRefresh || !!signal, () => !warned);
   }));
   const pluginStreams = pluginResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   return [...addonStreams, ...pluginStreams];
 }
+
 
 export function playableStream(stream: Stream): stream is Stream & { url: string } {
   // notWebReady is an advisory from the addon. A direct HTTP stream may still work

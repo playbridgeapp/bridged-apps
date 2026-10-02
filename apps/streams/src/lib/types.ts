@@ -145,12 +145,66 @@ export interface LinkedSession {
   provideItems(requestId: string, result: { items: CastItem[]; endOfList: boolean }): Promise<void>;
 }
 
+export interface NativePluginProvider {
+  repoUrl: string;
+  scraperId: string;
+  name: string;
+  enabled: boolean;
+  requiresApproval: boolean;
+}
+
+export interface NativePluginsStatus {
+  available: boolean;
+  enabled: boolean;
+  providers: NativePluginProvider[];
+}
+
+export interface NativeResolveRequest {
+  repoUrl: string;
+  scraperIds: string[];
+  tmdbId: string;
+  mediaType: 'movie' | 'tv';
+  season?: number;
+  episode?: number;
+}
+
+export interface NativeResolveStream {
+  addonName: string;
+  addonUrl: string;
+  url: string;
+  name?: string;
+  title?: string;
+  headers?: Record<string, string>;
+}
+
+export interface NativeResolveResult {
+  streams: NativeResolveStream[];
+  warnings: string[];
+}
+
+export interface NativePluginsBridge {
+  status(): Promise<NativePluginsStatus>;
+  resolve(request: NativeResolveRequest): Promise<NativeResolveResult>;
+  manage(): Promise<{ opened: boolean }>;
+  cancel?(): void;
+}
+
+export interface PlaybridgeBridge {
+  cast(payload: CastItem | Record<string, unknown>): void;
+  linkCast?(payload: Record<string, unknown>): Promise<LinkedSession>;
+  capabilities?: {
+    linkedCast?: boolean;
+    nativePlugins?: number;
+  };
+  plugins?: NativePluginsBridge;
+}
+
 declare global {
   interface Window {
-    playbridge?: {
-      cast(payload: CastItem | Record<string, unknown>): void;
-      linkCast?(payload: Record<string, unknown>): Promise<LinkedSession>;
-      capabilities?: { linkedCast?: boolean };
+    playbridge?: PlaybridgeBridge;
+    __bridgedTest?: {
+      playbridge?: PlaybridgeBridge;
+      [key: string]: unknown;
     };
   }
 }

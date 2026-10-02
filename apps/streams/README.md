@@ -115,7 +115,19 @@ Nuvio plugin code runs in a Web Worker with browser APIs and a 30-second timeout
 
 Browser CORS rules still apply to the repository, scraper code, and sites a scraper fetches. Native-only Nuvio host functions (native fetch, DOM/WASM bridges, debrid services) and other Node modules are unavailable. Scrapers that declare only native platforms are skipped. Use plugin repositories you trust; their code runs locally after installation.
 
+Plugin playback headers are normalized before stream eligibility checks. Client-controlled headers such as `Connection`, `Accept-Encoding`, and `Sec-Fetch-*` are removed so otherwise usable results (including Castle) are not hidden. Supported provider headers, including User-Agent, Referer, Origin, cookies, and authorization, are preserved for playback/casting. Unsupported application headers still prevent eligibility; normalization does not bypass the cast header policy. Successfully fetching a stream does not guarantee its media host permits browser playback.
+
 For IMDb-based catalog IDs, enter your own TMDB API key in Addons. The key stays in this browser's local storage and is sent to TMDB for ID lookup and to the selected scraper worker. Manifest URLs and plugin repository URLs also stay in local storage. Clear site data to remove them.
+
+## Device plugins (PlayBridge Android)
+
+Android FOSS builds offer an optional device resolver, off by default. Play Store builds exclude the native plugin runtime; iOS has no native resolver. When running on a supported PlayBridge Android host (`window.playbridge.capabilities.nativePlugins === 1`), installed native providers can resolve streams using the Android engine without sending JavaScript scraper code, HTTP URLs to fetch, plugin settings, or account secrets across the bridge.
+
+- Choose **Manage device plugins** in Addons to open the shared native Android addon settings. Library uses the same manager while it remains available. Approve installed code and requested provider domains there before resolving streams. Changed code waits for explicit update approval.
+- Scraper resolution prefers the native engine for installed device providers. If native resolution fails, is unapproved, or disabled, it does not fall back to executing web worker scraper code.
+- Device providers are recognized as stream sources even if the web plugin repository list is empty. When both web and device repository entries exist, both applicable enabled toggles are respected without duplicate stream sources.
+- Stream headers returned by native providers are normalized before stream eligibility checks to strip client-controlled headers (`Connection`, `Accept-Encoding`, `Sec-Fetch-*`) while preserving provider requirements (`User-Agent`, `Referer`, `Authorization`).
+
 
 ## Verify
 

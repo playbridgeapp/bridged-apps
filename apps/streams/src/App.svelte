@@ -38,7 +38,8 @@
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioWatchedItem, NuvioSession } from './lib/nuvio';
   import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
-  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video } from './lib/types';
+  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider } from './lib/types';
+  import { hasNativePluginsApi, fetchNativePluginsStatus, manageDevicePlugins, cancelNativeResolution, clearNativeStatusCache } from './lib/native-plugins';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
   import { HashRouter, parseRoute, routeHash } from './lib/router';
   import type { AppRoute, MediaRoute, Tab } from './lib/router';
@@ -160,6 +161,13 @@
   let pluginSaving = '';
   let pluginMutation = 0;
   let pluginSettingsTarget: { repo: PluginRepository; scraperId: string; synced: boolean } | null = null;
+  let nativePluginsSupported = false;
+  let deviceProviders: NativePluginProvider[] = [];
+  let devicePluginsLoading = false;
+  let devicePluginsEnabled = false;
+  let managingDevicePlugins = false;
+  let deviceManagerReturnPending = false;
+  let devicePluginsError = '';
   let tmdbKey = '';
   let tmdbSettings = savedTmdbSettings();
   let tmdbMetadata: TmdbMetadata | null = null;
@@ -387,7 +395,11 @@
       (typeof resource === 'string' ? resource : resource.name) === 'stream'))
       .map((addon) => ({ id: addon.manifestUrl, name: addon.manifest.name })),
     ...plugins.flatMap((repo) => repo.scrapers.filter(browserCompatible)
-      .map((scraper) => ({ id: `${repo.manifestUrl}:${scraper.id}`, name: `${scraper.name} · ${repo.name}` })))
+      .map((scraper) => ({ id: `${repo.manifestUrl}:${scraper.id}`, name: `${scraper.name} · ${repo.name}` }))),
+    ...deviceProviders.map((provider) => ({
+      id: `${provider.repoUrl}:${provider.scraperId}`,
+      name: `${provider.name} · Device plugin`
+    }))
   ].map((provider) => [provider.id, provider])).values()];
   $: visibleRows = rows.filter((row) => !effectiveAddonFilter || row.addon.manifestUrl === effectiveAddonFilter);
   $: discoverSources = rows.filter((row) => !(row.catalog.extra || []).some((extra) => extra.isRequired && !['genre', 'skip'].includes(extra.name)));
@@ -414,6 +426,9 @@
   $: if (tab === 'search' && !submittedSearch && activeDiscoverRequestKey && activeDiscoverRequestKey !== lastDiscoverRequestKey) {
     lastDiscoverRequestKey = activeDiscoverRequestKey;
     void loadDiscoverFeed(true);
+  }
+  $: if (managing) {
+    void refreshDevicePlugins();
   }
   $: featureCandidates = [...new Map(rows.flatMap((row) => row.items)
     .filter((item) => (item.background || item.poster) && (item.type === 'movie' || item.type === 'series'))
@@ -587,16 +602,38 @@
     } else updateDockIndicator();
   }
 
-  onDestroy(() => nuvioMetadataController?.abort());
+  onDestroy(() => {
+    nuvioMetadataController?.abort();
+    cancelNativeResolution();
+  });
 
   onMount(() => {
+    const handleNativePageHide = () => cancelNativeResolution();
+    const handlePluginsReady = () => { clearNativeStatusCache(); void refreshDevicePlugins(); };
+    const handleVisibilityReturn = () => {
+      if (!document.hidden) {
+        clearNativeStatusCache();
+        void refreshDevicePlugins().then(() => {
+          if (deviceManagerReturnPending) {
+            deviceManagerReturnPending = false;
+            refreshAllStreams();
+          }
+        });
+      }
+    };
+    window.addEventListener('pagehide', handleNativePageHide);
+    window.addEventListener('PlayBridgePluginsReady', handlePluginsReady);
+    window.addEventListener('pageshow', handleVisibilityReturn);
+    document.addEventListener('visibilitychange', handleVisibilityReturn);
     router = new HashRouter((route) => {
+      cancelNativeResolution();
       const returningToTab = currentRoute.kind !== 'tab' && route.kind === 'tab' && route.tab === tab;
       rememberRoutePosition();
       currentRoute = route;
       void applyRoute(route, returningToTab);
     });
     bridge = bridgeAvailable();
+    void refreshDevicePlugins();
     updateDockIndicator();
     const dockObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateDockIndicator);
     if (dockElement) {
@@ -683,7 +720,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); };
+    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
   });
 
   async function restoreAddons() {
@@ -2410,6 +2447,44 @@
     }, 110);
   }
 
+  async function refreshDevicePlugins() {
+    if (!hasNativePluginsApi()) {
+      nativePluginsSupported = false;
+      deviceProviders = [];
+      return;
+    }
+    try {
+      devicePluginsLoading = true;
+      const status = await fetchNativePluginsStatus();
+      if (status?.available) {
+        nativePluginsSupported = true;
+        devicePluginsEnabled = status.enabled;
+        deviceProviders = status.providers;
+      } else {
+        nativePluginsSupported = false;
+        deviceProviders = [];
+      }
+    } catch {
+      deviceProviders = [];
+    } finally {
+      devicePluginsLoading = false;
+    }
+  }
+
+  async function handleManageDevicePlugins() {
+    try {
+      managingDevicePlugins = true;
+      devicePluginsError = '';
+      cancelNativeResolution();
+      if (!await manageDevicePlugins()) throw new Error('Could not open device plugin settings.');
+      deviceManagerReturnPending = true;
+    } catch (err) {
+      devicePluginsError = err instanceof Error ? err.message : 'Could not open device plugin settings.';
+    } finally {
+      managingDevicePlugins = false;
+    }
+  }
+
   function streamSources(type: MediaType, id: string): StreamSource[] {
     const addonSources = addons.filter((addon) => supports(addon, 'stream', type, id))
       .map((addon) => ({ key: `addon:${addon.manifestUrl}`, name: addon.manifest.name, addon }));
@@ -2418,7 +2493,29 @@
         value === (type === 'series' ? 'tv' : 'movie') || value === type))
       .map((scraper) => ({ key: `plugin:${repo.manifestUrl}:${scraper.id}`, name: scraper.name,
         plugin: { ...repo, scrapers: [scraper] } })));
-    return [...addonSources, ...pluginSources];
+    const deviceSources = (type === 'movie' || type === 'series' ? deviceProviders : [])
+      .filter((provider) => !pluginSources.some((s) => s.key === `plugin:${provider.repoUrl}:${provider.scraperId}`))
+      .map((provider) => {
+        const matchingWebScraper = plugins.find((r) => r.manifestUrl === provider.repoUrl)?.scrapers.find((s) => s.id === provider.scraperId);
+        const webEnabled = matchingWebScraper ? matchingWebScraper.enabled !== false : true;
+        const deviceEnabled = provider.enabled !== false;
+        return {
+          key: `plugin:${provider.repoUrl}:${provider.scraperId}`,
+          name: provider.name,
+          plugin: {
+            manifestUrl: provider.repoUrl,
+            name: provider.name,
+            scrapers: [{
+              id: provider.scraperId,
+              name: provider.name,
+              filename: matchingWebScraper?.filename || '',
+              supportedTypes: matchingWebScraper?.supportedTypes || ['movie', 'tv', 'series'],
+              enabled: webEnabled && deviceEnabled
+            }]
+          }
+        };
+      });
+    return [...addonSources, ...pluginSources, ...deviceSources];
   }
 
   async function refreshStreamSource(source: StreamSource, type: MediaType, id: string, request: number, forceRefresh = false,
@@ -2427,7 +2524,7 @@
     let warning = '';
     try {
       const result = await fetchStreams(source.addon ? [source.addon] : [], type, id,
-        source.plugin ? [source.plugin] : [], tmdbKey, (value) => { warning = warning ? `${warning} ${value}` : value; }, undefined, forceRefresh);
+        source.plugin ? [source.plugin] : [], tmdbKey, (value) => { warning = warning ? `${warning} ${value}` : value; }, undefined, forceRefresh, undefined, false);
       if (request !== streamRequest) return;
       sourceStreams = { ...sourceStreams, [source.key]: result };
       sourceWarnings = { ...sourceWarnings, [source.key]: warning };
@@ -2445,6 +2542,10 @@
 
   async function loadStreams(type: MediaType, id: string, forceRefresh = false, onUpdate?: () => void) {
     const request = ++streamRequest;
+    if (hasNativePluginsApi()) {
+      await refreshDevicePlugins();
+      if (request !== streamRequest) return;
+    }
     const previousFilter = forceRefresh ? selectedStreamSource : '';
     streams = [];
     sourceError = '';
@@ -2976,7 +3077,35 @@
       {/if}
       <div class="installed-label">ADDED HERE · {localAddons.length}</div>
       {#each localAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="local" {index} total={localAddons.length} busy={addonWorking !== ''} onToggle={(enabled) => void setAddonEnabled('local', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('local', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('local', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('local', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'local', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
-      {#if !localAddons.length}<div class="row-empty">No addons added directly in Bridged Streams.</div>{/if}
+      {#if nativePluginsSupported}
+        <div class="installed-label">DEVICE PLUGINS · {deviceProviders.length}</div>
+        {#if !devicePluginsEnabled}<p class="panel-copy">Device plugins are turned off. Enable them in device plugin settings to find streams.</p>{/if}
+        <p class="panel-copy">Device plugins are configured in device settings and stay on this device.</p>
+        <div class="device-plugin-actions">
+          <button type="button" class="sync-button" onclick={() => void handleManageDevicePlugins()} disabled={managingDevicePlugins}>
+            {#if managingDevicePlugins}<LoaderCircle size={16} class="spin" />{:else}<Settings2 size={16} />{/if} Manage device plugins
+          </button>
+        </div>
+        {#if devicePluginsError}<p class="error-message" role="alert">{devicePluginsError}</p>{/if}
+        {#if deviceProviders.length > 0}
+          <div class="plugin-repo">
+            {#each deviceProviders as provider (provider.repoUrl + ':' + provider.scraperId)}
+              <div class="scraper-row">
+                <span>{provider.name} <small>{provider.repoUrl}</small></span>
+                {#if provider.requiresApproval}
+                  <small>Requires approval</small>
+                {:else if !devicePluginsEnabled || !provider.enabled}
+                  <small>Disabled on device</small>
+                {:else}
+                  <small>Active on device</small>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <div class="row-empty">No device plugins installed. Choose "Manage device plugins" to install or approve plugins on this device.</div>
+        {/if}
+      {/if}
       <div class="installed-label">NUVIO PLUGIN REPOSITORIES · {plugins.length}</div>
       <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addPlugin(); }}><input type="url" bind:value={pluginInput} placeholder="https://plugins.example/manifest.json" aria-label="Nuvio plugin repository URL" required /><button type="submit" disabled={addingPlugin}>{#if addingPlugin}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
       {#if nuvioSession && nuvioProfileReady}<label class="sync-choice"><input type="checkbox" bind:checked={syncNewPlugin} /> Install new plugin repositories in my Nuvio profile</label>{/if}
@@ -3117,7 +3246,7 @@
     <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Choose another stream</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
     <div class="player-stage">
       {#if playerReady}
-        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={JSON.stringify(playing.stream.headers || {})} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('playing')} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
+        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={playing.stream.headers} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('playing')} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
       {:else if nativePlayerFallback}
         <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
         <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('native playing')} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>
