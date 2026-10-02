@@ -2,7 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
-  import { ArrowLeft, ArrowRight, Bookmark, Cast, Check, ChevronDown, Clapperboard, Film, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
+  import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronRight, ChevronDown, Clapperboard, Film, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
@@ -29,7 +29,7 @@
   import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedNuvioWatched, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveNuvioWatched, saveStremioLibrary } from './lib/startup-cache';
   import { appendPlaybackDiagnostic, clearPlaybackDiagnostics, readPlaybackDiagnostics, safeDiagnosticText } from './lib/playback-diagnostics';
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
-  import { bridgeAvailable, castMovie, directCast, lazyCastSeries, stopLinkedCast } from './lib/cast';
+  import { bridgeAvailable, castMovie, lazyCastSeries, playbackBridge, stopLinkedCast } from './lib/cast';
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
   import { NUVIO_COMPLETION_FRACTION, nuvioTimestamp, nuvioSeriesAction, nuvioWatchingItems, nuvioWatchingTargets, watchingCaption } from './lib/nuvio-watching';
   import type { NuvioWatchingTarget } from './lib/nuvio-watching';
@@ -38,7 +38,7 @@
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioWatchedItem, NuvioSession } from './lib/nuvio';
   import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
-  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider } from './lib/types';
+  import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider, PlaybackDestination } from './lib/types';
   import { hasNativePluginsApi, fetchNativePluginsStatus, manageDevicePlugins, cancelNativeResolution, clearNativeStatusCache } from './lib/native-plugins';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
   import { HashRouter, parseRoute, routeHash } from './lib/router';
@@ -196,8 +196,7 @@
   type PlaybackChoice = { stream: Stream; selection: StreamSelectionContext };
   const playerMemory = new Map<string, PlaybackChoice>();
   let streamSelection = savedStreamSelection();
-  let pendingAutoAction: { type: MediaType; id: string; videoId?: string; action: 'play' | 'cast' } | null = null;
-  let pendingEpisodeAction: 'play' | 'cast' = 'play';
+  let pendingAutoAction: { type: MediaType; id: string; videoId?: string; destinationId?: string } | null = null;
   let streamActionRequest = 0;
   const routePositions = new Map<string, { window: number; panel: number; episodes: number }>();
   let navigationRequest = 0;
@@ -278,6 +277,52 @@
     }, 5000) : undefined;
   }
   let bridge = false;
+  let playbackDestination: PlaybackDestination | null = null;
+  let destinationBusy = false;
+  let destinationRequest = 0;
+  let destinationRefreshing = false;
+  let destinationLookupFailed = false;
+  let nativePlayBusy = false;
+  let failedPlayback: { stream: Stream; selection: StreamSelectionContext; metaId: string; videoId?: string } | null = null;
+  $: destinationSupported = bridge && !!playbackBridge()?.play && !!playbackBridge()?.capabilities?.playback;
+  $: destinationPending = destinationSupported && !!playbackBridge()?.getPlaybackDestination && !playbackDestination && !destinationLookupFailed;
+  $: destinationName = playbackDestination?.kind === 'local' ? 'this device' : playbackDestination?.name || 'this device';
+
+  async function refreshPlaybackDestination() {
+    if (destinationBusy || destinationRefreshing || document.hidden) return;
+    bridge = bridgeAvailable();
+    if (!bridge) { playbackDestination = null; return; }
+    const api = playbackBridge();
+    if (!api?.getPlaybackDestination || !api.capabilities?.playback) return;
+    const request = ++destinationRequest;
+    destinationRefreshing = true;
+    try {
+      const response = await api.getPlaybackDestination();
+      if (request === destinationRequest) { playbackDestination = response.destination; destinationLookupFailed = false; }
+    } catch { if (request === destinationRequest) destinationLookupFailed = true; }
+    finally { destinationRefreshing = false; }
+  }
+
+  async function choosePlaybackDestination(local = false) {
+    if (destinationBusy || nativePlayBusy) return;
+    const api = playbackBridge();
+    if (!api?.choosePlaybackDestination) { sourceError = 'Update PlayBridge to choose a playback destination.'; return; }
+    destinationBusy = true;
+    ++destinationRequest;
+    try {
+      const response = await api.choosePlaybackDestination(local ? { destinationId: 'this-device' } : undefined);
+      playbackDestination = response.destination;
+      destinationLookupFailed = false;
+      sourceError = '';
+      const retry = failedPlayback;
+      if (local && retry && selected?.id === retry.metaId && episode?.id === retry.videoId) {
+        sourceError = '';
+        await playStream(retry.stream, retry.selection, response.destination.id);
+      }
+    } catch (error) { sourceError = message(error); }
+    finally { destinationBusy = false; }
+  }
+
   let playing: { meta: Meta; stream: Stream; selection: StreamSelectionContext; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
   let playerReady = false;
   let playerLoading = false;
@@ -612,6 +657,7 @@
     const handlePluginsReady = () => { clearNativeStatusCache(); void refreshDevicePlugins(); };
     const handleVisibilityReturn = () => {
       if (!document.hidden) {
+        void refreshPlaybackDestination();
         clearNativeStatusCache();
         void refreshDevicePlugins().then(() => {
           if (deviceManagerReturnPending) {
@@ -633,6 +679,7 @@
       void applyRoute(route, returningToTab);
     });
     bridge = bridgeAvailable();
+    void refreshPlaybackDestination();
     void refreshDevicePlugins();
     updateDockIndicator();
     const dockObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateDockIndicator);
@@ -695,7 +742,7 @@
     const refreshSettings = savedCatalogRefresh();
     autoRefreshCatalogs = refreshSettings.auto;
     catalogRefreshInterval = refreshSettings.intervalMinutes;
-    const detector = window.setInterval(() => { bridge = bridgeAvailable(); }, 1000);
+    const detector = window.setInterval(() => { void refreshPlaybackDestination(); }, 2000);
     if (addons.length) void loadCatalogs();
     restoreReady = Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio(), restorePlugins()])
       .then(() => { startupLoading = false; restorationComplete = true; });
@@ -2140,7 +2187,7 @@
                 && automaticAction.type === route.type && automaticAction.id === route.id
                 && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
                 && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
-                void startPreferredStream(automaticAction.action, true);
+                void startPreferredStream(true, automaticAction.destinationId);
               }
             });
         }
@@ -2162,7 +2209,7 @@
           && automaticAction.type === route.type && automaticAction.id === route.id
           && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
           && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
-          await startPreferredStream(automaticAction.action);
+          await startPreferredStream(false, automaticAction.destinationId);
         }
       }
     }
@@ -2189,7 +2236,7 @@
     previewMemory.set(`${preview.type}:${preview.id}`, preview);
     const nextUp = fromContinue ? (preview as MetaPreview & { nextUp?: Video }).nextUp : undefined;
     pendingAutoAction = streamSelection.enabled && fromContinue
-      ? { type: preview.type, id: preview.id, videoId: nextUp?.id, action: 'play' } : null;
+      ? { type: preview.type, id: preview.id, videoId: nextUp?.id, destinationId: playbackDestination?.id } : null;
     router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id,
       ...(nextUp ? { videoId: nextUp.id, season: nextUp.season, episode: nextUp.episode } : {}) });
   }
@@ -2198,6 +2245,7 @@
     const fromContinue = route.kind !== 'detail';
     const request = ++detailRequest;
     selected = preview;
+    failedPlayback = null;
     streamScreen = fromContinue;
     detailError = '';
     streams = [];
@@ -2334,7 +2382,6 @@
     loadingStreams = false;
     restoringStreamSources = false;
     loadingDetail = false;
-    pendingEpisodeAction = 'play';
   }
 
   function navigate(next: Tab) {
@@ -2364,24 +2411,20 @@
     document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  async function detailPlay(action: 'play' | 'cast' = 'play') {
-    if (!selected || loadingDetail) return;
+  async function detailPlay() {
+    if (!selected || loadingDetail || nativePlayBusy) return;
     if (selected.type === 'series') {
-      if (episode && (detailResumeMs > 0 || detailNextUp || action === 'cast')) {
-        openStreamScreen(episode, action);
-        return;
-      }
-      pendingEpisodeAction = action;
+      if (episode && (detailResumeMs > 0 || detailNextUp)) { openStreamScreen(episode); return; }
       detailJump('detail-episodes');
       return;
     }
-    openStreamScreen(null, action);
+    openStreamScreen(null);
   }
 
-  function openStreamScreen(video: Video | null, action: 'play' | 'cast' = pendingEpisodeAction) {
+  function openStreamScreen(video: Video | null) {
     if (!selected) return;
-    pendingAutoAction = streamSelection.enabled ? { type: selected.type, id: selected.id, videoId: video?.id, action } : null;
-    // Preserve the selected episode and season in the detail history entry as well.
+    pendingAutoAction = streamSelection.enabled ? { type: selected.type, id: selected.id, videoId: video?.id,
+      destinationId: playbackDestination?.id } : null;
     replaceRoute(mediaRoute('detail', video));
     router?.push(mediaRoute('streams', video));
   }
@@ -2589,7 +2632,7 @@
     saveStreamSelection(preferences);
   }
 
-  async function startPreferredStream(action: 'play' | 'cast', allowPending = false) {
+  async function startPreferredStream(allowPending = false, destinationId = playbackDestination?.id) {
     if (!selected || loadingDetail || (loadingStreams && !allowPending)) return;
     const stream = loadingStreams
       ? selectReadyPreferredStream(activeStreamSources.map((source) => ({ id: source.key.replace(/^(addon|plugin):/, ''),
@@ -2602,35 +2645,42 @@
       return;
     }
     const selection = selectionContext(stream, streamSelection, false);
-    if (action === 'cast') await cast(stream, selection);
-    else await playInBrowser(stream, true, selection);
+    await playStream(stream, selection, destinationId);
   }
 
-  async function cast(stream: Stream, selection = selectionContext(stream, streamSelection)) {
-    if (!selected) return;
+  async function playStream(stream: Stream, selection = selectionContext(stream, streamSelection), destinationId = playbackDestination?.id) {
+    if (!selected || nativePlayBusy || playerLoading) return;
+    if (!bridgeAvailable()) { await playInBrowser(stream, true, selection); return; }
+    const meta = selected;
+    const chosenEpisode = episode;
+    const navigation = routeRequest;
+    const api = playbackBridge();
+    failedPlayback = null;
+    sourceError = '';
+    nativePlayBusy = true;
     ++streamActionRequest;
     try {
-      if (selected.type === 'series') {
-        if (!episode) throw new Error('Choose an episode first.');
-        const meta = selected;
-        await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [episode], episode, stream, addons, plugins, tmdbKey,
-          resumePositionMs(meta, episode, accountLibrary, nuvioProgress, nuvioWatched),
-          (value) => { showStatus(value); }, (progress) => reportWatchProgress(meta, progress), selection);
-      } else if (selected.type === 'movie') {
-        const meta = selected;
-        const tracked = await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress, nuvioWatched),
-          (progress) => reportWatchProgress(meta, progress));
-        showStatus(tracked ? `Casting ${meta.name} · watch progress sync is on.`
-          : `Casting ${meta.name} · progress sync is unavailable for this target.`);
+      if (!api?.play || !api.capabilities?.playback) throw new Error('Update PlayBridge to use playback destinations.');
+      if (!destinationId) throw new Error('The playback destination is not ready. Choose a device and try again.');
+      const options = { destinationId, addons, canStart: () => navigation === routeRequest && selected?.id === meta.id };
+      if (meta.type === 'series') {
+        if (!chosenEpisode) throw new Error('Choose an episode first.');
+        await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [chosenEpisode], chosenEpisode, stream, addons, plugins, tmdbKey,
+          resumePositionMs(meta, chosenEpisode, accountLibrary, nuvioProgress, nuvioWatched),
+          showStatus, (progress) => reportWatchProgress(meta, progress), selection, options);
       } else {
-        await stopLinkedCast();
-        directCast(selected, stream);
-        showStatus(`Casting ${selected.name}`);
+        await castMovie(meta, stream, resumePositionMs(meta, null, accountLibrary, nuvioProgress, nuvioWatched),
+          (progress) => reportWatchProgress(meta, progress), options);
+        showStatus(`Playing ${meta.name}`);
       }
-      sourceError = '';
     } catch (error) {
-      sourceError = message(error);
-    }
+      if (navigation === routeRequest && selected?.id === meta.id) {
+        const code = (error as { code?: string })?.code;
+        sourceError = code === 'receiver_changed' ? 'The selected receiver disconnected or changed. Reconnect, choose a device, or play on this device.'
+          : code === 'connect_failed' ? 'Cannot reach the selected device. Reconnect or play on this device.' : message(error);
+        failedPlayback = api?.play && api.capabilities?.playback ? { stream, selection, metaId: meta.id, videoId: chosenEpisode?.id } : null;
+      }
+    } finally { nativePlayBusy = false; void refreshPlaybackDestination(); }
   }
 
   async function playInBrowser(stream: Stream, recordHistory = true, selection = selectionContext(stream, streamSelection)) {
@@ -2672,30 +2722,6 @@
     }
     const video = meta.type === 'series' ? chosenEpisode : null;
     playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress, nuvioWatched), resumeApplied: false };
-  }
-
-  async function castPlaying() {
-    const current = playing;
-    if (!current) return;
-    try {
-      if (current.meta.type === 'series') {
-        if (!current.video) throw new Error('Choose an episode first.');
-        await lazyCastSeries(current.meta, current.meta.videos?.length ? current.meta.videos : [current.video], current.video, current.stream, addons, plugins, tmdbKey,
-          browserPositionMs() || resumePositionMs(current.meta, current.video, accountLibrary, nuvioProgress, nuvioWatched),
-          (value) => { showStatus(value); }, (progress) => reportWatchProgress(current.meta, progress), current.selection);
-      } else if (current.meta.type === 'movie') {
-        const tracked = await castMovie(current.meta, current.stream,
-          browserPositionMs() || resumePositionMs(current.meta, null, accountLibrary, nuvioProgress, nuvioWatched),
-          (progress) => reportWatchProgress(current.meta, progress));
-        showStatus(tracked ? `Casting ${current.meta.name} · watch progress sync is on.`
-          : `Casting ${current.meta.name} · progress sync is unavailable for this target.`);
-      } else {
-        await stopLinkedCast();
-        directCast(current.meta, current.stream);
-        showStatus(`Casting ${current.meta.name}`);
-      }
-      closePlayer();
-    } catch (error) { playerError = message(error); }
   }
 
   function closePlayer() {
@@ -2811,6 +2837,19 @@
     } catch { playerError = 'Could not load the next episode.'; }
   }
 </script>
+
+{#snippet destinationRow()}
+  <div class="playback-destination">
+    {#if bridge}
+      <button onclick={() => void choosePlaybackDestination()} disabled={destinationBusy || nativePlayBusy}
+        aria-label={!destinationSupported ? 'Update PlayBridge to choose a destination' : destinationPending ? 'Checking playback destination. Change device' : destinationLookupFailed && !playbackDestination ? 'Playback destination unavailable. Retry' : `Playback destination: ${destinationName}. Change device`}>
+        <span>{#if !destinationSupported}Update PlayBridge to choose a destination{:else if destinationPending}Checking destination…{:else if destinationLookupFailed && !playbackDestination}Destination unavailable · Retry{:else}Plays on {destinationName}{/if}{#if playbackDestination && !playbackDestination.connected}<span class="destination-offline"> · Disconnected</span>{/if}</span><ChevronRight size={15} aria-hidden="true" />
+      </button>
+    {:else}<span>Plays on this device</span>{/if}
+    {#if sourceError && !streamScreen}<p class="destination-error" role="alert">{sourceError}</p>{/if}
+  </div>
+{/snippet}
+
 
 <svelte:head>
   <title>{selected ? detailIdentityReady ? `${selected.name} · Bridged Streams` : 'Loading title · Bridged Streams' : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
@@ -2983,7 +3022,7 @@
   </div>
 {/if}
 
-{#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Cast size={17} /> {status}<button onclick={() => showStatus('')} aria-label="Dismiss"><X size={16} /></button></div>{/if}
+{#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Play size={17} /> {status}<button onclick={() => showStatus('')} aria-label="Dismiss"><X size={16} /></button></div>{/if}
 
 {#if accountPanel}
   <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
@@ -3168,7 +3207,8 @@
         {#if selected.type === 'series' && !episode && !loadingDetail}<button class="stream-choose-episode" onclick={() => router?.push(mediaRoute('detail'))}>Choose an episode <ArrowRight size={17} /></button>{/if}
         {#if detailIdentityReady && (selected.type !== 'series' || episode)}
           <div class="stream-screen-heading"><div><span class="section-type">AVAILABLE SOURCES</span><h2>Streams <small>{visiblePlayable.length}</small></h2></div></div>
-          {#if streamSelection.enabled}<div class="stream-auto-actions"><button class="watch-button" onclick={() => void startPreferredStream('play')} disabled={loadingDetail || loadingStreams || playerLoading}><Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume best match' : 'Play best match'}</button><button class="cast-button" onclick={() => void startPreferredStream('cast')} disabled={!bridge || loadingDetail || loadingStreams || playerLoading} title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast best match</button></div>{/if}
+          {@render destinationRow()}
+          {#if streamSelection.enabled}<div class="stream-auto-actions"><button class="watch-button" onclick={() => void startPreferredStream()} disabled={loadingDetail || loadingStreams || playerLoading || nativePlayBusy || destinationBusy || destinationPending}><Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume best match' : 'Play best match'}</button></div>{/if}
           <div class="stream-provider-row" role="group" aria-label="Filter and refresh stream sources">
             <button class="stream-refresh-all" onclick={refreshAllStreams} disabled={loadingDetail} aria-label="Refresh all streams" title="Refresh all streams"><RefreshCw size={17} class={loadingStreams ? 'spin' : ''} /></button>
             <button class:active={!selectedStreamSource} class="stream-provider-chip" onclick={() => selectedStreamSource = ''}>All <small>{playable.length}</small></button>
@@ -3179,19 +3219,19 @@
               </div>
             {/each}
           </div>
-          {#if sourceError}<div class="error-message" role="alert">{sourceError}</div>{/if}
+          {#if sourceError}<div class="error-message" role="alert">{sourceError}{#if failedPlayback}<div class="playback-recovery"><button onclick={() => void choosePlaybackDestination()} disabled={destinationBusy || nativePlayBusy}>Reconnect</button><button onclick={() => void choosePlaybackDestination(true)} disabled={destinationBusy || nativePlayBusy}>Play on this device</button></div>{/if}</div>{/if}
           {#each activeStreamSources.filter((source) => !selectedStreamSource || selectedStreamSource === source.key) as source (source.key)}
             {#if sourceWarnings[source.key]}<p class="stream-source-warning">{sourceWarnings[source.key]}</p>{/if}
           {/each}
           {#if visibleSourcesLoading && !visiblePlayable.length}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Finding streams…</div>{/if}
           <div class="stream-results">
             {#each visiblePlayable as stream, index (`${stream.addonUrl}:${stream.url}:${index}`)}
-              <div class="stream-result" style:--reveal-index={Math.min(index, 8)}><div class="stream-result-copy"><strong>{streamHeading(stream, index)}</strong>{#if streamDetails(stream, streamHeading(stream, index))}<p>{streamDetails(stream, streamHeading(stream, index))}</p>{/if}<small>{stream.addonName}</small>{#if streamSelection.sortByPreference && matchesAllStreamPreferences(stream, streamSelection)}<span class="stream-match-badge">Matches preferences</span>{/if}</div><div class="source-actions"><button class="watch-button" onclick={() => void playInBrowser(stream)} disabled={playerLoading}>{#if playerLoading}<LoaderCircle size={17} class="spin" /> Opening…{:else}<Play size={17} fill="currentColor" /> {stream.behaviorHints?.notWebReady ? 'Try in browser' : 'Play'}{/if}</button><button class="cast-button" onclick={() => void cast(stream)} disabled={!bridge} title={bridge ? 'Cast with PlayBridge' : 'Open in PlayBridge to cast'}><Cast size={17} /> Cast</button></div></div>
+              <div class="stream-result" style:--reveal-index={Math.min(index, 8)}><div class="stream-result-copy"><strong>{streamHeading(stream, index)}</strong>{#if streamDetails(stream, streamHeading(stream, index))}<p>{streamDetails(stream, streamHeading(stream, index))}</p>{/if}<small>{stream.addonName}</small>{#if streamSelection.sortByPreference && matchesAllStreamPreferences(stream, streamSelection)}<span class="stream-match-badge">Matches preferences</span>{/if}</div><div class="source-actions"><button class="watch-button" onclick={() => void playStream(stream)} disabled={playerLoading || nativePlayBusy || destinationBusy || destinationPending}>{#if playerLoading || nativePlayBusy}<LoaderCircle size={17} class="spin" /> Opening…{:else}<Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume' : 'Play'}{/if}</button></div></div>
             {/each}
           </div>
           {#if !visibleSourcesLoading && !visiblePlayable.length}<div class="row-empty">No direct HTTP streams found{selectedStreamSource ? ' from this source' : ''}. Try refreshing or choose another source.</div>{/if}
           {#if unavailable && !selectedStreamSource}<p class="stream-note">{unavailable} source{unavailable === 1 ? '' : 's'} need torrent, debrid, or proxy resolution before browser playback or casting.</p>{/if}
-          {#if browserUncertain && !selectedStreamSource}<p class="stream-note">{browserUncertain} source{browserUncertain === 1 ? ' is' : 's are'} marked as not web ready. Browser playback may fail.</p>{/if}
+          {#if browserUncertain && !selectedStreamSource && !bridge}<p class="stream-note">{browserUncertain} source{browserUncertain === 1 ? ' is' : 's are'} marked as not web ready. Browser playback may fail.</p>{/if}
         {/if}
       </div>
     </div>
@@ -3208,7 +3248,8 @@
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions">{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if streamSelection.enabled}<button class="detail-action-icon" onclick={() => void detailPlay('cast')} disabled={loadingDetail || !bridge} aria-label="Cast with auto-selection" title={bridge ? 'Choose a matching stream and cast' : 'Open in PlayBridge to cast'}><Cast size={21} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions">{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail || nativePlayBusy || destinationBusy || destinationPending}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          {@render destinationRow()}
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10{selected.ratingSource ? ` · ${selected.ratingSource}` : ''}</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}{#if selected.ageRating}<span>{selected.ageRating}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
           {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
           {/if}
@@ -3221,7 +3262,7 @@
         {#if enrichmentError}<p class="tmdb-detail-status">{enrichmentError} <button class="text-action" onclick={() => { const base = selected && detailMemory.get(`${selected.type}:${selected.id}`); if (base) { lastEnrichmentSeasonKey = ''; void enrichDetail(base); } }}>Retry TMDB details</button></p>{/if}
         {#if detailError}<div class="error-message">{detailError}</div>{/if}
         {#if detailIdentityReady && selected.type === 'series'}
-          <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2>{#if pendingEpisodeAction === 'cast'}<p class="episode-action-hint">Choose an episode to cast. <button onclick={() => pendingEpisodeAction = 'play'}>Cancel</button></p>{/if}</div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
+          <section id="detail-episodes" class="detail-section"><div class="section-heading"><div><span class="section-type">EXPLORE THE STORY</span><h2>Episodes</h2></div>{#if seasons.length}<div class="season-picker"><button class="season-trigger" onclick={() => void openSeasonPicker()} aria-expanded={seasonPickerOpen} aria-controls="season-options"><span>{season === 0 ? 'Specials' : `Season ${season}`}</span><ChevronDown size={17} class={seasonPickerOpen ? 'flipped' : ''} /></button>{#if seasonPickerOpen}<div id="season-options" class="season-popover" role="group" aria-label="Choose season">{#each seasonSummaries as item}<button class:active={item.value === season} class="season-option" onclick={() => chooseSeason(item.value)}><span class="season-option-art">{#if item.image}<img src={item.image} alt="" loading="lazy" />{:else}<Tv size={19} />{/if}</span><span class="season-option-copy"><strong>{item.label}</strong><small>{item.count} {item.count === 1 ? 'episode' : 'episodes'}</small></span></button>{/each}</div>{/if}</div>{/if}</div>
           {#if episodes.length && nuvioSession && nuvioProfileReady}<div class="season-watching-actions"><button disabled={!nuvioWatchingReady || !nuvioHistoryReady || nuvioSyncing || nuvioWatchingSyncing} onclick={() => selected && changeWatched(selected, episodes, true)}>Mark season watched</button><button disabled={!nuvioWatchingReady || !nuvioHistoryReady || nuvioSyncing || nuvioWatchingSyncing} onclick={() => selected && changeWatched(selected, episodes, false)}>Mark season unwatched</button></div>{/if}
           {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<div class="episode-card"><button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}{#if video.runtime}<small>{video.runtime} min</small>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{#if nuvioSession && nuvioProfileReady}<button class="episode-watching-action" aria-label={`Watching options for S${video.season}E${video.episode}`} onclick={() => selected && openWatchingOptions(selected, video)}>{episodeWatched(selected, video, nuvioProgress, nuvioWatched) ? '✓ Watched' : 'Watching options'}</button>{/if}</div>{/each}</div>{:else if !loadingDetail}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
@@ -3252,7 +3293,7 @@
         <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('native playing')} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>
       {/if}
     </div>
-    <div class="player-bottom"><div><span class="eyebrow">PLAYING IN YOUR BROWSER</span><h2>{playing.video?.title || playing.meta.name}</h2><p>{playing.stream.name || playing.stream.title || playing.stream.addonName} · {playing.stream.addonName}</p></div>{#if bridge}<button class="cast-button" onclick={() => void castPlaying()}><Cast size={17} /> Cast to PlayBridge</button>{/if}</div>
+    <div class="player-bottom"><div><span class="eyebrow">PLAYING IN YOUR BROWSER</span><h2>{playing.video?.title || playing.meta.name}</h2><p>{playing.stream.name || playing.stream.title || playing.stream.addonName} · {playing.stream.addonName}</p></div></div>
     <PlayerSubtitles player={playerElement} {addons} type={playing.meta.type} videoId={playing.video?.id || playing.meta.id} />
     {#if playerError}<p class="player-error" role="alert">{playerError}</p>{/if}
     {#if playerError}<details class="playback-diagnostics player-diagnostics"><summary>Playback diagnostics <span>Open report</span></summary><p>Run an engine check, then copy the report. Stream URLs, headers, and account credentials are omitted.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>{/if}

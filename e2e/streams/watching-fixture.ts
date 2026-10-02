@@ -78,7 +78,7 @@ export async function browserPlayer(page: Page) {
   await page.getByRole('button', { name: 'View details for Test Series', exact: true }).first().click();
   // The first card is Continue Watching and goes directly to the saved episode.
   await expect(page.getByRole('dialog', { name: 'Streams for Test Series' })).toBeVisible();
-  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.locator('.stream-result .watch-button').click();
   const player = page.getByRole('dialog', { name: 'Now playing Test Series' });
   await expect(player).toBeVisible(); return player;
 }

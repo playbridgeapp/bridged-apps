@@ -1,13 +1,41 @@
+import { fetchAddonSubtitles } from './subtitles';
 import { fetchStreams, playableStream } from './addons';
 import { savedStreamSelection, selectionContext, selectNextStream } from './stream-selection';
 import type { StreamSelectionContext } from './stream-selection';
 import type { CastItem, InstalledAddon, LinkedSession, Meta, PluginRepository, Stream, Video } from './types';
 
+export function playbackBridge() {
+  return typeof window === 'undefined' ? undefined : window.__bridgedTest?.playbridge ?? window.playbridge;
+}
+
+export type PlaybackOptions = { destinationId: string; addons: InstalledAddon[]; canStart?: () => boolean };
+
+async function addSubtitles(item: CastItem, meta: Meta, options?: PlaybackOptions): Promise<CastItem> {
+  if (!options) return item;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const { tracks } = await fetchAddonSubtitles(options.addons, meta.type, item.id, controller.signal);
+    return { ...item, subtitleResources: tracks.slice(0, 16).map(({ url, language, label, headers }) => ({ url, language, label, ...(headers ? { headers } : {}) })) };
+  } finally { clearTimeout(timeout); }
+}
+
+function openPlayback(payload: Record<string, unknown>, options?: PlaybackOptions): Promise<LinkedSession> {
+  const bridge = playbackBridge();
+  if (options) {
+    if (options.canStart && !options.canStart()) throw new Error('Playback was cancelled because the selected title changed.');
+    if (!bridge?.play || !bridge.capabilities?.playback) throw new Error('Update PlayBridge to use playback destinations.');
+    return bridge.play({ ...payload, destinationId: options.destinationId });
+  }
+  return bridge!.linkCast!(payload);
+}
+
 let activeSession: LinkedSession | null = null;
 let generation = 0;
 
 export function bridgeAvailable(): boolean {
-  return typeof window !== 'undefined' && typeof window.playbridge?.cast === 'function';
+  const bridge = playbackBridge();
+  return typeof bridge?.cast === 'function' || typeof bridge?.play === 'function';
 }
 
 function metadata(meta: Meta, video?: Video): Record<string, unknown> {
@@ -52,7 +80,7 @@ function castItem(meta: Meta, stream: Stream & { url: string }, video?: Video, s
 export function directCast(meta: Meta, stream: Stream, startPositionMs = 0): void {
   if (!playableStream(stream)) throw new Error('This stream needs a native resolver or proxy before it can be cast.');
   if (!bridgeAvailable()) throw new Error('Open Bridged Streams in PlayBridge to cast.');
-  window.playbridge!.cast(castItem(meta, stream, undefined, startPositionMs));
+  playbackBridge()!.cast(castItem(meta, stream, undefined, startPositionMs));
 }
 
 export async function stopLinkedCast(): Promise<void> {
@@ -79,25 +107,25 @@ function trackSessionProgress(session: LinkedSession,
     }
   });
   session.addEventListener('ended', () => {
-    if (latest) onProgress?.({ ...latest, state: 'stopped' });
+    if (latest) onProgress?.({ ...latest, state: latest.state === 'ended' ? 'ended' : 'stopped' });
   });
 }
 
 export async function castMovie(meta: Meta, stream: Stream, startPositionMs: number,
-  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void): Promise<boolean> {
+  onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void, options?: PlaybackOptions): Promise<boolean> {
   if (!playableStream(stream)) throw new Error('Choose a direct HTTP stream for casting.');
   await stopLinkedCast();
-  if (!window.playbridge?.linkCast || !window.playbridge.capabilities?.linkedCast) {
+  if (!options && (!playbackBridge()?.linkCast || !playbackBridge()?.capabilities?.linkedCast)) {
     directCast(meta, stream, startPositionMs);
     return false;
   }
   const thisGeneration = generation;
-  const item = castItem(meta, stream, undefined, startPositionMs);
+  const item = await addSubtitles(castItem(meta, stream, undefined, startPositionMs), meta, options);
   let session: LinkedSession;
   try {
-    session = await window.playbridge.linkCast({ items: [item], startIndex: 0, metadata: metadata(meta) });
+    session = await openPlayback({ items: [item], startIndex: 0, metadata: metadata(meta) }, options);
   } catch (error) {
-    if ((error as { code?: string })?.code !== 'unsupported_target') throw error;
+    if (options || (error as { code?: string })?.code !== 'unsupported_target') throw error;
     directCast(meta, stream, startPositionMs);
     return false;
   }
@@ -128,10 +156,11 @@ export async function lazyCastSeries(
   startPositionMs: number,
   onStatus: (message: string) => void,
   onProgress?: (progress: { videoId: string; positionMs: number; durationMs: number; state: string }) => void,
-  selection: StreamSelectionContext = selectionContext(selectedStream, savedStreamSelection())
+  selection: StreamSelectionContext = selectionContext(selectedStream, savedStreamSelection()),
+  options?: PlaybackOptions
 ): Promise<void> {
   if (!playableStream(selectedStream)) throw new Error('Choose a direct HTTP stream for linked casting.');
-  if (!window.playbridge?.linkCast || !window.playbridge.capabilities?.linkedCast) {
+  if (!options && (!playbackBridge()?.linkCast || !playbackBridge()?.capabilities?.linkedCast)) {
     throw new Error('This PlayBridge version does not support linked casting.');
   }
   const ordered = [...videos]
@@ -141,8 +170,8 @@ export async function lazyCastSeries(
   if (start < 0) throw new Error('Episode is missing from the series metadata.');
   await stopLinkedCast();
   const thisGeneration = generation;
-  const first = castItem(meta, selectedStream, selectedVideo, startPositionMs);
-  const session = await window.playbridge.linkCast({ items: [first], startIndex: 0, metadata: metadata(meta) });
+  const first = await addSubtitles(castItem(meta, selectedStream, selectedVideo, startPositionMs), meta, options);
+  const session = await openPlayback({ items: [first], startIndex: 0, metadata: metadata(meta) }, options);
   if (thisGeneration !== generation) {
     await session.unlink();
     return;
@@ -151,7 +180,7 @@ export async function lazyCastSeries(
   let cursor = start + 1;
   let pending = false;
   const completedRequests = new Set<string>();
-  onStatus(`Linked cast started · ${first.title}`);
+  onStatus(`Playback started · ${first.title}`);
   session.addEventListener('needitems', async (event) => {
     if (pending || activeSession !== session) return;
     const requestId = event.detail?.requestId;
@@ -170,7 +199,7 @@ export async function lazyCastSeries(
           onStatus(`No matching playable stream for S${video.season}E${video.episode}. Queue ends here.`);
           break;
         }
-        batch.push(castItem(meta, match, video));
+        batch.push(await addSubtitles(castItem(meta, match, video), meta, options));
         nextCursor += 1;
       }
       if (activeSession !== session) return;
@@ -188,7 +217,7 @@ export async function lazyCastSeries(
   session.addEventListener('ended', () => {
     if (activeSession === session) {
       activeSession = null;
-      onStatus('Linked cast ended.');
+      onStatus('Playback ended.');
     }
   });
   trackSessionProgress(session, onProgress);

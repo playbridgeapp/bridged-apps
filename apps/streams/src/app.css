@@ -710,3 +710,11 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 .addon-subtitles select{max-width:min(65vw,450px);border:1px solid #ffffff35;border-radius:8px;padding:8px;color:white;background:#182027}
 .addon-subtitles button{background:transparent;border:0;color:white;text-decoration:underline}
 @media(max-width:700px){.episode-card{width:min(275px,76vw)}.addon-subtitles{padding:0 16px 16px}}
+
+.playback-destination{color:#a6b4b1;font-size:13px;line-height:1.5;margin:0 0 16px;max-width:100%}
+.playback-destination button{display:inline-flex;align-items:center;gap:5px;min-height:44px;max-width:100%;text-align:left;white-space:normal;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;padding:6px 0;cursor:pointer}
+.playback-destination button span{overflow-wrap:anywhere;min-width:0}.playback-destination button svg{flex:none}
+.playback-destination button:focus-visible{outline:2px solid #9debd2;outline-offset:4px}.destination-offline{color:#d7ac85}
+.playback-recovery{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.playback-recovery button{min-height:44px;padding:8px 14px;border:1px solid #73827e;border-radius:8px;background:transparent;color:inherit;font:inherit;cursor:pointer}
+.source-actions .watch-button,.stream-auto-actions .watch-button{min-height:44px}
+@media(max-width:700px){.detail-intro .playback-destination{text-align:center}.detail-intro .playback-destination button{text-align:center}}

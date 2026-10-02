@@ -28,6 +28,25 @@ async function enableStreamSelection(page: Page) {
   await goTab(page, 'Home');
 }
 
+async function captureMobile(page: Page, path: string) {
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await Promise.all(document.getAnimations().filter((animation) => animation.effect?.getComputedTiming().iterations !== Infinity)
+      .map((animation) => animation.finished.catch(() => {})));
+  });
+  await page.screenshot({ path });
+}
+
+async function enableNativePlayback(page: Page) {
+  await page.evaluate(() => {
+    (window as any).__bridgedTest = { playbridge: (window as any).__streamTest.bridge };
+    window.dispatchEvent(new Event('pageshow'));
+  });
+  await expect.poll(() => page.evaluate(() => !!(window as any).__bridgedTest.playbridge)).toBe(true);
+  // Destination status is asynchronously obtained from the native host.
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.destinationReads || 0)).toBeGreaterThan(0);
+}
+
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     const calls: Array<{ method: string; payload: any }> = [];
@@ -40,10 +59,12 @@ test.beforeEach(async ({ page }) => {
     session.provideItems = async (requestId, result) => { calls.push({ method: 'provideItems', payload: { requestId, ...result } }); };
     session.unlink = async () => { calls.push({ method: 'unlink', payload: {} }); };
     (window as any).__streamTest = { calls, session };
-    (window as any).playbridge = {
+    (window as any).__streamTest.bridge = {
       cast: (payload: any) => calls.push({ method: 'cast', payload }),
-      linkCast: async (payload: any) => { calls.push({ method: 'linkCast', payload }); return session; },
-      capabilities: { linkedCast: true }
+      play: async (payload: any) => { calls.push({ method: 'play', payload }); return session; },
+      getPlaybackDestination: async () => ((window as any).__streamTest.destinationReads = ((window as any).__streamTest.destinationReads || 0) + 1, { ok: true, destination: { id: 'tv-1', name: 'Living Room TV', kind: 'native', connected: true } }),
+      choosePlaybackDestination: async () => ({ ok: true, destination: { id: 'tv-1', name: 'Living Room TV', kind: 'native', connected: true } }),
+      capabilities: { linkedCast: true, playback: 1 }
     };
   });
   await page.route(`${addon}/**`, async (route) => {
@@ -215,6 +236,7 @@ for (const artwork of [true, false]) {
 }
 
 test('enriches movie details, caches TMDB results, and opens recommendations with addon playback IDs', async ({ page }) => {
+  await enableNativePlayback(page);
   const requests = await mockTmdb(page);
   await enableTmdbEnrichment(page);
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
@@ -235,8 +257,8 @@ test('enriches movie details, caches TMDB results, and opens recommendations wit
   await expect(page).toHaveURL(/#\/movie\/tt444$/);
   await expect(page.getByRole('heading', { name: 'Recommended Film', exact: true })).toBeVisible();
   await page.locator('.detail-play').click();
-  await page.locator('.stream-result .cast-button').click();
-  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'linkCast').payload);
+  await page.locator('.stream-result .watch-button').click();
+  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'play').payload);
   expect(cast.items[0].id).toBe('tt444');
 });
 
@@ -283,7 +305,8 @@ for (const mobile of [false, true]) {
   });
 }
 
-test('enriches only the selected season and preserves addon episode IDs for casting', async ({ page }) => {
+test('enriches only the selected season and preserves addon episode IDs for native playback', async ({ page }) => {
+  await enableNativePlayback(page);
   const requests = await mockTmdb(page);
   await page.route(`${addon}/stream/series/tt200%3A2%3A1.json`, (route) => route.fulfill({ json: { streams: [
     { name: 'Episode Source', url: 'https://media.test/season2.mp4' }
@@ -304,8 +327,8 @@ test('enriches only the selected season and preserves addon episode IDs for cast
   await page.locator('.episode-row').click();
   await expect(page).toHaveURL(/video=tt200%3A2%3A1/);
   await expect(page.locator('.stream-panel')).toContainText('Enriched Second Season');
-  await page.locator('.stream-result .cast-button').click();
-  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'linkCast').payload);
+  await page.locator('.stream-result .watch-button').click();
+  const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'play').payload);
   expect(cast.items[0].id).toBe('tt200:2:1');
 });
 
@@ -530,21 +553,22 @@ test('automatically starts a ready preferred source without waiting for unrelate
   await expect(page).toHaveURL(/#\/movie\/tt100\/streams$/);
 });
 
-test('uses automatic selection only for an explicit cast action', async ({ page }) => {
+test('uses automatic selection for the unified native Play action', async ({ page }) => {
+  await enableNativePlayback(page);
   await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
     { name: '720p WEB-DL', url: 'https://media.test/low.mp4' },
     { name: '1080p WEB-DL', url: 'https://media.test/matching.mp4' }
   ] }, headers: { 'access-control-allow-origin': '*' } }));
   await enableStreamSelection(page);
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
-  await page.getByRole('button', { name: 'Cast with auto-selection' }).click();
+  await page.locator('.detail-play').click();
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls[0].payload.items[0].url).toBe('https://media.test/matching.mp4');
   await expect(page.locator('movi-player')).toHaveCount(0);
 });
 
-for (const target of ['browser', 'cast'] as const) {
+for (const target of ['browser', 'native'] as const) {
   test(`preserves a manually selected release across episodes during ${target} playback`, async ({ page }) => {
     await page.route(`${addon}/stream/series/**`, (route) => {
       const next = route.request().url().includes('1%3A2');
@@ -553,6 +577,7 @@ for (const target of ['browser', 'cast'] as const) {
         { name: '720p WEBRip', url: `https://media.test/manual-${next ? '2' : '1'}.mp4`, behaviorHints: { bingeGroup: 'manual' } }
       ] }, headers: { 'access-control-allow-origin': '*' } });
     });
+    if (target !== 'browser') await enableNativePlayback(page);
     await enableStreamSelection(page);
     await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
     await page.getByRole('button', { name: /Pilot/ }).click();
@@ -563,7 +588,7 @@ for (const target of ['browser', 'cast'] as const) {
       await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('ended')));
       await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/manual-2.mp4');
     } else {
-      await page.locator('.stream-result .cast-button').click();
+      await page.locator('.stream-result .watch-button').click();
       await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'manual-next', count: 1 } })));
       await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
       const calls = await page.evaluate(() => (window as any).__streamTest.calls);
@@ -572,7 +597,8 @@ for (const target of ['browser', 'cast'] as const) {
   });
 }
 
-test('keeps automatic cast continuation within the required quality and release filters', async ({ page }) => {
+test('keeps automatic native continuation within the required quality and release filters', async ({ page }) => {
+  await enableNativePlayback(page);
   await page.route(`${addon}/stream/series/**`, (route) => {
     const next = route.request().url().includes('1%3A2');
     return route.fulfill({ json: { streams: next ? [
@@ -583,8 +609,7 @@ test('keeps automatic cast continuation within the required quality and release 
   });
   await enableStreamSelection(page);
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
-  await page.getByRole('button', { name: 'Cast with auto-selection' }).click();
-  await expect(page.getByText('Choose an episode to cast.', { exact: false })).toBeVisible();
+  await page.locator('.detail-play').click();
   await page.getByRole('button', { name: /Pilot/ }).click();
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'auto-next', count: 1 } })));
@@ -782,25 +807,26 @@ test('restores a search query from its URL without creating a history entry per 
   await expect(result).toBeVisible();
 });
 
-test('casts a selected movie as one tracked item', async ({ page }) => {
+test('plays a selected movie as one tracked item', async ({ page }) => {
+  await enableNativePlayback(page);
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await page.locator('.detail-play').click();
   await expect(page.getByText('Film Source')).toBeVisible();
   await page.clock.install();
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls).toHaveLength(1);
-  expect(calls[0].method).toBe('linkCast');
+  expect(calls[0].method).toBe('play');
   expect(calls[0].payload.items[0].url).toBe('https://media.test/movie.mp4');
   const notice = page.locator('.toast');
-  await expect(notice).toContainText('Casting Sample Film · watch progress sync is on.');
+  await expect(notice).toContainText('Playing Sample Film');
   await page.clock.fastForward(3000);
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   await page.clock.fastForward(2100);
   await expect(notice).toBeVisible();
   await page.clock.fastForward(3100);
   await expect(notice).toHaveCount(0);
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   await notice.getByRole('button', { name: 'Dismiss' }).click();
   await expect(notice).toHaveCount(0);
 });
@@ -844,13 +870,14 @@ test('keeps a copyable report when the MoviPlayer module fails to load', async (
 });
 
 test('resolves the next episode only after PlayBridge requests it', async ({ page }) => {
+  await enableNativePlayback(page);
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.getByRole('button', { name: /Pilot/ }).click();
   await expect(page.getByText('Episode Source')).toBeVisible();
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   let calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls).toHaveLength(1);
-  expect(calls[0].method).toBe('linkCast');
+  expect(calls[0].method).toBe('play');
   expect(calls[0].payload.items[0].url).toBe('https://media.test/ep1.mp4');
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'request-1', count: 1 } })));
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
@@ -923,7 +950,7 @@ test('continues to the next episode in browser playback', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Series' }).click();
   await page.getByRole('button', { name: /Pilot/ }).click();
   await expect(page.getByText('Episode Source')).toBeVisible();
-  await page.getByRole('button', { name: 'Play', exact: true }).click();
+  await page.locator('.stream-result .watch-button').click();
   const player = page.locator('movi-player');
   await expect(player).toHaveAttribute('src', 'https://media.test/ep1.mp4');
   await player.evaluate((element) => element.dispatchEvent(new Event('ended')));
@@ -931,7 +958,8 @@ test('continues to the next episode in browser playback', async ({ page }) => {
   expect(await page.evaluate(() => (window as any).__streamTest.calls)).toEqual([]);
 });
 
-test('loads required year catalogs and browses and casts sport titles', async ({ page }) => {
+test('loads required year catalogs and plays sport titles', async ({ page }) => {
+  await enableNativePlayback(page);
   const manifest = {
     id: 'expanded', name: 'Expanded Catalogs', version: '1.0.0',
     types: ['movie', 'series', 'sport'], resources: ['catalog', 'meta', 'stream'],
@@ -968,9 +996,9 @@ test('loads required year catalogs and browses and casts sport titles', async ({
   await page.getByRole('button', { name: 'View details for Live Match' }).click();
   await page.locator('.detail-play').click();
   await expect(page.getByText('Live Feed')).toBeVisible();
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
-  expect(calls.at(-1)).toMatchObject({ method: 'cast', payload: { url: 'https://media.test/live.m3u8' } });
+  expect(calls.at(-1)).toMatchObject({ method: 'play', payload: { items: [{ url: 'https://media.test/live.m3u8' }], destinationId: 'tv-1' } });
 });
 
 for (const delayedRestore of [false, true]) {
@@ -1233,6 +1261,7 @@ test('imports Stremio account addons, library, and progress without removing loc
 });
 
 test('writes account addon changes, library membership, and linked TV progress to Stremio', async ({ page }) => {
+  await enableNativePlayback(page);
   const accountManifest = {
     id: 'account-addon', name: 'Account Catalog', version: '1.0.0', types: ['movie'],
     resources: ['catalog', 'meta', 'stream'], catalogs: [{ id: 'saved', type: 'movie', name: 'Saved Picks' }]
@@ -1302,7 +1331,7 @@ test('writes account addon changes, library membership, and linked TV progress t
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.getByRole('button', { name: /Pilot/ }).click();
   await expect(page.getByText('Episode Source')).toBeVisible();
-  await page.getByRole('button', { name: 'Cast' }).click();
+  await page.locator('.stream-result .watch-button').click();
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('statechange', {
     detail: { state: 'playing', positionMs: 30_000, durationMs: 300_000,
       currentIndex: 0, items: [{ id: 'tt200:1:1' }] }
@@ -1420,4 +1449,200 @@ test('unmounts inactive tabs and restores cached search without fetching it agai
   expect(await cards.first().evaluate((node, original) => node === original, firstCard!)).toBe(false);
   expect(searchRequests).toBe(completedSearchRequests);
   await firstCard!.dispose();
+});
+
+async function openMovieStreams(page: Page) {
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('.stream-result .watch-button')).toBeVisible();
+}
+
+test('shows the native destination and opens the existing device picker without playing', async ({ page }) => {
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    const test = (window as any).__streamTest;
+    test.bridge.choosePlaybackDestination = async () => { test.pickerOpened = true; return test.bridge.getPlaybackDestination(); };
+  });
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  const destination = page.getByRole('button', { name: 'Playback destination: Living Room TV. Change device' });
+  await expect(destination).toBeVisible();
+  await destination.click();
+  await expect.poll(() => page.evaluate(() => !!(window as any).__streamTest.pickerOpened)).toBe(true);
+  expect(await page.evaluate(() => (window as any).__streamTest.calls)).toEqual([]);
+  await expect(page.getByRole('button', { name: /Cast with|Cast best|^Cast$/ })).toHaveCount(0);
+});
+
+test('uses the selected native phone player and preserves headers and addon subtitles', async ({ page }) => {
+  await page.route('https://subtitles.test/**', (route) => route.fulfill({ json: route.request().url().endsWith('/manifest.json')
+    ? { id: 'subs', name: 'Test Subtitles', version: '1.0.0', types: ['movie'], resources: ['subtitles'], catalogs: [] }
+    : { subtitles: [{ url: 'https://media.test/subtitle.vtt', lang: 'en', headers: { Authorization: 'test-subtitle-token' } }] } }));
+  await openAddons(page);
+  await page.getByLabel('Addon manifest URL').fill('https://subtitles.test/manifest.json');
+  await page.getByRole('button', { name: 'Install', exact: true }).first().click();
+  await expect(page.locator('.addon-management-card').getByText('Test Subtitles', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    (window as any).__streamTest.bridge.getPlaybackDestination = async () => ({ ok: true,
+      destination: { id: 'this-device', name: 'This device', kind: 'local', connected: true } });
+    window.dispatchEvent(new Event('pageshow'));
+  });
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: 'Film Source', url: 'https://media.test/movie.mp4', headers: { Referer: 'https://provider.test/' } }
+  ] } }));
+  await openMovieStreams(page);
+  await expect(page.locator('.stream-panel').getByRole('button', { name: 'Playback destination: this device. Change device' })).toBeVisible();
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  const call = await page.evaluate(() => (window as any).__streamTest.calls[0]);
+  expect(call).toMatchObject({ method: 'play', payload: { destinationId: 'this-device', items: [
+    { url: 'https://media.test/movie.mp4', headers: { Referer: 'https://provider.test/' },
+      subtitleResources: [{ url: 'https://media.test/subtitle.vtt', language: 'en', headers: { Authorization: 'test-subtitle-token' } }] }
+  ] } });
+  await expect(page.locator('movi-player')).toHaveCount(0);
+});
+
+test('keeps a failed destination explicit and retries on this device only after selection', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    const test = (window as any).__streamTest;
+    test.bridge.play = async (payload: any) => {
+      test.calls.push({ method: 'play', payload });
+      if (payload.destinationId !== 'this-device') throw Object.assign(new Error('The selected receiver disconnected.'), { code: 'receiver_changed' });
+      return test.session;
+    };
+    test.bridge.choosePlaybackDestination = async (options: any) => {
+      test.calls.push({ method: 'choose', payload: options });
+      return { ok: true, destination: { id: 'this-device', name: 'This device', kind: 'local', connected: true } };
+    };
+  });
+  await openMovieStreams(page);
+  await page.locator('.stream-result .watch-button').click();
+  await expect(page.getByRole('alert')).toContainText('receiver disconnected');
+  await captureMobile(page, '/private/tmp/streams-unified-play-recovery.png');
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  await page.getByRole('button', { name: 'Play on this device', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(3);
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  expect(calls[1]).toEqual({ method: 'choose', payload: { destinationId: 'this-device' } });
+  expect(calls[2].payload.destinationId).toBe('this-device');
+});
+
+test('prevents repeated native Play taps while opening', async ({ page }) => {
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    const test = (window as any).__streamTest;
+    test.bridge.play = (payload: any) => { test.calls.push({ method: 'play', payload });
+      return new Promise((resolve) => { test.completePlay = () => resolve(test.session); }); };
+  });
+  await openMovieStreams(page);
+  const play = page.locator('.stream-result .watch-button');
+  await play.click();
+  await expect(play).toBeDisabled();
+  expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  await page.evaluate(() => (window as any).__streamTest.completePlay());
+  await expect(play).toBeEnabled();
+});
+
+test('asks for an update instead of silently using a different player on older PlayBridge', async ({ page }) => {
+  await page.addInitScript(() => { (window as any).__bridgedTest = { playbridge: { cast: () => {}, capabilities: { linkedCast: true } } }; });
+  await page.reload();
+  await openMovieStreams(page);
+  await page.locator('.stream-result .watch-button').click();
+  await expect(page.getByRole('alert')).toContainText('Update PlayBridge');
+  await expect(page.locator('.stream-panel .playback-destination')).toContainText('Update PlayBridge to choose a destination');
+  await expect(page.locator('movi-player')).toHaveCount(0);
+  expect(await page.evaluate(() => (window as any).__streamTest.calls)).toEqual([]);
+});
+
+test('retains the destination chosen at Play while preferred streams are loading', async ({ page }) => {
+  await enableNativePlayback(page);
+  await enableStreamSelection(page);
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/stream/movie/tt100.json`, async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ json: { streams: [{ name: '1080p WEB-DL', url: 'https://media.test/movie.mp4' }] } });
+  });
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await started;
+  try {
+    await page.evaluate(() => {
+      const test = (window as any).__streamTest;
+      test.bridge.getPlaybackDestination = async () => ({ ok: true,
+        destination: { id: 'tv-2', name: 'Bedroom TV', kind: 'native', connected: true } });
+      test.bridge.play = async (payload: any) => {
+        test.calls.push({ method: 'play', payload });
+        if (payload.destinationId !== 'tv-2') throw new Error('The selected playback destination changed.');
+        return test.session;
+      };
+      window.dispatchEvent(new Event('pageshow'));
+    });
+    await expect(page.locator('.stream-panel').getByRole('button', { name: 'Playback destination: Bedroom TV. Change device' })).toBeVisible();
+  } finally { release(); }
+  await expect(page.getByRole('alert')).toContainText('destination changed');
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].payload.destinationId).toBe('tv-1');
+  await expect(page.locator('movi-player')).toHaveCount(0);
+});
+
+test('wraps long destinations on a small screen and retains an accessible device target', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    (window as any).__streamTest.bridge.getPlaybackDestination = async () => ({ ok: true,
+      destination: { id: 'tv-1', name: 'LivingRoomTelevisionWithAnExtremelyLongUnbrokenDeviceNameForAccessibility', kind: 'native', connected: true } });
+    window.dispatchEvent(new Event('pageshow'));
+  });
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  const destination = page.locator('.detail-panel .playback-destination button');
+  await expect(destination).toContainText('LivingRoomTelevision');
+  const bounds = await destination.boundingBox();
+  expect(bounds!.height).toBeGreaterThanOrEqual(44);
+  expect(bounds!.x).toBeGreaterThanOrEqual(0);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+  await destination.focus();
+  await expect(destination).toBeFocused();
+  await captureMobile(page, '/private/tmp/streams-unified-play-mobile.png');
+});
+
+test('allows retry after the initial native destination request fails', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    (window as any).__bridgedTest = { playbridge: {
+      cast: () => {}, capabilities: { playback: 1 },
+      getPlaybackDestination: async () => { throw new Error('Native channel unavailable'); },
+      choosePlaybackDestination: async () => ({ ok: true, destination: { id: 'this-device', name: 'This device', kind: 'local', connected: true } }),
+      play: async (payload: any) => { (window as any).__streamTest.calls.push({ method: 'play', payload }); return (window as any).__streamTest.session; }
+    } };
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Playback destination unavailable. Retry' })).toBeVisible();
+  await captureMobile(page, '/private/tmp/streams-unified-play-destination-unavailable.png');
+  await page.getByRole('button', { name: 'Playback destination unavailable. Retry' }).click();
+  await expect(page.getByRole('button', { name: 'Playback destination: this device. Change device' })).toBeVisible();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('.stream-panel .playback-destination')).toContainText('Plays on this device');
+  await expect(page.locator('.detail-panel')).toHaveCount(0);
+  await captureMobile(page, '/private/tmp/streams-unified-play-native-streams.png');
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  expect(await page.evaluate(() => (window as any).__streamTest.calls[0].payload.destinationId)).toBe('this-device');
+  await page.evaluate(() => { delete (window as any).__bridgedTest; window.dispatchEvent(new Event('pageshow')); });
+  await expect(page.locator('.stream-panel .playback-destination button')).toHaveCount(0);
+  await expect(page.locator('.stream-panel .playback-destination')).toHaveText('Plays on this device');
+  await captureMobile(page, '/private/tmp/streams-unified-play-browser-streams.png');
 });

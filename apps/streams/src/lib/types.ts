@@ -116,6 +116,7 @@ export interface CastItem {
   metadata: Record<string, unknown>;
   headers?: Record<string, string>;
   startPositionMs?: number;
+  subtitleResources?: Array<{ url: string; language?: string; label?: string; headers?: Record<string, string> }>;
 }
 
 export interface PluginScraper {
@@ -189,10 +190,21 @@ export interface NativePluginsBridge {
   cancel?(): void;
 }
 
+export interface PlaybackDestination {
+  id: string;
+  name: string;
+  kind: 'local' | 'native' | 'external';
+  connected: boolean;
+}
+
 export interface PlaybridgeBridge {
   cast(payload: CastItem | Record<string, unknown>): void;
   linkCast?(payload: Record<string, unknown>): Promise<LinkedSession>;
+  getPlaybackDestination?(): Promise<{ ok: true; destination: PlaybackDestination }>;
+  choosePlaybackDestination?(options?: { destinationId: 'this-device' }): Promise<{ ok: true; destination: PlaybackDestination }>;
+  play?(payload: Record<string, unknown>): Promise<LinkedSession>;
   capabilities?: {
+    playback?: number;
     linkedCast?: boolean;
     nativePlugins?: number;
   };

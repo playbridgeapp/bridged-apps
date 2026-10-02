@@ -1,7 +1,7 @@
 import type { InstalledAddon } from './types';
 import { resourceUrl, supports } from './addons';
 
-export type AddonSubtitle = { id: string; url: string; language: string; label: string };
+export type AddonSubtitle = { id: string; url: string; language: string; label: string; headers?: Record<string, string> };
 export { parseSubtitles, subtitlesVtt, loadSubtitleCues, subtitleRenderer } from './subtitle-cues.ts';
 
 export async function fetchAddonSubtitles(addons: InstalledAddon[], type: string, id: string, signal: AbortSignal): Promise<{ tracks: AddonSubtitle[]; errors: string[] }> {
@@ -26,7 +26,10 @@ export async function fetchAddonSubtitles(addons: InstalledAddon[], type: string
             const url = new URL(item.url);
             if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) continue;
             const language = String(item.lang || item.language || 'und').slice(0, 32);
-            tracks.push({ id: `${addon.manifestUrl}:${language}:${url.href}`, url: url.href, language,
+            const headers = item.headers && typeof item.headers === 'object' && !Array.isArray(item.headers)
+              ? Object.fromEntries(Object.entries(item.headers).filter(([key, value]) => /^[!#$%&'*+.^_`|~0-9a-z-]{1,128}$/i.test(key)
+                && typeof value === 'string' && value.length <= 4096 && !/[\r\n]/.test(value)).slice(0, 32)) as Record<string, string> : undefined;
+            tracks.push({ ...(headers && Object.keys(headers).length ? { headers } : {}), id: `${addon.manifestUrl}:${language}:${url.href}`, url: url.href, language,
               label: `${language} · ${addon.manifest.name}${item.title ? ` · ${String(item.title).slice(0, 120)}` : ''}` });
           } catch { /* invalid provider entry */ }
         }
