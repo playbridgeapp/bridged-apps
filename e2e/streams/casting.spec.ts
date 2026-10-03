@@ -936,6 +936,64 @@ test('resolves the next episode only after PlayBridge requests it', async ({ pag
   expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
 });
 
+test('retries an empty next-episode lookup without permanently ending the native queue', async ({ page }) => {
+  let lookups = 0;
+  await page.route(`${addon}/stream/series/tt200%3A1%3A2.json`, (route) => {
+    lookups += 1;
+    return route.fulfill({ json: { streams: lookups === 1 ? [] : [{ name: 'Episode Source', url: 'https://media.test/ep2.mp4' }] } });
+  });
+  await enableNativePlayback(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result .watch-button').click();
+  const demand = () => page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', {
+    detail: { requestId: 'retry-empty', count: 1 }
+  })));
+  await demand();
+  await expect(page.getByText(/PlayBridge will retry the next episode/)).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  await demand();
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+  expect(lookups).toBe(2); // Retry must not reuse the cached empty response.
+  const supplied = await page.evaluate(() => (window as any).__streamTest.calls[1].payload);
+  expect(supplied.items[0].id).toBe('tt200:1:2');
+  expect(supplied.endOfList).toBe(true);
+  await demand();
+  expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+});
+
+test('keeps a partial native queue open when a later episode lookup fails', async ({ page }) => {
+  await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [
+    { id: 'tt200:1:1', season: 1, episode: 1, title: 'Pilot' },
+    { id: 'tt200:1:2', season: 1, episode: 2, title: 'Next Episode' },
+    { id: 'tt200:1:3', season: 1, episode: 3, title: 'Third episode' }
+  ] } } }));
+  let lookups = 0;
+  await page.route(`${addon}/stream/series/tt200%3A1%3A3.json`, (route) => {
+    lookups += 1;
+    return route.fulfill({ json: { streams: lookups === 1 ? [] : [{ name: 'Episode Source', url: 'https://media.test/ep3.mp4' }] } });
+  });
+  await enableNativePlayback(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result .watch-button').click();
+  await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', {
+    detail: { requestId: 'partial', count: 2 }
+  })));
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+  let supplied = await page.evaluate(() => (window as any).__streamTest.calls[1].payload);
+  expect(supplied.items.map((item: any) => item.id)).toEqual(['tt200:1:2']);
+  expect(supplied.endOfList).toBe(false);
+  await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', {
+    detail: { requestId: 'partial-tail', count: 1 }
+  })));
+  await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(3);
+  supplied = await page.evaluate(() => (window as any).__streamTest.calls[2].payload);
+  expect(supplied.items.map((item: any) => item.id)).toEqual(['tt200:1:3']);
+  expect(supplied.endOfList).toBe(true);
+  expect(lookups).toBe(2);
+});
+
 test('selects another season from the desktop detail menu', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [

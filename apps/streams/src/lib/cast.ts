@@ -178,6 +178,7 @@ export async function lazyCastSeries(
   }
   activeSession = session;
   let cursor = start + 1;
+  let retryVideoId: string | null = null;
   let pending = false;
   const completedRequests = new Set<string>();
   onStatus(`Playback started · ${first.title}`);
@@ -193,17 +194,22 @@ export async function lazyCastSeries(
     try {
       while (batch.length < count && nextCursor < ordered.length) {
         const video = ordered[nextCursor];
-        const streams = await fetchStreams(addons, 'series', video.id, plugins, tmdbKey, onStatus);
+        const streams = await fetchStreams(addons, 'series', video.id, plugins, tmdbKey, onStatus, undefined, retryVideoId === video.id);
         const match = selectNextStream(streams.filter(playableStream), selection, true);
         if (!match || !playableStream(match)) {
-          onStatus(`No matching playable stream for S${video.season}E${video.episode}. Queue ends here.`);
+          retryVideoId = video.id;
+          onStatus(`No matching playable stream for S${video.season}E${video.episode}. PlayBridge will retry the next episode.`);
           break;
         }
+        retryVideoId = null;
         batch.push(await addSubtitles(castItem(meta, match, video), meta, options));
         nextCursor += 1;
       }
       if (activeSession !== session) return;
-      const endOfList = nextCursor >= ordered.length || batch.length < count;
+      // A failed/empty lookup is not the end of a series. Leave an empty demand
+      // outstanding so the host retries it; partial batches can advance safely.
+      const endOfList = nextCursor >= ordered.length;
+      if (!batch.length && !endOfList) return;
       await session.provideItems(requestId, { items: batch, endOfList });
       completedRequests.add(requestId);
       cursor = nextCursor;
