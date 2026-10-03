@@ -1,6 +1,6 @@
 ---
 name: bridged-apps-jellyfin
-description: Work on the PlayBridge Jellyfin companion web app and its Playwright e2e suite. Use for Svelte 5, Vite, casting via window.playbridge, audio player, server switch, or running/writing tests under e2e/. Always use pnpm.
+description: Work on the Jellyfin companion client under apps/jellyfin/ and its Playwright suite under e2e/jellyfin/. Use for Jellyfin auth, server switching, browser playback, queues, casting and client UI; Streams work uses bridged-apps-streams. Always use pnpm.
 ---
 
 # Bridged Apps — Jellyfin
@@ -8,7 +8,7 @@ description: Work on the PlayBridge Jellyfin companion web app and its Playwrigh
 ## Establish ownership
 
 - Repo root is this monorepo (`bridged-apps/`). The app lives in `apps/jellyfin/` (Svelte 5 + Vite on port **5180**).
-- E2E lives in `e2e/`. Treat it as part of this project, not PlayBridge core.
+- Jellyfin E2E lives in `e2e/jellyfin/`, using `e2e/playwright.config.ts`. Streams has a separate config and suite; shared `e2e/helpers/` changes must consider their callers.
 - Load this skill before changing UI, player, auth, or tests.
 - Do **not** assign `window.playbridge`. That name is the **native Cast bridge** (`cast`, `linkCast`, `capabilities`). Test hooks are `window.__bridgedTest` only (`apps/jellyfin/src/main.ts`).
 
@@ -19,6 +19,8 @@ description: Work on the PlayBridge Jellyfin companion web app and its Playwrigh
 3. Do not log `serverConfig` / session JSON (it contains the access token).
 4. `stopPlayback()` must run on server switch, logout, demo load, and new login so audio does not leak across accounts.
 5. Prefer clicking real UI. Use `__bridgedTest.switchAccount` only to inject a live session in e2e.
+6. The production bridge adapter is `apps/jellyfin/src/lib/cast/playbridge.ts`. It currently uses `cast()` / `linkCast()`; do not assume Jellyfin already uses Streams' unified `play()` destination flow. Coordinate native API changes with the PlayBridge repo.
+7. Production service workers cache versioned app assets only; keep account, API and authenticated media requests out of the cache.
 
 ## Commands (from repo root)
 
@@ -54,6 +56,7 @@ From repo root, after UI or player changes:
 
 ```bash
 pnpm --filter @bridged-apps/jellyfin check
+pnpm --filter @bridged-apps/jellyfin build
 pnpm test:e2e
 ```
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bridged Streams"
+  short_description: "Maintain Streams playback, account sync and addons"
+  default_prompt: "Use $bridged-apps-streams to implement and verify this Streams change."
