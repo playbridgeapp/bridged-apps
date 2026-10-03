@@ -8,6 +8,7 @@
   import MediaTile from './lib/MediaTile.svelte';
   import PlayerSubtitles from './lib/PlayerSubtitles.svelte';
   import HomeContent from './lib/HomeContent.svelte';
+  import FluidBackground from './lib/FluidBackground.svelte';
   import CatalogRail from './lib/CatalogRail.svelte';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
@@ -423,6 +424,23 @@
   let featureIndex = 0;
   let activeAddonFilter = '';
   let detailExpanded = false;
+  let heroMinHeight = 0;
+  let heroPinHeight = 0;
+  async function toggleDetailDescription(event: MouseEvent) {
+    const hero = (event.currentTarget as HTMLElement).closest<HTMLElement>('.detail-hero');
+    const intro = hero?.querySelector<HTMLElement>('.detail-intro');
+    if (!hero || !intro) { detailExpanded = !detailExpanded; return; }
+    if (detailExpanded) { detailExpanded = false; heroMinHeight = 0; heroPinHeight = 0; return; }
+    const heroBefore = hero.offsetHeight;
+    const introBefore = intro.offsetHeight;
+    detailExpanded = true;
+    await tick();
+    const growth = intro.offsetHeight - introBefore;
+    // Grow the hero by the same amount so the intro's top edge (logo, buttons) stays put
+    // and the backdrop stays pinned at its original size.
+    heroPinHeight = heroBefore;
+    heroMinHeight = heroBefore + Math.max(0, growth);
+  }
   let pageScrolled = false;
   let catalogRequest = 0;
   let detailRequest = 0;
@@ -687,8 +705,17 @@
       dockObserver?.observe(dockElement);
       dockElement.querySelectorAll('button').forEach((button) => dockObserver?.observe(button));
     }
-    window.addEventListener('resize', updateDockIndicator);
+    const handleViewportResize = () => {
+      updateDockIndicator();
+      // Pixel measurements only apply to the viewport where Read more was clicked.
+      // Keep the description expanded, but let responsive CSS size the hero again.
+      heroMinHeight = 0;
+      heroPinHeight = 0;
+    };
+    window.addEventListener('resize', handleViewportResize);
     let lastScrollY = window.scrollY;
+    // The dock starts expanded on every page load, then shrinks to its compact form for good.
+    const dockCompactTimer = window.setTimeout(() => { dockCompact = true; }, 5500);
     let dockScrollDelta = 0;
     let lastScrollGesture = 0;
     const markScrollGesture = () => { lastScrollGesture = Date.now(); };
@@ -697,12 +724,6 @@
       const delta = nextY - lastScrollY;
       pageScrolled = nextY > 24;
       if (dockRestoringScroll) { lastScrollY = nextY; dockScrollDelta = 0; return; }
-      if (nextY < 48) { dockCompact = false; dockScrollDelta = 0; }
-      else if (Date.now() - lastScrollGesture < 300 && Math.abs(delta) > 1) {
-        dockScrollDelta = Math.sign(delta) === Math.sign(dockScrollDelta) ? dockScrollDelta + delta : delta;
-        if (dockScrollDelta > 60) { dockCompact = true; dockScrollDelta = 0; }
-        else if (dockScrollDelta < -60) { dockCompact = false; dockScrollDelta = 0; }
-      } else dockScrollDelta = 0;
       lastScrollY = nextY;
     };
     const closeSeasonOnEscape = (event: KeyboardEvent) => {
@@ -767,7 +788,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(statusTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', updateDockIndicator); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
+    return () => { window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
   });
 
   async function restoreAddons() {
@@ -2216,7 +2237,6 @@
     await tick();
     if (request !== routeRequest) return;
     if (route.kind === 'tab') {
-      dockCompact = false;
       // Switching tabs starts fresh; closing content restores the tab beneath it.
       if (!returningToTab) {
         window.scrollTo(0, 0);
@@ -2254,6 +2274,8 @@
     episode = null;
     seasonPickerOpen = false;
     detailExpanded = false;
+    heroMinHeight = 0;
+    heroPinHeight = 0;
     loadingDetail = true;
     try {
       const remembered = detailMemory.get(`${preview.type}:${preview.id}`) || cached;
@@ -2401,7 +2423,6 @@
       window.scrollTo(0, 0);
       window.requestAnimationFrame(() => {
         if (request !== navigationRequest) return;
-        if (window.scrollY < 48) dockCompact = false;
         dockRestoringScroll = false;
       });
     });
@@ -2864,6 +2885,7 @@
   </header>
 
   <main aria-busy={startupLoading}>
+    {#if !startupLoading && (tab === 'search' || tab === 'library' || tab === 'settings')}<FluidBackground />{/if}
     {#if startupLoading}
       <section class="startup-screen" role="status" aria-live="polite">
         <div class="startup-copy"><div class="eyebrow">BRIDGED STREAMS</div><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> Restoring your accounts and addons…</p></div>
@@ -2951,7 +2973,8 @@
       </section>
       {:else}
       {#if featured}
-        <section class="feature-hero" aria-label="Featured titles" use:heroGestures>
+        <div class="home-ambient" aria-hidden="true">{#key `${featured.type}:${featured.id}`}<img src={featured.background || featured.poster} alt="" in:fade={{ duration: motionDuration(600) }} out:fade={{ duration: motionDuration(600) }} />{/key}</div>
+        <section class="feature-hero has-ambient" aria-label="Featured titles" use:heroGestures>
           {#key `${featured.type}:${featured.id}`}<img class="feature-art" class:poster-art={!featured.background} src={featured.background || featured.poster} alt="" in:fade={{ duration: motionDuration(380) }} out:fade={{ duration: motionDuration(260) }} />{/key}
           {#if !featured.background && featured.poster}<img class="feature-poster" src={featured.poster} alt="" />{/if}
           <div class="feature-content">
@@ -3240,18 +3263,19 @@
 
 {#if selected && !streamScreen}
   <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:fade={{ duration: motionDuration(260), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
-    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'}>
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'} style:--ambient-bg={detailBackdrop ? `url('${detailBackdrop.replaceAll("'", '%27')}')` : null}>
+      {#if detailBackdrop}<div class="detail-ambient" aria-hidden="true"></div>{/if}
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>
-      <div class="detail-hero" style:background-image={detailBackdrop ? `${selected.background ? 'linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%), linear-gradient(0deg, #090b0f 0%, transparent 55%)' : 'linear-gradient(90deg, #090b0ff2, #090b0f99), linear-gradient(0deg, #090b0f, transparent)'}, url('${detailBackdrop.replaceAll("'", '%27')}')` : ''}>
+      <div class="detail-hero" style:min-height={heroMinHeight ? `${heroMinHeight}px` : null} style:--hero-pin={heroMinHeight ? `${heroPinHeight}px` : null} style:background-color={detailBackdrop ? 'transparent' : null} style:--hero-bg={detailBackdrop ? `${selected.background ? 'linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%)' : 'linear-gradient(90deg, #090b0ff2, #090b0f99)'}, url('${detailBackdrop.replaceAll("'", '%27')}')` : ''}>
         <div class="detail-intro">
           {#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
-          <div class="detail-actions">{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail || nativePlayBusy || destinationBusy || destinationPending}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button><button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
+          <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail || nativePlayBusy || destinationBusy || destinationPending}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           {@render destinationRow()}
           <div class="detail-facts">{#if selected.imdbRating}<span class="detail-rating"><Star size={16} fill="currentColor" /> {selected.imdbRating}<small>/10{selected.ratingSource ? ` · ${selected.ratingSource}` : ''}</small></span>{/if}{#if selected.releaseInfo}<span>{displayReleaseInfo(selected.releaseInfo)}</span>{/if}{#if selected.runtime}<span>{selected.runtime}</span>{/if}{#if selected.ageRating}<span>{selected.ageRating}</span>{/if}<span>{selected.type === 'series' ? 'Series' : selected.type === 'movie' ? 'Movie' : 'Sports'}</span></div>
-          {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={() => detailExpanded = !detailExpanded}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
+          {#if selected.description}<p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={toggleDetailDescription}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}{/if}
           {/if}
         </div>
         {#if selected.director || selected.writer || selected.cast?.length || selected.country || selected.status || selected.language}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}</strong></div>{/if}{#if selected.writer}<div><span>WRITTEN BY</span><strong>{Array.isArray(selected.writer) ? selected.writer.join(', ') : selected.writer}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{selected.cast.slice(0, 3).join(', ')}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}{#if selected.language}<div><span>ORIGINAL LANGUAGE</span><strong>{selected.language.toUpperCase()}</strong></div>{/if}</aside>{/if}

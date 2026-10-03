@@ -8,6 +8,11 @@ async function goTab(page: Page, name: 'Home' | 'Search' | 'Library' | 'Settings
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name }).click();
 }
 
+function detailBackdrop(page: Page) {
+  return expect.poll(() => page.locator('.detail-hero').evaluate((hero) =>
+    getComputedStyle(hero, '::before').backgroundImage));
+}
+
 async function openAccounts(page: Page) {
   await goTab(page, 'Settings');
   await page.getByRole('button', { name: /Accounts and profiles/ }).click();
@@ -189,10 +194,51 @@ test('waits for addon metadata before showing the detail backdrop', async ({ pag
     await page.goto('/#/movie/tt100');
     await expect(page.locator('.detail-hero')).toBeVisible();
     await expect(page.locator('.detail-play')).toBeDisabled();
-    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', 'none');
+    await detailBackdrop(page).toBe('none');
   } finally { release(); }
   await expect(page.locator('.detail-play')).toBeEnabled();
-  await expect(page.locator('.detail-hero')).toHaveCSS('background-image', /art\.test\/detail\.jpg/);
+  await detailBackdrop(page).toMatch(/art\.test\/detail\.jpg/);
+});
+
+test('keeps Read more anchored and releases pinned hero dimensions after rotation', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ contentType: 'text/css', body: '' }));
+  await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+    json: { meta: { ...movie, description: 'A group of friends embark on a journey across the country and discover something unexpected along the way. '.repeat(8) } },
+    headers: { 'access-control-allow-origin': '*' }
+  }));
+  await page.goto('/#/movie/tt100');
+  const hero = page.locator('.detail-hero');
+  const description = page.locator('.detail-description');
+  const measure = () => hero.evaluate((element) => ({
+    height: element.getBoundingClientRect().height,
+    introTop: element.querySelector('.detail-intro')!.getBoundingClientRect().top - element.getBoundingClientRect().top,
+    backdropHeight: parseFloat(getComputedStyle(element, '::before').height)
+  }));
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  const collapsed = await measure();
+  await page.getByRole('button', { name: 'Read more', exact: true }).click();
+  await expect(description).toHaveClass(/expanded/);
+  const expanded = await measure();
+  expect(expanded.height).toBeGreaterThan(collapsed.height);
+  expect(Math.abs(expanded.introTop - collapsed.introTop)).toBeLessThan(1);
+  expect(Math.abs(expanded.backdropHeight - collapsed.height)).toBeLessThan(1);
+
+  for (const viewport of [{ width: 844, height: 390 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await expect.poll(() => hero.evaluate((element) => (element as HTMLElement).style.minHeight)).toBe('');
+    await expect.poll(() => hero.evaluate((element) => (element as HTMLElement).style.getPropertyValue('--hero-pin'))).toBe('');
+    await expect(description).toHaveClass(/expanded/);
+    const resized = await measure();
+    expect(Math.abs(resized.backdropHeight - resized.height)).toBeLessThan(1);
+    if (viewport.width === 844) expect(resized.height).toBeLessThan(expanded.height);
+  }
+  await page.getByRole('button', { name: 'Show less', exact: true }).click();
+  await expect(description).not.toHaveClass(/expanded/);
+  await page.getByRole('button', { name: 'Read more', exact: true }).click();
+  await expect(description).toHaveClass(/expanded/);
+  await expect.poll(() => hero.evaluate((element) => (element as HTMLElement).style.minHeight)).not.toBe('');
 });
 
 for (const artwork of [true, false]) {
@@ -223,15 +269,16 @@ for (const artwork of [true, false]) {
       await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
       await requestStarted;
       await expect(page.locator('.detail-play')).toBeEnabled();
-      await expect(page.locator('.detail-hero')).toHaveCSS('background-image', artwork ? 'none' : /art\.test\/addon\.jpg/);
+      if (artwork) await detailBackdrop(page).toBe('none');
+      else await detailBackdrop(page).toMatch(/art\.test\/addon\.jpg/);
     } finally { release(); }
     await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
     const expected = artwork ? /image\.tmdb\.org\/t\/p\/w1280\/backdrop\.jpg/ : /art\.test\/addon\.jpg/;
-    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', expected);
+    await detailBackdrop(page).toMatch(expected);
     await page.getByRole('button', { name: 'Back to browsing' }).click();
     await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
     await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
-    await expect(page.locator('.detail-hero')).toHaveCSS('background-image', expected);
+    await detailBackdrop(page).toMatch(expected);
   });
 }
 
@@ -371,7 +418,7 @@ test('TMDB failures leave addon details playable and can be retried', async ({ p
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await expect(page.locator('.tmdb-detail-status')).toContainText('HTTP 401');
   await expect(page.locator('.detail-play')).toBeEnabled();
-  await expect(page.locator('.detail-hero')).toHaveCSS('background-image', /art\.test\/fallback\.jpg/);
+  await detailBackdrop(page).toMatch(/art\.test\/fallback\.jpg/);
   fail = false;
   await page.getByRole('button', { name: 'Retry TMDB details' }).click();
   await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
@@ -1396,18 +1443,24 @@ test('loads more titles in a catalog row and its dedicated page', async ({ page 
   expect(secondPageRequests).toBeGreaterThanOrEqual(2);
 });
 
-test('resets a previously scrolled tab to the top and expands the dock', async ({ page }) => {
+test('compacts the dock after startup and keeps it compact across scroll and tab switches', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 780 });
+  await page.clock.install();
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Films', exact: true })).toBeVisible();
   const dock = page.getByRole('navigation', { name: 'Main navigation' });
+  await expect(dock).not.toHaveClass(/compact/);
+  await page.clock.runFor(5500);
+  await expect(dock).toHaveClass(/compact/);
   await page.mouse.move(195, 450);
   await page.mouse.wheel(0, 900);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
-  await page.mouse.wheel(0, 300);
-  await expect(dock).toHaveClass(/compact/);
   await goTab(page, 'Settings');
-  await expect(dock).not.toHaveClass(/compact/);
+  await expect(dock).toHaveClass(/compact/);
   await goTab(page, 'Home');
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect(dock).toHaveClass(/compact/);
+  await page.reload();
   await expect(dock).not.toHaveClass(/compact/);
 });
 
