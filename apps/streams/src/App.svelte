@@ -34,6 +34,7 @@
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
   import { BrowserResume } from './lib/browser-resume';
   import { forwardNativeVideoEvents } from './lib/native-video-events';
+  import { loadThisDevicePlayback, saveThisDevicePlayback, playbackOpeningOrientation } from './lib/this-device-playback';
   import { NUVIO_COMPLETION_FRACTION, nuvioTimestamp, nuvioSeriesAction, nuvioWatchingItems, nuvioWatchingTargets, watchingCaption } from './lib/nuvio-watching';
   import type { NuvioWatchingTarget } from './lib/nuvio-watching';
   import { browserCompatible, installPlugin, platformCompatible, savedPluginUrls, savedTmdbKey, savePluginUrls, saveTmdbKey, toggleScraper } from './lib/plugins';
@@ -341,6 +342,8 @@
   let playerLoading = false;
   let playerError = '';
   let nativePlayerFallback = savedNativePlayerFallback();
+  let thisDevicePlayback = loadThisDevicePlayback();
+  $: openingOrientationSupported = destinationSupported && playbackBridge()?.capabilities?.localPlaybackOrientation === 1;
   let playerElement: HTMLElement | null = null;
   let nativeVideoCleanup: (() => void) | null = null;
   let playbackDiagnostics = readPlaybackDiagnostics();
@@ -2697,7 +2700,18 @@
     try {
       if (!api?.play || !api.capabilities?.playback) throw new Error('Update PlayBridge to use playback destinations.');
       if (!destinationId) throw new Error('The playback destination is not ready. Choose a device and try again.');
-      const options = { destinationId, addons, canStart: () => navigation === routeRequest && selected?.id === meta.id };
+      if (destinationId === 'this-device' && !thisDevicePlayback.useNativePlayer) {
+        if (!api.getPlaybackDestination) throw new Error('Update PlayBridge to choose a playback destination.');
+        const response = await api.getPlaybackDestination();
+        if (response.destination.id !== destinationId || response.destination.kind !== 'local') {
+          throw Object.assign(new Error('The selected playback destination changed.'), { code: 'receiver_changed' });
+        }
+        if (navigation !== routeRequest || selected?.id !== meta.id) return;
+        await playInBrowser(stream, true, selection);
+        return;
+      }
+      const options = { destinationId, addons, canStart: () => navigation === routeRequest && selected?.id === meta.id,
+        initialOrientation: playbackOpeningOrientation(destinationId, api.capabilities.localPlaybackOrientation === 1, thisDevicePlayback) };
       if (meta.type === 'series') {
         if (!chosenEpisode) throw new Error('Choose an episode first.');
         await lazyCastSeries(meta, meta.videos?.length ? meta.videos : [chosenEpisode], chosenEpisode, stream, addons, plugins, tmdbKey,
@@ -3159,6 +3173,13 @@
       <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
       <div class="catalog-cache-controls"><strong>Catalog refresh</strong><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
       <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} onChange={updateStreamSelection} />
+      {#if destinationSupported}
+        <div class="this-device-playback-settings">
+          <label class="playback-fallback-control"><span><strong>Use PlayBridge video player on this device</strong><small>When This device is selected, open PlayBridge’s built-in player instead of the browser player. Other destinations are unchanged.</small></span><input type="checkbox" role="switch" bind:checked={thisDevicePlayback.useNativePlayer} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} aria-label="Use PlayBridge video player on this device" /></label>
+          <label class="source-destination">Player opening orientation <select bind:value={thisDevicePlayback.initialOrientation} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} disabled={!thisDevicePlayback.useNativePlayer || !openingOrientationSupported} aria-label="Player opening orientation"><option value="landscape">Landscape</option><option value="portrait">Portrait</option><option value="auto">Automatic</option></select></label>
+          <p class="panel-copy">Applies only to the built-in player on This device. Landscape is the default; this is not a permanent rotation lock.{#if !openingOrientationSupported} Update PlayBridge to choose the opening orientation.{/if}</p>
+        </div>
+      {/if}
       <label class="playback-fallback-control"><span><strong>Native player fallback</strong><small>If MoviPlayer cannot play a stream, try the browser’s video player. On by default.</small></span><input type="checkbox" role="switch" bind:checked={nativePlayerFallback} onchange={saveNativePlayerFallback} aria-label="Native player fallback" /></label>
       <details class="playback-diagnostics"><summary>Playback diagnostics <span>{playbackDiagnostics.length} events</span></summary><p>Recent player attempts remain on this device across refreshes. Reports omit stream URLs, headers, and account credentials.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button><button type="button" onclick={removePlaybackReport}>Clear history</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>
       <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addAddon(); }}><input type="url" bind:value={addonInput} placeholder="https://addon.example/manifest.json" aria-label="Addon manifest URL" required /><button type="submit" disabled={adding}>{#if adding}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>

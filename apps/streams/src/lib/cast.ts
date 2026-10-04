@@ -2,13 +2,14 @@ import { fetchAddonSubtitles } from './subtitles';
 import { fetchStreams, playableStream } from './addons';
 import { savedStreamSelection, selectionContext, selectNextStream } from './stream-selection';
 import type { StreamSelectionContext } from './stream-selection';
+import type { PlayerOpeningOrientation } from './this-device-playback';
 import type { CastItem, InstalledAddon, LinkedSession, Meta, PluginRepository, Stream, Video } from './types';
 
 export function playbackBridge() {
   return typeof window === 'undefined' ? undefined : window.__bridgedTest?.playbridge ?? window.playbridge;
 }
 
-export type PlaybackOptions = { destinationId: string; addons: InstalledAddon[]; canStart?: () => boolean };
+export type PlaybackOptions = { destinationId: string; addons: InstalledAddon[]; canStart?: () => boolean; initialOrientation?: PlayerOpeningOrientation };
 
 async function addSubtitles(item: CastItem, meta: Meta, options?: PlaybackOptions): Promise<CastItem> {
   if (!options) return item;
@@ -25,7 +26,8 @@ function openPlayback(payload: Record<string, unknown>, options?: PlaybackOption
   if (options) {
     if (options.canStart && !options.canStart()) throw new Error('Playback was cancelled because the selected title changed.');
     if (!bridge?.play || !bridge.capabilities?.playback) throw new Error('Update PlayBridge to use playback destinations.');
-    return bridge.play({ ...payload, destinationId: options.destinationId });
+    return bridge.play({ ...payload, destinationId: options.destinationId,
+      ...(options.destinationId === 'this-device' && options.initialOrientation ? { initialOrientation: options.initialOrientation } : {}) });
   }
   return bridge!.linkCast!(payload);
 }

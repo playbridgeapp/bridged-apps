@@ -205,6 +205,7 @@ export interface PlaybridgeBridge {
   play?(payload: Record<string, unknown>): Promise<LinkedSession>;
   capabilities?: {
     playback?: number;
+    localPlaybackOrientation?: number;
     linkedCast?: boolean;
     nativePlugins?: number;
   };
