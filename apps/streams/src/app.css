@@ -59,7 +59,7 @@ main{width:100%;min-height:100vh}
 .media-row{gap:14px;padding-bottom:22px}
 .media-card{width:174px;min-width:174px}
 .media-card .poster{border-radius:7px;background:#1d2228;box-shadow:none}
-.media-card:hover .poster{outline:2px solid #ffffffb0;outline-offset:2px}
+@media(hover:hover){.media-card:hover .poster{outline:2px solid #ffffffb0;outline-offset:2px}}
 .media-card strong{font-size:13px;margin-top:10px}
 .poster-grid{grid-template-columns:repeat(auto-fill,minmax(160px,1fr))}
 .browse .catalog-section{margin-bottom:35px}
@@ -724,7 +724,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 .detail-ambient{position:sticky;top:0;z-index:0;height:100dvh;margin-bottom:-100dvh;overflow:hidden;pointer-events:none}
 .detail-ambient::before{content:'';position:absolute;inset:-80px;background-image:var(--ambient-bg,none);background-size:cover;background-position:center;filter:blur(42px) saturate(1.15);transform:translateZ(0)}
 .detail-ambient::after{content:'';position:absolute;inset:0;background:#090b0fb8}
-.detail-panel>:not(.detail-ambient):not(.detail-back){position:relative;z-index:1}
+.detail-panel>:not(.detail-ambient):not(.detail-back):not(.season-mobile-sheet){position:relative;z-index:1}
 .detail-hero::before{-webkit-mask-image:linear-gradient(#000 55%,transparent);mask-image:linear-gradient(#000 55%,transparent)}
 
 .home-ambient{position:sticky;top:0;z-index:0;height:100svh;margin-bottom:-100svh;overflow:hidden;pointer-events:none}

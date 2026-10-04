@@ -5,13 +5,16 @@
   export let meta: Meta;
   export let onSelect: (preview: MetaPreview) => void;
   export let onTrailer: (trailer: MetaTrailer) => void;
+  let broken = new Set<string>();
+  function markBroken(url: string) { broken.add(url); broken = new Set(broken); }
+  $: visibleTrailers = (meta.trailers ?? []).filter((trailer) => trailer.thumbnail && !broken.has(trailer.thumbnail));
 </script>
 
 {#if meta.people?.length}
   <section class="detail-section" aria-label="Cast"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="people-rail">{#each meta.people.slice(0, 16) as person}<div class="person-card"><div class="person-art">{#if person.photo}<img src={person.photo} alt={person.name} loading="lazy" />{:else}<span>{person.name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span>{/if}</div><strong>{person.name}</strong>{#if person.character}<small>{person.character}</small>{/if}</div>{/each}</div></section>
 {/if}
-{#if meta.trailers?.length}
-  <section class="detail-section" aria-label="Trailers"><div class="section-heading"><div><span class="section-type">TAKE A LOOK</span><h2>Trailers</h2></div></div><div class="trailers-rail">{#each meta.trailers as trailer}<button class="trailer-card" onclick={() => onTrailer(trailer)} aria-label={`Play ${trailer.name}`}><div><img src={trailer.thumbnail} alt="" loading="lazy" /><span><Play size={24} fill="currentColor" /></span></div><strong>{trailer.name}</strong><small>Play trailer</small></button>{/each}</div></section>
+{#if visibleTrailers.length}
+  <section class="detail-section" aria-label="Trailers"><div class="section-heading"><div><span class="section-type">TAKE A LOOK</span><h2>Trailers</h2></div></div><div class="trailers-rail">{#each visibleTrailers as trailer}<button class="trailer-card" onclick={() => onTrailer(trailer)} aria-label={`Play ${trailer.name}`}><div><img src={trailer.thumbnail} alt="" loading="lazy" onerror={() => markBroken(trailer.thumbnail)} /><span><Play size={24} fill="currentColor" /></span></div><strong>{trailer.name}</strong><small>Play trailer</small></button>{/each}</div></section>
 {/if}
 {#each [{ title: 'Production companies', items: meta.productionCompanies }, { title: 'Networks', items: meta.networks }] as group}
   {#if group.items?.length}<section class="detail-section" aria-label={group.title}><div class="section-heading"><h2>{group.title}</h2></div><div class="company-list">{#each group.items as company}<div class="company-card">{#if company.logo}<div class="company-logo"><img src={company.logo} alt="" loading="lazy" /></div>{/if}<strong>{company.name}</strong></div>{/each}</div></section>{/if}

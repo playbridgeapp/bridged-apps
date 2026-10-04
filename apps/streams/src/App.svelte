@@ -71,8 +71,16 @@
         .map((item) => item.trim().slice(0, 100)).slice(0, 8) : [];
     } catch { return []; }
   }
+  // Browser back/forward (incl. iOS edge-swipe) already animates natively; skip our own fades then.
+  let historyTraversal = false;
+  if (typeof window !== 'undefined') {
+    window.addEventListener('popstate', () => {
+      historyTraversal = true;
+      setTimeout(() => { historyTraversal = false; }, 700);
+    }, true);
+  }
   const motionDuration = (milliseconds: number) => typeof window !== 'undefined'
-    && window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : milliseconds;
+    && (historyTraversal || window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : milliseconds;
   function savedDiscoverCatalogKey(): string {
     try { return localStorage.getItem(DISCOVER_CATALOG_KEY) || ''; } catch { return ''; }
   }
@@ -253,6 +261,7 @@
   let loadingDetail = false;
   let detailError = '';
   let season = 1;
+  let brokenLogos = new Set<string>();
   let seasonPickerOpen = false;
   let seasonWheel: HTMLDivElement | null = null;
   let seasonWheelTimer: number | undefined;
@@ -3270,7 +3279,7 @@
         <div class="detail-intro">
           {#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}
           <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
-          {#if selected.logo}<img class="detail-logo" src={selected.logo} alt={selected.name} />{:else}<h1>{selected.name}</h1>{/if}
+          {#if selected.logo && !brokenLogos.has(selected.logo)}<img class="detail-logo" src={selected.logo} alt={selected.name} onerror={(event) => { const url = event.currentTarget.getAttribute('src'); if (url) brokenLogos = new Set([...brokenLogos, url]); }} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
           <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail || nativePlayBusy || destinationBusy || destinationPending}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>
           {@render destinationRow()}

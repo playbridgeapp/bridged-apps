@@ -1,6 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
 const addon = 'https://addon.test';
+const imageFixture = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 const movie = { id: 'tt100', type: 'movie', name: 'Sample Film', poster: '' };
 const series = { id: 'tt200', type: 'series', name: 'Sample Series', poster: '' };
 
@@ -141,7 +142,7 @@ async function enableTmdbEnrichment(page: Page) {
 async function mockTmdb(page: Page) {
   const requests: string[] = [];
   await page.route('https://image.tmdb.org/**', (route) => route.fulfill({ status: 404, body: '' }));
-  await page.route('https://i.ytimg.com/**', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.route('https://i.ytimg.com/**', (route) => route.fulfill({ contentType: 'image/gif', body: imageFixture }));
   await page.route('https://api.themoviedb.org/**', (route) => {
     const path = new URL(route.request().url()).pathname;
     requests.push(path);
@@ -176,6 +177,96 @@ async function mockTmdb(page: Page) {
     return route.fulfill({ json: data, headers: { 'access-control-allow-origin': '*' } });
   });
   return requests;
+}
+
+test('falls back to the title when its logo fails to load', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+    json: { meta: { ...movie, logo: 'https://art.test/broken-logo.png' } },
+    headers: { 'access-control-allow-origin': '*' }
+  }));
+  await page.route('https://art.test/broken-logo.png', (route) => route.fulfill({ status: 404, body: '' }));
+  await page.goto('/#/movie/tt100');
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect(page.getByRole('heading', { name: movie.name, exact: true })).toBeVisible();
+  await expect(page.locator('.detail-logo')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+test('handles a queued logo error after closing cold-linked details', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (error) => errors.push(error.message));
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const requestStarted = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+    json: { meta: { ...movie, logo: 'https://art.test/delayed-logo.png' } },
+    headers: { 'access-control-allow-origin': '*' }
+  }));
+  await page.route('https://art.test/delayed-logo.png', async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ status: 404, body: '' });
+  });
+  try {
+    // A query change forces a fresh document, with no history-traversal fade suppression.
+    await page.goto('/?logo-regression#/movie/tt100', { waitUntil: 'domcontentloaded' });
+    await requestStarted;
+    await expect(page.locator('.detail-play')).toBeEnabled();
+    // Deliver the queued error while the closing image is still mounted, before
+    // the outro finishes. A synchronous dispatch makes this race deterministic.
+    await page.evaluate(() => {
+      const logo = document.querySelector<HTMLImageElement>('.detail-logo')!;
+      document.querySelector<HTMLButtonElement>('.detail-back')!.click();
+      logo.dispatchEvent(new Event('error'));
+    });
+  } finally { release(); }
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.locator('.detail-panel')).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
+for (const healthyThumbnail of [true, false]) {
+  test(healthyThumbnail ? 'hides missing and broken trailer thumbnails but retains the healthy trailer'
+    : 'removes the Trailers row when every thumbnail is missing or broken', async ({ page }) => {
+    const failedRequests = new Set<string>();
+    const trailers = [
+      { id: 'absent', name: 'No thumbnail', url: 'https://www.youtube.com/watch?v=missing0001' },
+      { id: 'missing', name: 'Missing thumbnail', url: 'https://www.youtube.com/watch?v=missing0000', thumbnail: '' },
+      { id: 'http-error', name: 'HTTP failure', url: 'https://www.youtube.com/watch?v=httperror00', thumbnail: 'https://art.test/http-error.jpg' },
+      { id: 'decode-error', name: 'Decode failure', url: 'https://www.youtube.com/watch?v=decodeerror', thumbnail: 'https://art.test/decode-error.jpg' },
+      ...(healthyThumbnail ? [{ id: 'healthy', name: 'Healthy trailer', url: 'https://www.youtube.com/watch?v=abcdef12345', thumbnail: 'https://art.test/healthy.gif' }] : [])
+    ];
+    await page.route(`${addon}/meta/movie/tt100.json`, (route) => route.fulfill({
+      json: { meta: { ...movie, trailers } }, headers: { 'access-control-allow-origin': '*' }
+    }));
+    await page.route('https://art.test/**', (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/healthy.gif') return route.fulfill({ contentType: 'image/gif', body: imageFixture });
+      failedRequests.add(path);
+      return route.fulfill({ status: path === '/http-error.jpg' ? 404 : 200,
+        contentType: 'image/jpeg', body: 'Not an image' });
+    });
+    await page.goto('/#/movie/tt100');
+    await expect(page.locator('.detail-play')).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Play Missing thumbnail', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Play No thumbnail', exact: true })).toHaveCount(0);
+    const row = page.getByRole('region', { name: 'Trailers', exact: true });
+    // Images are lazy-loaded: bring the row into view before checking failures.
+    if (healthyThumbnail) await row.scrollIntoViewIfNeeded();
+    else await page.locator('.detail-panel').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect.poll(() => failedRequests.size).toBe(2);
+    await expect(page.getByRole('button', { name: 'Play HTTP failure', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Play Decode failure', exact: true })).toHaveCount(0);
+    if (healthyThumbnail) {
+      await expect(row).toBeVisible();
+      await expect(row.locator('.trailer-card')).toHaveCount(1);
+      await expect(row.getByRole('button', { name: 'Play Healthy trailer', exact: true })).toBeVisible();
+      await expect.poll(() => row.locator('img').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    } else await expect(row).toHaveCount(0);
+  });
 }
 
 test('waits for addon metadata before showing the detail backdrop', async ({ page }) => {
