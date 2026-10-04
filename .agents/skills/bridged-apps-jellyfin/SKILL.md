@@ -10,7 +10,7 @@ description: Work on the Jellyfin companion client under apps/jellyfin/ and its 
 - Repo root is this monorepo (`bridged-apps/`). The app lives in `apps/jellyfin/` (Svelte 5 + Vite on port **5180**).
 - Jellyfin E2E lives in `e2e/jellyfin/`, using `e2e/playwright.config.ts`. Streams has a separate config and suite; shared `e2e/helpers/` changes must consider their callers.
 - Load this skill before changing UI, player, auth, or tests.
-- Do **not** assign `window.playbridge`. That name is the **native Cast bridge** (`cast`, `linkCast`, `capabilities`). Test hooks are `window.__bridgedTest` only (`apps/jellyfin/src/main.ts`).
+- Do **not** assign `window.playbridge`. That name is the **native playback/Cast/plugin bridge**; feature-detect its methods and `capabilities`. Jellyfin’s adapter still uses `cast()` / `linkCast()`. Test hooks are `window.__bridgedTest` only (`apps/jellyfin/src/main.ts`).
 
 ## Work safely
 
@@ -21,6 +21,7 @@ description: Work on the Jellyfin companion client under apps/jellyfin/ and its 
 5. Prefer clicking real UI. Use `__bridgedTest.switchAccount` only to inject a live session in e2e.
 6. The production bridge adapter is `apps/jellyfin/src/lib/cast/playbridge.ts`. It currently uses `cast()` / `linkCast()`; do not assume Jellyfin already uses Streams' unified `play()` destination flow. Coordinate native API changes with the PlayBridge repo.
 7. Production service workers cache versioned app assets only; keep account, API and authenticated media requests out of the cache.
+8. Native hosts own installed-app name/Home URL editing and removal. The manifest’s `start_url` supplies the initial home; users may edit it within the installed origin. Fresh host launches start at the saved home, not the last deep link, while live Dashboard/Remote switches retain the page. Keep cold-entry routes and account restoration working; removal does not erase website storage or casting grants. These native settings do not add website installation-management APIs. See the PlayBridge repo’s `docs/bridged-apps.md`.
 
 ## Commands (from repo root)
 
