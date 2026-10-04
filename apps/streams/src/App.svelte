@@ -33,6 +33,7 @@
   import { bridgeAvailable, castMovie, lazyCastSeries, playbackBridge, stopLinkedCast } from './lib/cast';
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
   import { BrowserResume } from './lib/browser-resume';
+  import { forwardNativeVideoEvents } from './lib/native-video-events';
   import { NUVIO_COMPLETION_FRACTION, nuvioTimestamp, nuvioSeriesAction, nuvioWatchingItems, nuvioWatchingTargets, watchingCaption } from './lib/nuvio-watching';
   import type { NuvioWatchingTarget } from './lib/nuvio-watching';
   import { browserCompatible, installPlugin, platformCompatible, savedPluginUrls, savedTmdbKey, savePluginUrls, saveTmdbKey, toggleScraper } from './lib/plugins';
@@ -341,6 +342,7 @@
   let playerError = '';
   let nativePlayerFallback = savedNativePlayerFallback();
   let playerElement: HTMLElement | null = null;
+  let nativeVideoCleanup: (() => void) | null = null;
   let playbackDiagnostics = readPlaybackDiagnostics();
   let playbackAttempt = Math.max(0, ...playbackDiagnostics.map((entry) => entry.attempt));
   let diagnosticsChecking = false;
@@ -677,6 +679,7 @@
   }
 
   onDestroy(() => {
+    clearNativeVideoEvents();
     nuvioMetadataController?.abort();
     cancelNativeResolution();
   });
@@ -2763,10 +2766,31 @@
   function resetPlayer() {
     if (playing) logPlayback('player closed');
     if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
+    clearNativeVideoEvents();
     playerElement?.removeAttribute('src');
     playing = null;
     playerLoading = false;
     playerError = '';
+  }
+
+  function clearNativeVideoEvents() {
+    nativeVideoCleanup?.();
+    nativeVideoCleanup = null;
+  }
+
+  function browserNativeFallback(event: Event) {
+    const host = event.currentTarget as HTMLElement;
+    if (host !== playerElement || !playing) return;
+    logPlayback('native fallback');
+    playerError = '';
+    clearNativeVideoEvents();
+    const video = [...(host.shadowRoot?.querySelectorAll('video') || [])]
+      .find((media) => getComputedStyle(media).display !== 'none');
+    if (!video) return;
+    const playback = playing;
+    nativeVideoCleanup = forwardNativeVideoEvents(host, video,
+      () => playerElement === host && playing === playback
+        && host.shadowRoot?.contains(video) === true && getComputedStyle(video).display !== 'none');
   }
 
   function browserPositionMs(): number {
@@ -2853,6 +2877,7 @@
       if (stream) {
         playbackAttempt += 1;
         logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
+        clearNativeVideoEvents();
         playing = { meta: current.meta, video: next, stream, selection: current.selection,
           resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress, nuvioWatched) };
         episode = next;
@@ -3320,7 +3345,7 @@
     <div class="player-stage">
       {#key playing}
         {#if playerReady}
-          <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={playing.stream.headers} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onseeked={applyBrowserResume} onplaying={browserPlaying} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
+          <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={playing.stream.headers} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onseeked={applyBrowserResume} onplaying={browserPlaying} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={browserNativeFallback}></movi-player>
         {:else if nativePlayerFallback}
           <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
           <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onseeked={applyBrowserResume} onplaying={browserPlaying} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>

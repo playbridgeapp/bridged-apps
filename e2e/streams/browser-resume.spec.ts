@@ -1,6 +1,8 @@
 import { expect, test, type Page } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { fixture, point, addon } from './watching-fixture';
 
 const mediaFixtures = {
@@ -8,11 +10,12 @@ const mediaFixtures = {
   mkv: readFileSync(join(__dirname, 'fixtures/resume.mkv'))
 };
 
-async function resumeFixture(page: Page, format: keyof typeof mediaFixtures, native = false) {
+async function resumeFixture(page: Page, format: keyof typeof mediaFixtures, native = false,
+  url = `https://watching-media.test/resume.${format}`) {
   await page.addInitScript(() => {
     const hook = (window as any).__bridgedTest ||= {};
     hook.resumeEvents = [];
-    for (const type of ['loadedmetadata', 'playing', 'seeked']) {
+    for (const type of ['loadedmetadata', 'playing', 'seeked', 'nativefallback', 'ended']) {
       window.addEventListener(type, (event) => {
         const media = event.target as HTMLMediaElement;
         if (media.tagName === 'MOVI-PLAYER') hook.resumeEvents.push({ type, time: media.currentTime });
@@ -40,9 +43,32 @@ async function resumeFixture(page: Page, format: keyof typeof mediaFixtures, nat
     return route.fulfill({ status: range ? 206 : 200, headers, body: body.subarray(start, end + 1) });
   });
   await page.route(`${addon}/stream/**`, (route) => route.fulfill({ json: {
-    streams: [{ name: 'Resume fixture', url: `https://watching-media.test/resume.${format}` }]
+    streams: [{ name: 'Resume fixture', url }]
   } }));
   return state;
+}
+
+// Real HTTP is important: Playwright's route.fulfill can bypass CORS checks.
+async function noCorsMedia() {
+  const body = mediaFixtures.mp4;
+  const server = createServer((request, response) => {
+    if (request.url === '/entry.mp4') {
+      response.writeHead(307, { 'access-control-allow-origin': '*',
+        location: `http://127.0.0.1:${(server.address() as AddressInfo).port}/resume.mp4` });
+      response.end();
+      return;
+    }
+    const range = request.headers.range?.match(/bytes=(\d+)-(\d*)/);
+    const start = range ? Number(range[1]) : 0;
+    const end = range ? Math.min(range[2] ? Number(range[2]) : body.length - 1, body.length - 1) : body.length - 1;
+    response.writeHead(range ? 206 : 200, { 'accept-ranges': 'bytes', 'content-type': 'video/mp4',
+      'content-length': String(end - start + 1),
+      ...(range ? { 'content-range': `bytes ${start}-${end}/${body.length}` } : {}) });
+    response.end(request.method === 'HEAD' ? undefined : body.subarray(start, end + 1));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { url: `http://localhost:${(server.address() as AddressInfo).port}/entry.mp4`,
+    close: async () => { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); } };
 }
 
 async function openPlayer(page: Page, title: string) {
@@ -139,3 +165,62 @@ for (const kind of ['movie', 'series'] as const) {
     expect(frameTime).toBeLessThan(target + 5);
   });
 }
+
+for (const kind of ['movie', 'series'] as const) {
+  test(`Movi's internal native handoff resumes ${kind} after a no-CORS redirect and saves progress`, async ({ page }) => {
+    const media = await noCorsMedia();
+    try {
+      const state = await resumeFixture(page, 'mp4', false, media.url);
+      const target = kind === 'movie' ? 52.345 : 94.25;
+      const player = await openPlayer(page, kind === 'movie' ? 'Test Movie' : 'Test Series');
+      await expect(player).toHaveJSProperty('tagName', 'MOVI-PLAYER');
+      await expect.poll(() => player.evaluate((node, seconds) => {
+        const element = node as HTMLMediaElement;
+        return !!(node as any)._nativeFallbackActive && !element.seeking
+          && element.currentTime >= seconds - .2 && element.currentTime < seconds + 5;
+      }, target), { timeout: 15_000 }).toBe(true);
+      const video = player.locator('video').first();
+      await expect(video).toBeVisible();
+      const frameTime = await video.evaluate((node) => new Promise<number>((resolve) => {
+        (node as HTMLVideoElement).requestVideoFrameCallback((_now, metadata) => resolve(metadata.mediaTime));
+      }));
+      expect(frameTime).toBeGreaterThanOrEqual(target - .2);
+      expect(frameTime).toBeLessThan(target + 5);
+      await video.evaluate((node) => (node as HTMLVideoElement).pause());
+      const contentId = kind === 'movie' ? 'tt-movie' : 'tt-watching';
+      await expect.poll(() => state.writes.filter((write) => write.method === 'sync_push_watch_progress')
+        .flatMap((write) => write.body.p_entries).filter((entry) => entry.content_id === contentId).length).toBeGreaterThan(0);
+      const entries = state.writes.filter((write) => write.method === 'sync_push_watch_progress')
+        .flatMap((write) => write.body.p_entries).filter((entry) => entry.content_id === contentId);
+      expect(entries.every((entry) => entry.position >= target * 1000 - 500)).toBe(true);
+      const oldVideo = await video.elementHandle();
+      await page.getByRole('button', { name: 'Close player', exact: true }).click();
+      const count = await page.evaluate(() => (window as any).__bridgedTest.resumeEvents.length);
+      await oldVideo!.evaluate((node) => {
+        for (const type of ['loadedmetadata', 'canplay', 'seeked', 'timeupdate', 'pause']) node.dispatchEvent(new Event(type));
+      });
+      expect(await page.evaluate(() => (window as any).__bridgedTest.resumeEvents.length)).toBe(count);
+    } finally { await media.close(); }
+  });
+}
+
+test('internal native playback advances exactly once at EOF through the same no-CORS source', async ({ page }) => {
+  const media = await noCorsMedia();
+  try {
+    await resumeFixture(page, 'mp4', false, media.url);
+    const player = await openPlayer(page, 'Test Series');
+    await expect.poll(() => player.evaluate((node) => {
+      const element = node as HTMLMediaElement;
+      return !!(node as any)._nativeFallbackActive && !element.seeking && element.currentTime > 94;
+    })).toBe(true);
+    await player.locator('video').first().evaluate((node) => { (node as HTMLVideoElement).currentTime = 128; });
+    await expect(page.locator('.player-title')).toContainText('S1 E5', { timeout: 15_000 });
+    await expect.poll(() => player.evaluate((node) => {
+      const element = node as HTMLMediaElement;
+      return !!(node as any)._nativeFallbackActive && !element.seeking && element.currentTime > 0 && element.currentTime < 5;
+    })).toBe(true);
+    expect(await page.evaluate(() => (window as any).__bridgedTest.resumeEvents
+      .filter((event: { type: string }) => event.type === 'ended').length)).toBe(1);
+    await expect(page.locator('.player-title')).toContainText('S1 E5');
+  } finally { await media.close(); }
+});
