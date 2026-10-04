@@ -78,9 +78,23 @@ export async function browserPlayer(page: Page) {
   await page.getByRole('button', { name: 'View details for Test Series', exact: true }).first().click();
   // The first card is Continue Watching and goes directly to the saved episode.
   await expect(page.getByRole('dialog', { name: 'Streams for Test Series' })).toBeVisible();
+  const banner = page.locator('.stream-resume-banner');
+  await expect(banner).toBeVisible();
+  const clock = (await banner.innerText()).match(/\d+(?::\d{2})+/)?.[0];
+  const resumeSeconds = clock?.split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0) || 0;
   await page.locator('.stream-result .watch-button').click();
   const player = page.getByRole('dialog', { name: 'Now playing Test Series' });
-  await expect(player).toBeVisible(); return player;
+  await expect(player).toBeVisible();
+  if (resumeSeconds > 0) {
+    // This fixture aborts media requests. Simulate the initial seek landing
+    // before tests inject later progress/caption events. Real decoding is
+    // covered separately by browser-resume.spec.ts.
+    await player.locator('.player-stage > movi-player, .player-stage > video').evaluate((node, seconds) => {
+      Object.defineProperties(node, { currentTime: { configurable: true, value: seconds }, duration: { configurable: true, value: 3000 } });
+      node.dispatchEvent(new Event('seeked'));
+    }, resumeSeconds);
+  }
+  return player;
 }
 export async function report(page: Page, position: number, event = 'pause') {
   await page.locator('.player-stage > movi-player, .player-stage > video').evaluate((node, value) => {

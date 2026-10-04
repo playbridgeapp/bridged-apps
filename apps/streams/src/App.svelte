@@ -32,6 +32,7 @@
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
   import { bridgeAvailable, castMovie, lazyCastSeries, playbackBridge, stopLinkedCast } from './lib/cast';
   import { defaultSeason, resumeEpisode, resumePositionMs } from './lib/resume';
+  import { BrowserResume } from './lib/browser-resume';
   import { NUVIO_COMPLETION_FRACTION, nuvioTimestamp, nuvioSeriesAction, nuvioWatchingItems, nuvioWatchingTargets, watchingCaption } from './lib/nuvio-watching';
   import type { NuvioWatchingTarget } from './lib/nuvio-watching';
   import { browserCompatible, installPlugin, platformCompatible, savedPluginUrls, savedTmdbKey, savePluginUrls, saveTmdbKey, toggleScraper } from './lib/plugins';
@@ -333,7 +334,8 @@
     finally { destinationBusy = false; }
   }
 
-  let playing: { meta: Meta; stream: Stream; selection: StreamSelectionContext; video: Video | null; resumePositionMs: number; resumeApplied: boolean } | null = null;
+  let playing: { meta: Meta; stream: Stream; selection: StreamSelectionContext; video: Video | null; resumePositionMs: number } | null = null;
+  const browserResume = new BrowserResume();
   let playerReady = false;
   let playerLoading = false;
   let playerError = '';
@@ -2751,7 +2753,7 @@
       return;
     }
     const video = meta.type === 'series' ? chosenEpisode : null;
-    playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress, nuvioWatched), resumeApplied: false };
+    playing = { meta, stream, selection, video, resumePositionMs: resumePositionMs(meta, video, accountLibrary, nuvioProgress, nuvioWatched) };
   }
 
   function closePlayer() {
@@ -2773,19 +2775,8 @@
   }
 
   function applyBrowserResume(event: Event) {
-    if (!playing || playing.resumeApplied || playing.resumePositionMs <= 0) return;
-    const media = event.currentTarget as HTMLMediaElement;
-    if (media.getAttribute('src') !== playing.stream.url) return;
-    const duration = Number(media.duration);
-    const seconds = playing.resumePositionMs / 1000;
-    if (Number.isFinite(duration) && duration > 0 && seconds >= duration * .95) {
-      playing.resumeApplied = true;
-      return;
-    }
-    try {
-      media.currentTime = seconds;
-      playing.resumeApplied = true;
-    } catch { /* Retry when the player becomes ready to seek. */ }
+    if (event.currentTarget !== playerElement) return;
+    browserResume.apply(event.currentTarget as HTMLMediaElement, playing);
   }
 
   function browserMetadataReady(event: Event) {
@@ -2799,11 +2790,18 @@
     applyBrowserResume(event);
   }
 
+  function browserPlaying(event: Event) {
+    if (event.currentTarget !== playerElement) return;
+    browserResume.observe(event.currentTarget as HTMLMediaElement, playing);
+    logPlayback(event.currentTarget instanceof HTMLVideoElement ? 'native playing' : 'playing');
+  }
+
   function browserTimeUpdate(event: Event) {
     browserWatchState(event, 'playing');
   }
 
   function browserPlaybackError(event: Event) {
+    if (event.currentTarget !== playerElement) return;
     const detail = (event as CustomEvent<unknown>).detail;
     const reason = detail instanceof Error ? detail.message
       : typeof detail === 'string' ? detail
@@ -2819,6 +2817,7 @@
   }
 
   function browserPlaybackEnded(event: Event) {
+    if (event.currentTarget !== playerElement) return;
     logPlayback('playback ended');
     browserWatchState(event, 'ended');
     void browserEnded();
@@ -2829,7 +2828,7 @@
   }
 
   function reportBrowserPosition(element: HTMLMediaElement, state: string) {
-    if (!playing || element.getAttribute('src') !== playing.stream.url) return;
+    if (!playing || element !== playerElement || !browserResume.observe(element, playing)) return;
     const positionMs = Number(element.currentTime) * 1000;
     const durationMs = Number(element.duration) * 1000;
     if (Number.isFinite(positionMs) && Number.isFinite(durationMs) && positionMs > 0 && durationMs > 0) {
@@ -2855,7 +2854,7 @@
         playbackAttempt += 1;
         logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
         playing = { meta: current.meta, video: next, stream, selection: current.selection,
-          resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress, nuvioWatched), resumeApplied: false };
+          resumePositionMs: resumePositionMs(current.meta, next, accountLibrary, nuvioProgress, nuvioWatched) };
         episode = next;
         season = next.season ?? season;
         const route = mediaRoute('player', next);
@@ -3319,12 +3318,14 @@
   <div class="player-overlay" role="dialog" aria-modal="true" aria-label={`Now playing ${playing.meta.name}`} in:fade={{ duration: motionDuration(220), easing: cubicOut }} out:fade={{ duration: motionDuration(160), easing: cubicIn }}>
     <div class="player-top"><button class="player-back" onclick={closePlayer}><ArrowLeft size={21} /> Choose another stream</button><div class="player-title"><strong>{playing.meta.name}</strong>{#if playing.video}<span> S{playing.video.season} E{playing.video.episode} · {playing.video.title || 'Episode'}</span>{/if}</div><button class="player-close" onclick={closePlayer} aria-label="Close player"><X size={22} /></button></div>
     <div class="player-stage">
-      {#if playerReady}
-        <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={playing.stream.headers} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('playing')} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
-      {:else if nativePlayerFallback}
-        <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
-        <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onplaying={() => logPlayback('native playing')} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>
-      {/if}
+      {#key playing}
+        {#if playerReady}
+          <movi-player bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} title={playing.video?.title || playing.meta.name} headers={playing.stream.headers} wasmurl={moviWasmUrl} controls autoplay playsinline theme="dark" sw="auto" fallback={nativePlayerFallback ? 'native' : undefined} onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onseeked={applyBrowserResume} onplaying={browserPlaying} onwaiting={() => logPlayback('waiting')} onstalled={() => logPlayback('stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError} onnativefallback={() => { logPlayback('native fallback'); playerError = ''; }}></movi-player>
+        {:else if nativePlayerFallback}
+          <!-- svelte-ignore a11y_media_has_caption: source addons do not always provide a caption track -->
+          <video bind:this={playerElement} src={playing.stream.url} poster={playing.meta.background || playing.meta.poster || ''} controls autoplay playsinline onloadedmetadata={browserMetadataReady} oncanplay={browserCanPlay} onseeked={applyBrowserResume} onplaying={browserPlaying} onwaiting={() => logPlayback('native waiting')} onstalled={() => logPlayback('native stalled')} ontimeupdate={browserTimeUpdate} onpause={browserPaused} onended={browserPlaybackEnded} onerror={browserPlaybackError}></video>
+        {/if}
+      {/key}
     </div>
     <div class="player-bottom"><div><span class="eyebrow">PLAYING IN YOUR BROWSER</span><h2>{playing.video?.title || playing.meta.name}</h2><p>{playing.stream.name || playing.stream.title || playing.stream.addonName} · {playing.stream.addonName}</p></div></div>
     <PlayerSubtitles player={playerElement} {addons} type={playing.meta.type} videoId={playing.video?.id || playing.meta.id} />
