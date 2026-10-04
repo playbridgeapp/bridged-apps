@@ -41,7 +41,8 @@ export function cleanServerUrl(url: string): string {
   try {
     const formatted = /^https?:\/\//i.test(cleaned) ? cleaned : `http://${cleaned}`;
     const parsed = new URL(formatted);
-    return `${parsed.protocol}//${parsed.host}`;
+    const path = parsed.pathname.replace(/\/web(?:\/.*)?$/i, '').replace(/\/+$/, '');
+    return `${parsed.origin}${path}`;
   } catch {
     return cleaned.replace(/\/web.*$/i, '').replace(/\/+$/, '');
   }
@@ -125,6 +126,11 @@ export async function validateToken(serverUrl: string, userId: string, token: st
   }
 }
 
+export function cacheKey(serverUrl: string, userId: string, resource: string, options: Record<string, unknown> = {}): string {
+  const query = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b)));
+  return `${cleanServerUrl(serverUrl)}|${userId}|${resource}|${JSON.stringify(query)}`;
+}
+
 export interface UserView {
   Id: string;
   Name: string;
@@ -137,9 +143,9 @@ export async function getUserViews(
   token: string,
   onUpdate?: (views: UserView[]) => void
 ): Promise<UserView[]> {
-  const cacheKey = `views_${userId}`;
+  const key = cacheKey(serverUrl, userId, 'views');
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Views`;
@@ -165,9 +171,9 @@ export async function getResumeItems(
   token: string,
   onUpdate?: (items: JellyfinItem[]) => void
 ): Promise<JellyfinItem[]> {
-  const cacheKey = `resume_${userId}`;
+  const key = cacheKey(serverUrl, userId, 'resume');
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Items/Resume?Limit=12&Recursive=true&Fields=Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,Artists,Album,AlbumArtist`;
@@ -189,9 +195,9 @@ export async function getNextUpEpisodes(
   token: string,
   onUpdate?: (items: JellyfinItem[]) => void
 ): Promise<JellyfinItem[]> {
-  const cacheKey = `nextup_${userId}`;
+  const key = cacheKey(serverUrl, userId, 'nextup');
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Shows/NextUp?UserId=${userId}&Limit=16&Fields=Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,SeriesName,SeasonName,IndexNumber,ParentIndexNumber`;
@@ -214,9 +220,9 @@ export async function getLatestMedia(
   parentId?: string,
   onUpdate?: (items: JellyfinItem[]) => void
 ): Promise<JellyfinItem[]> {
-  const cacheKey = `latest_${userId}_${parentId || 'all'}`;
+  const key = cacheKey(serverUrl, userId, 'latest', { parentId });
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       let url = `${base}/Users/${userId}/Items/Latest?Limit=20&Fields=Overview,PrimaryImageAspectRatio,ProductionYear,CommunityRating,OfficialRating,RunTimeTicks,MediaStreams,UserData,MediaSources,Artists,Album,AlbumArtist,SeriesName,SeasonName,IndexNumber,ParentIndexNumber`;
@@ -254,12 +260,13 @@ export async function getLibraryItems(
     startIndex?: number;
     genres?: string;
     recursive?: boolean;
+    filters?: string;
   } = {},
   onUpdate?: (data: { items: JellyfinItem[]; totalRecordCount: number }) => void
 ): Promise<{ items: JellyfinItem[]; totalRecordCount: number }> {
-  const cacheKey = `lib_${userId}_${options.parentId || 'root'}_${options.includeItemTypes || 'all'}_${options.sortBy || ''}_${options.searchTerm || ''}`;
+  const key = cacheKey(serverUrl, userId, 'library', options);
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const isRecursive = options.recursive !== false;
@@ -279,12 +286,13 @@ export async function getLibraryItems(
       if (options.limit) params.set('Limit', options.limit.toString());
       if (options.startIndex) params.set('StartIndex', options.startIndex.toString());
       if (options.genres) params.set('Genres', options.genres);
+      if (options.filters) params.set('Filters', options.filters);
 
       const url = `${base}/Users/${userId}/Items?${params.toString()}`;
       const res = await fetch(url, {
           headers: getAuthHeaders(token)
       });
-      if (!res.ok) return { items: [], totalRecordCount: 0 };
+      if (!res.ok) throw new Error(`Jellyfin library request failed (HTTP ${res.status}).`);
       const data = await res.json();
       return {
         items: data.Items || [],
@@ -303,9 +311,9 @@ export async function getPlayableFolderItems(
   parentId: string,
   onUpdate?: (items: JellyfinItem[]) => void
 ): Promise<JellyfinItem[]> {
-  const cacheKey = `playable_${userId}_${parentId}`;
+  const key = cacheKey(serverUrl, userId, 'playable', { parentId });
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const params = new URLSearchParams({
@@ -322,7 +330,7 @@ export async function getPlayableFolderItems(
       });
       if (!res.ok) return [];
       const data = await res.json();
-      return (data.Items || []).filter((i: any) => i.Type === 'Audio' || i.Type === 'Movie' || i.Type === 'Episode');
+      return (data.Items || []).filter((i: any) => ['Audio', 'Movie', 'Episode', 'Video'].includes(i.Type));
     },
     onUpdate,
     15 * 60 * 1000 // 15 min fresh
@@ -335,9 +343,9 @@ export async function getItemDetails(
   token: string,
   itemId: string
 ): Promise<JellyfinItem | null> {
-  const cacheKey = `item_${itemId}`;
+  const key = cacheKey(serverUrl, userId, 'item', { itemId });
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Users/${userId}/Items/${itemId}`;
@@ -359,9 +367,9 @@ export async function getSeasons(
   seriesId: string,
   onUpdate?: (seasons: JellyfinSeason[]) => void
 ): Promise<JellyfinSeason[]> {
-  const cacheKey = `seasons_${userId}_${seriesId}`;
+  const key = cacheKey(serverUrl, userId, 'seasons', { seriesId });
   return fetchWithSWR(
-    cacheKey,
+    key,
     async () => {
       const base = cleanServerUrl(serverUrl);
       const url = `${base}/Shows/${seriesId}/Seasons?userId=${userId}&Fields=Overview,PrimaryImageAspectRatio`;
@@ -433,11 +441,14 @@ export function buildDirectStreamUrl(
 export function buildAudioStreamUrl(
   serverUrl: string,
   itemId: string,
-  token: string
+  token: string,
+  mediaSourceId?: string
 ): string {
   const base = cleanServerUrl(serverUrl);
   const deviceId = getDeviceId();
-  return `${base}/Audio/${itemId}/stream?static=true&deviceId=${deviceId}&api_key=${token}`;
+  const params = new URLSearchParams({ static: 'true', deviceId, api_key: token });
+  if (mediaSourceId) params.set('MediaSourceId', mediaSourceId);
+  return `${base}/Audio/${itemId}/stream?${params}`;
 }
 
 export function buildHlsStreamUrl(
@@ -452,79 +463,27 @@ export function buildHlsStreamUrl(
   return `${base}/Videos/${itemId}/master.m3u8?MediaSourceId=${sourceId}&DeviceId=${deviceId}&api_key=${token}&PlaySessionId=${Date.now()}`;
 }
 
-export async function reportPlaybackStart(
-  serverUrl: string,
-  token: string,
-  itemId: string,
-  mediaSourceId?: string
-): Promise<void> {
-  try {
-    const base = cleanServerUrl(serverUrl);
-    await fetch(`${base}/Sessions/Playing`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Emby-Authorization': getAuthHeader(token)
-      },
-      body: JSON.stringify({
-        ItemId: itemId,
-        MediaSourceId: mediaSourceId || itemId,
-        QueueableMediaTypes: ['Video', 'Audio'],
-        CanSeek: true
-      })
-    });
-  } catch {}
+export interface PlaybackReport {
+  ItemId: string;
+  MediaSourceId: string;
+  PlaySessionId?: string;
+  PositionTicks: number;
+  IsPaused: boolean;
+  PlayMethod: string;
+  CanSeek: boolean;
 }
 
-export async function reportPlaybackProgress(
-  serverUrl: string,
-  token: string,
-  itemId: string,
-  positionTicks: number,
-  isPaused: boolean,
-  mediaSourceId?: string
+export async function reportPlayback(
+  serverUrl: string, token: string, event: 'start' | 'progress' | 'stop', report: PlaybackReport
 ): Promise<void> {
-  try {
-    const base = cleanServerUrl(serverUrl);
-    await fetch(`${base}/Sessions/Playing/Progress`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Emby-Authorization': getAuthHeader(token)
-      },
-      body: JSON.stringify({
-        ItemId: itemId,
-        MediaSourceId: mediaSourceId || itemId,
-        PositionTicks: positionTicks,
-        IsPaused: isPaused,
-        EventName: isPaused ? 'Pause' : 'TimeUpdate'
-      })
-    });
-  } catch {}
-}
-
-export async function reportPlaybackStopped(
-  serverUrl: string,
-  token: string,
-  itemId: string,
-  positionTicks: number,
-  mediaSourceId?: string
-): Promise<void> {
-  try {
-    const base = cleanServerUrl(serverUrl);
-    await fetch(`${base}/Sessions/Playing/Stopped`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Emby-Authorization': getAuthHeader(token)
-      },
-      body: JSON.stringify({
-        ItemId: itemId,
-        MediaSourceId: mediaSourceId || itemId,
-        PositionTicks: positionTicks
-      })
-    });
-  } catch {}
+  const endpoint = event === 'start' ? '' : event === 'progress' ? '/Progress' : '/Stopped';
+  const res = await fetch(`${cleanServerUrl(serverUrl)}/Sessions/Playing${endpoint}`, {
+    method: 'POST',
+    headers: { ...getAuthHeaders(token), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...report, QueueableMediaTypes: ['Video', 'Audio'],
+      ...(event === 'progress' ? { EventName: report.IsPaused ? 'Pause' : 'TimeUpdate' } : {}) })
+  });
+  if (!res.ok) throw new Error(`Playback report failed (HTTP ${res.status})`);
 }
 
 export async function toggleFavoriteItem(

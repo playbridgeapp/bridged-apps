@@ -2,15 +2,15 @@ import { writable, derived, get } from 'svelte/store';
 import type { JellyfinItem, ServerConfig, JellyfinSeason, SavedAccount } from '../types';
 import { DEMO_MOVIES, DEMO_SHOWS, DEMO_ALL_ITEMS } from '../data/demoData';
 import * as jfApi from '../api/jellyfin';
-import { getCachedData, hydrateCacheFromStorage, clearAllCache } from '../api/cache';
+import { getCachedData, hydrateCacheFromStorage, clearAllCache, invalidateCache } from '../api/cache';
 import {
-  castDirect,
-  castLinkedQueue,
-  buildSingleCastPayload,
-  buildPlaylistCastPayload,
-  formatVisualMetadata,
-  addDiagnosticLog
+  castDirect, buildSingleCastPayload, addDiagnosticLog, openLinkedQueue, releaseLinkedSession,
+  activeLinkedSession, playbackBridge, supportsDestinations, playbackDestination, refreshPlaybackDestination,
+  playbackError, choosePlaybackDestination
 } from '../cast/playbridge';
+import { preparePlayback } from '../api/playback';
+import { PlaybackReporter } from '../api/playback-reporter';
+import type { PlaybackSelection, PreparedPlayback } from '../types';
 
 const STORAGE_KEY = 'playbridge_jellyfin_session';
 const ACCOUNTS_KEY = 'playbridge_jellyfin_saved_accounts';
@@ -74,6 +74,11 @@ export interface ActivePlayerState {
   episode?: number;
   playlist?: JellyfinItem[];
   currentIndex?: number;
+  prepared?: PreparedPlayback;
+  positionMs?: number;
+  durationMs?: number;
+  nativeState?: string;
+  destinationName?: string;
 }
 
 const IDLE_PLAYER: ActivePlayerState = {
@@ -92,6 +97,12 @@ export const activePlayer = writable<ActivePlayerState>({ ...IDLE_PLAYER });
 
 /** Stop in-browser / cast playback and close player chrome. Used on server switch, logout, and demo load. */
 export function stopPlayback() {
+  playbackGeneration++;
+  playbackBusy.set(false);
+  browserRecovery = null; browserRecoveryAvailable.set(false);
+  browserPrefetch = null; nextBrowserPlayback.set(null);
+  reporter?.stop(); reporter = null;
+  releaseLinkedSession();
   activePlayer.set({ ...IDLE_PLAYER });
   isQueueDrawerOpen.set(false);
   isLyricsOpen.set(false);
@@ -160,6 +171,16 @@ export function removeSavedAccount(accountId: string) {
   showToast('Account removed', 'info');
 }
 
+function hydrateLibrary(config: ServerConfig) {
+  const views = getCachedData<jfApi.UserView[]>(jfApi.cacheKey(config.url, config.userId, 'views'));
+  const movies = getCachedData<{ items: JellyfinItem[] }>(jfApi.cacheKey(config.url, config.userId, 'library', { includeItemTypes: 'Movie' }));
+  const shows = getCachedData<{ items: JellyfinItem[] }>(jfApi.cacheKey(config.url, config.userId, 'library', { includeItemTypes: 'Series' }));
+  if (views) userViews.set(views);
+  if (movies) moviesList.set(movies.items);
+  if (shows) showsList.set(shows.items);
+  if (movies && shows) allLibraryItems.set([...movies.items, ...shows.items]);
+}
+
 export async function switchAccount(account: SavedAccount) {
   stopPlayback();
   isLoadingLibrary.set(true);
@@ -199,22 +220,11 @@ export async function switchAccount(account: SavedAccount) {
   showsList.set([]);
   allLibraryItems.set([]);
 
-  // Pre-fill from cache immediately (0ms instant switch)
-  const cachedViews = getCachedData<jfApi.UserView[]>(`views_${config.userId}`);
-  if (cachedViews) userViews.set(cachedViews);
-
-  const cachedMovies = getCachedData<{ items: JellyfinItem[] }>(`lib_${config.userId}_root_Movie__`);
-  if (cachedMovies) moviesList.set(cachedMovies.items);
-
-  const cachedShows = getCachedData<{ items: JellyfinItem[] }>(`lib_${config.userId}_root_Series__`);
-  if (cachedShows) showsList.set(cachedShows.items);
-
-  if (cachedMovies && cachedShows) {
-    allLibraryItems.set([...cachedMovies.items, ...cachedShows.items]);
-  }
+  nextUpMedia.set([]); libraryLatestMap.set({}); playbackSelections.set({});
+  hydrateLibrary(config);
 
   showToast(`Switched to ${account.username} on ${account.serverName}`, 'success');
-  addDiagnosticLog('success', `Switched active server to ${account.serverName} (${account.username})`, config);
+  addDiagnosticLog('success', `Switched active server to ${account.serverName} (${account.username})`);
 
   // Refresh in background
   await refreshServerLibrary(config);
@@ -242,24 +252,13 @@ export async function initializeSession() {
       if (config.url && config.token && config.userId) {
         serverConfig.set(config);
 
-        // Pre-fill from cache immediately
-        const cachedViews = getCachedData<jfApi.UserView[]>(`views_${config.userId}`);
-        if (cachedViews) userViews.set(cachedViews);
-
-        const cachedMovies = getCachedData<{ items: JellyfinItem[] }>(`lib_${config.userId}_root_Movie__`);
-        if (cachedMovies) moviesList.set(cachedMovies.items);
-
-        const cachedShows = getCachedData<{ items: JellyfinItem[] }>(`lib_${config.userId}_root_Series__`);
-        if (cachedShows) showsList.set(cachedShows.items);
-
-        if (cachedMovies && cachedShows) {
-          allLibraryItems.set([...cachedMovies.items, ...cachedShows.items]);
-        }
+        hydrateLibrary(config);
 
         // Validate token silently (only logs out on explicit 401/403)
         const valid = await jfApi.validateToken(config.url, config.userId, config.token);
+        if (get(serverConfig) !== config) return;
         if (valid) {
-          addDiagnosticLog('success', `Restored active Jellyfin session: ${config.serverName} (${config.username})`, config);
+          addDiagnosticLog('success', `Restored active Jellyfin session: ${config.serverName} (${config.username})`);
           await refreshServerLibrary(config);
         } else {
           addDiagnosticLog('warn', 'Saved Jellyfin session expired (401 Unauthorized). Please sign in again.');
@@ -362,7 +361,7 @@ export async function connectToJellyfinServer(serverUrl: string, username: strin
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
       saveAccountToList(account);
     }
-    addDiagnosticLog('success', `Connected & authenticated on Jellyfin: ${ping.serverName}`, config);
+    addDiagnosticLog('success', `Connected & authenticated on Jellyfin: ${ping.serverName}`);
 
     // Fetch user library content with background cache warming
     await refreshServerLibrary(config);
@@ -379,6 +378,7 @@ export async function connectToJellyfinServer(serverUrl: string, username: strin
 export function logout() {
   stopPlayback();
   serverConfig.set(INITIAL_SERVER);
+  playbackSelections.set({});
   userViews.set([]);
   latestMedia.set([]);
   resumeMedia.set([]);
@@ -394,6 +394,9 @@ export function logout() {
 }
 
 export async function refreshServerLibrary(config: ServerConfig) {
+  const current = () => get(serverConfig) === config;
+  if (!current()) return;
+  const scoped = <T>(callback: (value: T) => void) => (value: T) => { if (current()) callback(value); };
   if (config.isDemo) {
     loadDemoMode();
     return;
@@ -401,14 +404,15 @@ export async function refreshServerLibrary(config: ServerConfig) {
 
   try {
     const [views, latest, resume, nextUp, moviesRes, showsRes] = await Promise.all([
-      jfApi.getUserViews(config.url, config.userId, config.token, (fresh) => userViews.set(fresh)),
-      jfApi.getLatestMedia(config.url, config.userId, config.token, undefined, (fresh) => latestMedia.set(fresh)),
-      jfApi.getResumeItems(config.url, config.userId, config.token, (fresh) => resumeMedia.set(fresh)),
-      jfApi.getNextUpEpisodes(config.url, config.userId, config.token, (fresh) => nextUpMedia.set(fresh)),
-      jfApi.getLibraryItems(config.url, config.userId, config.token, { includeItemTypes: 'Movie' }, (fresh) => moviesList.set(fresh.items)),
-      jfApi.getLibraryItems(config.url, config.userId, config.token, { includeItemTypes: 'Series' }, (fresh) => showsList.set(fresh.items))
+      jfApi.getUserViews(config.url, config.userId, config.token, scoped((fresh) => userViews.set(fresh))),
+      jfApi.getLatestMedia(config.url, config.userId, config.token, undefined, scoped((fresh) => latestMedia.set(fresh))),
+      jfApi.getResumeItems(config.url, config.userId, config.token, scoped((fresh) => resumeMedia.set(fresh))),
+      jfApi.getNextUpEpisodes(config.url, config.userId, config.token, scoped((fresh) => nextUpMedia.set(fresh))),
+      jfApi.getLibraryItems(config.url, config.userId, config.token, { includeItemTypes: 'Movie' }, scoped((fresh) => moviesList.set(fresh.items))),
+      jfApi.getLibraryItems(config.url, config.userId, config.token, { includeItemTypes: 'Series' }, scoped((fresh) => showsList.set(fresh.items)))
     ]);
 
+    if (!current()) return;
     userViews.set(views);
     latestMedia.set(latest.length > 0 ? latest : moviesRes.items);
     resumeMedia.set(resume);
@@ -421,7 +425,7 @@ export async function refreshServerLibrary(config: ServerConfig) {
     if (views.length > 0) {
       const latestPromises = views.map(async (v) => {
         const items = await jfApi.getLatestMedia(config.url, config.userId, config.token, v.Id, (fresh) => {
-          libraryLatestMap.update((m) => ({ ...m, [v.Id]: fresh }));
+          if (current()) libraryLatestMap.update((m) => ({ ...m, [v.Id]: fresh }));
         });
         return { viewId: v.Id, items };
       });
@@ -432,14 +436,14 @@ export async function refreshServerLibrary(config: ServerConfig) {
           newMap[res.viewId] = res.items;
         }
       }
-      libraryLatestMap.set(newMap);
+      if (current()) libraryLatestMap.set(newMap);
     }
 
     addDiagnosticLog('info', `Loaded ${views.length} libraries, ${moviesRes.items.length} movies, ${showsRes.items.length} series, and ${nextUp.length} next up episodes.`);
   } catch (err: any) {
     addDiagnosticLog('warn', `Failed to refresh server library in background: ${err.message}`);
   } finally {
-    isLoadingLibrary.set(false);
+    if (current()) isLoadingLibrary.set(false);
   }
 }
 
@@ -470,7 +474,15 @@ export async function clearAppCache(fullReset = false) {
 
 // Open Detail View
 export async function openItemDetail(item: JellyfinItem) {
+  if (get(playbackBusy)) stopPlayback();
   const config = get(serverConfig);
+  const request = ++detailRequest;
+  detailModalItem.set(item);
+  if (!config.isDemo) {
+    const full = await jfApi.getItemDetails(config.url, config.userId, config.token, item.Id).catch(() => null);
+    if (get(serverConfig) !== config || request !== detailRequest || get(detailModalItem)?.Id !== item.Id) return;
+    if (full) item = { ...item, ...full };
+  }
   if (!config.isDemo && item.Type === 'Series' && (!item.seasons || item.seasons.length === 0)) {
     try {
       const seasons = await jfApi.getSeasons(config.url, config.userId, config.token, item.Id, (fresh) => {
@@ -490,8 +502,9 @@ export async function openItemDetail(item: JellyfinItem) {
       console.error('Failed to load album/folder tracks', err);
     }
   }
-  detailModalItem.set(item);
+  if (get(serverConfig) === config && request === detailRequest && get(detailModalItem)?.Id === item.Id) detailModalItem.set(item);
 }
+let detailRequest = 0;
 
 // Media Stream Resolver
 export function resolveItemStreamUrl(item: JellyfinItem): string {
@@ -525,90 +538,232 @@ export function resolveItemBackdropUrl(item: JellyfinItem): string {
   return resolveItemPosterUrl(item);
 }
 
-// Trigger Playback in Browser Video/Audio Player (Single Item, Folder, Album, or Playlist)
-export async function playInBrowser(
-  item: JellyfinItem,
-  playlist?: JellyfinItem[],
-  startIndex = 0,
-  forceExpand = false
-) {
+// A single route for cards, details, folders, episodes, and browser/native handoff.
+export const playbackBusy = writable(false);
+export const browserRecoveryAvailable = writable(false);
+let browserRecovery: (() => Promise<boolean>) | null = null;
+export async function recoverBrowserPlayback() { await browserRecovery?.(); }
+export const localPlaybackMode = writable<'browser' | 'native'>('browser');
+export const playbackSelections = writable<Record<string, PlaybackSelection>>({});
+export const nextBrowserPlayback = writable<PreparedPlayback | null>(null);
+let browserPrefetch: {
+  config: ServerConfig; queue: JellyfinItem[]; index: number; selection: string;
+  generation: number; promise: Promise<PreparedPlayback>;
+} | null = null;
+
+/** Share the negotiated source between standby audio and the next queue transition. */
+export function prefetchNextBrowserTrack(state: ActivePlayerState) {
+  if (get(playbackBusy)) return;
+  const queue = state.playlist;
+  const index = (state.currentIndex ?? 0) + 1;
+  if (!state.isOpen || state.isCasting || state.item?.Type !== 'Audio' || !queue?.[index] || queue[index].Type !== 'Audio') {
+    browserPrefetch = null; nextBrowserPlayback.set(null); return;
+  }
   const config = get(serverConfig);
-  let queue: JellyfinItem[] = [];
-
-  // If playlist provided, filter to playable media items
-  if (playlist && playlist.length > 0) {
-    queue = playlist.filter((i) => i.Type === 'Audio' || i.Type === 'Movie' || i.Type === 'Episode' || i.Type === 'Video');
-  }
-
-  // If item is a container (Folder, MusicAlbum, Playlist) and queue is empty, resolve playable children
-  if (queue.length === 0 && (item.Type === 'Folder' || item.Type === 'MusicAlbum' || item.Type === 'Playlist')) {
-    if (item.tracks && item.tracks.length > 0) {
-      queue = item.tracks.filter((i) => i.Type === 'Audio' || i.Type === 'Movie' || i.Type === 'Episode' || i.Type === 'Video');
-    } else if (!config.isDemo) {
-      try {
-        const tracks = await jfApi.getPlayableFolderItems(config.url, config.userId, config.token, item.Id);
-        item.tracks = tracks;
-        queue = tracks;
-      } catch (err) {
-        console.error('Failed to resolve folder tracks for in-browser playback', err);
-      }
+  const selection = get(playbackSelections)[queue[index].Id] || {};
+  const signature = JSON.stringify(selection);
+  if (browserPrefetch?.config === config && browserPrefetch.queue === queue
+    && browserPrefetch.index === index && browserPrefetch.selection === signature
+    && browserPrefetch.generation === playbackGeneration) return;
+  const pending = { config, queue, index, selection: signature, generation: playbackGeneration,
+    promise: preparePlayback(config, queue[index], selection, 'browser') };
+  browserPrefetch = pending; nextBrowserPlayback.set(null);
+  void pending.promise.then(prepared => {
+    if (browserPrefetch === pending && pending.generation === playbackGeneration && get(serverConfig) === config) {
+      nextBrowserPlayback.set(prepared);
     }
-  } else if (queue.length === 0 && item.Type === 'Series') {
-    // If item is a series, resolve all episodes across seasons
-    if (!config.isDemo && (!item.seasons || item.seasons.length === 0)) {
-      try {
-        item.seasons = await jfApi.getSeasons(config.url, config.userId, config.token, item.Id);
-      } catch {}
-    }
-    for (const s of (item.seasons || [])) {
-      for (const ep of s.Episodes) {
-        queue.push(ep);
-      }
-    }
-  }
-
-  if (queue.length === 0) {
-    queue = [item];
-  }
-
-  const validIndex = Math.max(0, Math.min(startIndex, queue.length - 1));
-  const targetItem = queue[validIndex];
-  const streamUrl = resolveItemStreamUrl(targetItem);
-
-  // Audio plays in mini player by default unless forceExpand is requested; Videos expand
-  const shouldExpand = forceExpand || (targetItem.Type === 'Movie' || targetItem.Type === 'Episode');
-
-  // Close detail modal so user can continue browsing
-  detailModalItem.set(null);
-
-  activePlayer.set({
-    isOpen: true,
-    isExpanded: shouldExpand,
-    item: targetItem,
-    streamUrl,
-    isCasting: false,
-    isLinkedCast: false,
-    title: targetItem.Name,
-    season: targetItem.ParentIndexNumber,
-    episode: targetItem.IndexNumber,
-    playlist: queue,
-    currentIndex: validIndex
+  }).catch(() => {
+    // Speculative failure must not interrupt the current song; Next can retry.
+    if (browserPrefetch === pending) { browserPrefetch = null; nextBrowserPlayback.set(null); }
   });
+}
+let playbackGeneration = 0;
+let reporter: PlaybackReporter | null = null;
 
-  // Fetch lyrics in background for audio tracks
-  if (targetItem.Type === 'Audio' && !config.isDemo) {
-    jfApi.getItemLyrics(config.url, config.token, targetItem.Id).then((res) => {
-      lyricsData.set(res);
-    }).catch(() => {
-      lyricsData.set(null);
-    });
-  }
+export function recordBrowserProgress(positionMs: number, paused: boolean, force = false) {
+  const state = get(activePlayer);
+  if (!state.isOpen || state.isCasting) return;
+  reporter?.update(positionMs, paused, force);
+}
+export function recordBrowserStopped() { reporter?.stop(); reporter = null; }
 
-  if (queue.length > 1) {
-    showToast(`Playing "${targetItem.Name}" (${validIndex + 1}/${queue.length})`, 'info');
-  } else {
-    showToast(`Playing "${targetItem.Name}"`, 'info');
+function createReporter(config: ServerConfig, item: JellyfinItem, prepared: PreparedPlayback) {
+  return new PlaybackReporter(config, item, prepared, () => {
+    invalidateCache(jfApi.cacheKey(config.url, config.userId, 'resume'));
+    invalidateCache(jfApi.cacheKey(config.url, config.userId, 'nextup'));
+    if (get(serverConfig) !== config || config.isDemo) return;
+    void Promise.all([
+      jfApi.getResumeItems(config.url, config.userId, config.token),
+      jfApi.getNextUpEpisodes(config.url, config.userId, config.token)
+    ]).then(([resume, nextUp]) => {
+      if (get(serverConfig) === config) { resumeMedia.set(resume); nextUpMedia.set(nextUp); }
+    }).catch(() => {});
+  });
+}
+
+async function resolveQueue(config: ServerConfig, item: JellyfinItem, playlist?: JellyfinItem[]) {
+  const playable = (i: JellyfinItem) => ['Audio', 'Movie', 'Episode', 'Video', 'MusicVideo'].includes(i.Type);
+  if (playlist?.length) return playlist.filter(playable);
+  if (item.Type === 'Series') {
+    const seasons = item.seasons?.length ? item.seasons : config.isDemo ? [] :
+      await jfApi.getSeasons(config.url, config.userId, config.token, item.Id);
+    return seasons.flatMap(s => s.Episodes).filter(playable);
   }
+  if (['MusicAlbum', 'Folder', 'Playlist', 'BoxSet'].includes(item.Type)) {
+    return (item.tracks || (config.isDemo ? [] :
+      await jfApi.getPlayableFolderItems(config.url, config.userId, config.token, item.Id))).filter(playable);
+  }
+  return playable(item) ? [item] : [];
+}
+
+export async function playMedia(item: JellyfinItem, playlist?: JellyfinItem[], startIndex?: number, forceExpand = false) {
+  await startPlayback(item, playlist, startIndex, forceExpand, 'auto');
+}
+/** Explicit web playback, used for browser recovery and tests. */
+export async function playInBrowser(item: JellyfinItem, playlist?: JellyfinItem[], startIndex?: number, forceExpand = false) {
+  await startPlayback(item, playlist, startIndex, forceExpand, 'browser');
+}
+async function startPlayback(item: JellyfinItem, playlist: JellyfinItem[] | undefined, startIndex: number | undefined,
+  forceExpand: boolean, mode: 'auto' | 'browser' | 'cast', overridePositionMs?: number): Promise<boolean> {
+  const config = get(serverConfig);
+  // Capture the selected destination before any media preparation begins.
+  const useDestinations = mode !== 'browser' && supportsDestinations();
+  const selectedDestination = useDestinations ? get(playbackDestination) : null;
+  const useNative = useDestinations && (mode === 'cast' || selectedDestination?.kind !== 'local'
+    || get(localPlaybackMode) === 'native');
+  const destinationId = useDestinations ? selectedDestination?.id : undefined;
+  stopPlayback();
+  const ownGeneration = playbackGeneration;
+  playbackBusy.set(true); playbackError.set(null);
+  const current = () => ownGeneration === playbackGeneration && get(serverConfig) === config;
+  const offerBrowserRecovery = () => {
+    browserRecovery = () => get(serverConfig) === config
+      ? startPlayback(item, playlist, startIndex, forceExpand, 'browser', overridePositionMs) : Promise.resolve(false);
+    browserRecoveryAvailable.set(true);
+  };
+  try {
+    const destination = useDestinations ? await refreshPlaybackDestination() : null;
+    if (!current()) return false;
+    if (useDestinations && (!destinationId || destination?.id !== destinationId || !destination.connected)) {
+      throw new Error('The playback destination changed or disconnected. Choose a device and try again.');
+    }
+    let queue = await resolveQueue(config, item, playlist);
+    if (!current()) return false;
+    if (!queue.length) throw new Error('No playable items were found.');
+    let index = startIndex;
+    if (index === undefined && item.Type === 'Series') {
+      const resumeIndex = queue.findIndex(ep => !!ep.UserData?.PlaybackPositionTicks && !ep.UserData.Played);
+      const nextIndex = queue.findIndex(ep => !ep.UserData?.Played && ep.ParentIndexNumber !== 0);
+      index = resumeIndex >= 0 ? resumeIndex : nextIndex >= 0 ? nextIndex : 0;
+    }
+    index = Math.max(0, Math.min(index ?? 0, queue.length - 1));
+    const target = queue[index];
+    const prepared = new Map<number, PreparedPlayback>();
+    const prepare = async (queueIndex: number) => {
+      const media = queue[queueIndex];
+      const result = await preparePlayback(config, media, get(playbackSelections)[media.Id],
+        useNative ? destination!.kind : mode === 'cast' ? 'external' : 'browser', queueIndex === index && overridePositionMs !== undefined ? overridePositionMs : undefined);
+      if (!current()) throw new Error('Playback was cancelled.');
+      prepared.set(queueIndex, result);
+      return { ...buildSingleCastPayload(media, result.url, resolveItemPosterUrl(media), resolveItemBackdropUrl(media)),
+        contentType: result.contentType, startPositionMs: result.startPositionMs, subtitleResources: result.subtitleResources };
+    };
+    const first = await prepare(index);
+    if (!current()) return false;
+    if (useDestinations && !useNative) {
+      const latest = await refreshPlaybackDestination();
+      if (!current()) return false;
+      if (latest?.id !== destinationId || !latest.connected) {
+        throw new Error('The playback destination changed or disconnected. Choose a device and try again.');
+      }
+    }
+    const initialState: ActivePlayerState = { isOpen: true, isExpanded: forceExpand || ['Movie', 'Episode', 'Video'].includes(target.Type),
+      item: target, streamUrl: first.url, isCasting: false, isLinkedCast: false, title: target.Name,
+      season: target.ParentIndexNumber, episode: target.IndexNumber, playlist: queue, currentIndex: index,
+      prepared: prepared.get(index), positionMs: first.startPositionMs, nativeState: 'loading',
+      destinationName: destination?.kind === 'local' ? 'This device' : destination?.name };
+    const api = playbackBridge();
+    if (useNative || (mode === 'cast' && api?.linkCast && api.capabilities?.linkedCast)) {
+      let reportingIndex = index;
+      reporter = createReporter(config, target, prepared.get(index)!);
+      let confirmedResume = false;
+      let latestState: any = null;
+      let endedDuringOpening = false;
+      const applyState = (detail: any) => {
+        latestState = detail;
+        const nativeIndex = Number(detail.currentIndex);
+        if (!Number.isInteger(nativeIndex) || nativeIndex < 0) return;
+        const queueIndex = index! + nativeIndex;
+        const media = queue[queueIndex];
+        if (!media || !prepared.has(queueIndex)) return;
+        if (reportingIndex !== queueIndex) {
+          reporter?.stop(); reportingIndex = queueIndex; confirmedResume = false;
+          reporter = createReporter(config, media, prepared.get(queueIndex)!);
+        }
+        const result = prepared.get(queueIndex)!;
+        const position = Number(detail.positionMs);
+        const duration = Number(detail.durationMs);
+        if (Number.isFinite(position) && position >= Math.max(0, result.startPositionMs - 1500)) confirmedResume = true;
+        if (confirmedResume && Number.isFinite(position) && position >= 0 && duration > 0
+          && ['playing', 'paused', 'buffering', 'ended', 'stopped'].includes(detail.state)) {
+          reporter?.update(position, detail.state === 'paused', detail.state === 'ended' || detail.state === 'stopped');
+        }
+        if (get(activePlayer).isCasting) activePlayer.update(s => ({ ...s, item: media, streamUrl: result.url,
+          prepared: result, currentIndex: queueIndex, title: media.Name,
+          positionMs: confirmedResume && Number.isFinite(position) ? position : result.startPositionMs,
+          durationMs: Number.isFinite(duration) ? duration : undefined, nativeState: detail.state || 'loading' }));
+      };
+      nativeQueueStart = index;
+      await openLinkedQueue({ count: queue.length, startIndex: index, destinationId, first, prepare, canStart: current,
+        onState: applyState, onEnded: () => {
+          endedDuringOpening = true;
+          reporter?.stop(); reporter = null; activePlayer.set({ ...IDLE_PLAYER });
+        } });
+      if (!current() || endedDuringOpening) return false;
+      activePlayer.set({ ...initialState, isCasting: true, isLinkedCast: true, isExpanded: false });
+      if (latestState) applyState(latestState);
+    } else if (mode === 'cast') {
+      const items = [first];
+      // Legacy direct casts retain their bounded playlist contract. Modern and
+      // linked hosts use demand-driven preparation instead.
+      for (let i = index + 1; i < Math.min(queue.length, index + 50); i++) items.push(await prepare(i));
+      if (!current()) return false;
+      if (!await castDirect({ ...first, items, startIndex: 0 })) { if (current()) offerBrowserRecovery(); return false; }
+      if (!current()) return false;
+      activePlayer.set({ ...initialState, isCasting: true, isExpanded: false, destinationName: 'PlayBridge receiver' });
+    } else {
+      reporter = createReporter(config, target, prepared.get(index)!);
+      activePlayer.set(initialState);
+      if (target.Type === 'Audio' && !config.isDemo) {
+        void jfApi.getItemLyrics(config.url, config.token, target.Id).then(res => { if (current() && get(activePlayer).prepared === initialState.prepared) lyricsData.set(res); }).catch(() => {});
+      }
+    }
+    detailModalItem.set(null);
+    showToast(useNative ? `Opening playback on ${initialState.destinationName}` : mode === 'cast' ? 'Cast dispatched' : `Playing "${target.Name}"`, 'info');
+    return true;
+  } catch (err) {
+    if (current()) {
+      reporter?.stop(); reporter = null;
+      playbackError.set(err instanceof Error ? err.message : 'Playback could not start. Try again.');
+      if (useDestinations || mode === 'cast') offerBrowserRecovery();
+    }
+    return false;
+  } finally { if (current()) playbackBusy.set(false); }
+}
+
+export async function playOnThisScreen() {
+  const state = get(activePlayer);
+  if (!state.item) return;
+  await startPlayback(state.item, state.playlist, state.currentIndex, true, 'browser', state.positionMs);
+}
+export async function castCurrentPlayback(positionMs: number) {
+  const state = get(activePlayer);
+  if (!state.item) return;
+  if (supportsDestinations()) {
+    await choosePlaybackDestination();
+    if (!get(playbackDestination)?.connected || get(playbackError)) return;
+  }
+  await startPlayback(state.item, state.playlist, state.currentIndex, false, 'cast', positionMs);
 }
 
 // Trigger Shuffle Play for Folders, Albums, and Playlists (Finamp Inspired)
@@ -636,7 +791,7 @@ export async function shufflePlay(parentItem: JellyfinItem, providedItems?: Jell
 
   const shuffled = shuffleArray(tracks);
   isShuffle.set(true);
-  await playInBrowser(shuffled[0], shuffled, 0, false);
+  await playMedia(shuffled[0], shuffled, 0, false);
   showToast(`Shuffling "${parentItem.Name}" (${shuffled.length} tracks)`, 'info');
 }
 
@@ -670,6 +825,7 @@ export async function shuffleCast(parentItem: JellyfinItem, providedItems?: Jell
 
 // Toggle Shuffle mode on active queue
 export function toggleShuffle() {
+  if (get(activePlayer).isCasting) { showToast('Manage the native queue in PlayBridge Remote.', 'info'); return; }
   isShuffle.update((val) => {
     const next = !val;
     const current = get(activePlayer);
@@ -689,6 +845,7 @@ export function toggleShuffle() {
 
 // Cycle Repeat mode: off -> all -> one -> off
 export function cycleRepeatMode() {
+  if (get(activePlayer).isCasting) { showToast('Manage native playback in PlayBridge Remote.', 'info'); return; }
   repeatMode.update((mode) => {
     let next: 'off' | 'all' | 'one' = 'off';
     if (mode === 'off') next = 'all';
@@ -704,267 +861,99 @@ export function cycleRepeatMode() {
 // Toggle Favorite Item on Jellyfin Server (Finamp Feature)
 export async function toggleFavorite(item: JellyfinItem): Promise<boolean> {
   const config = get(serverConfig);
-  const currentFav = !!item.UserData?.IsFavorite;
-  const nextFav = !currentFav;
-
-  // Optimistic local update
-  if (!item.UserData) {
-    item.UserData = { IsFavorite: nextFav };
-  } else {
-    item.UserData.IsFavorite = nextFav;
+  const next = !item.UserData?.IsFavorite;
+  if (!config.isDemo && !await jfApi.toggleFavoriteItem(config.url, config.userId, config.token, item.Id, next)) {
+    showToast('Favorite could not be saved. Please retry.', 'info');
+    return !!item.UserData?.IsFavorite;
   }
-
-  // Update in all stores
-  allLibraryItems.update((items) => items.map((i) => (i.Id === item.Id ? { ...i, UserData: { ...i.UserData, IsFavorite: nextFav } } : i)));
-  moviesList.update((items) => items.map((i) => (i.Id === item.Id ? { ...i, UserData: { ...i.UserData, IsFavorite: nextFav } } : i)));
-  showsList.update((items) => items.map((i) => (i.Id === item.Id ? { ...i, UserData: { ...i.UserData, IsFavorite: nextFav } } : i)));
-
-  showToast(nextFav ? `Added "${item.Name}" to Favorites` : `Removed "${item.Name}" from Favorites`, 'success');
-
-  if (!config.isDemo && config.url && config.userId) {
-    try {
-      await jfApi.toggleFavoriteItem(config.url, config.userId, config.token, item.Id, nextFav);
-    } catch (err) {
-      console.error('Failed to update favorite on server', err);
-    }
-  }
-  return nextFav;
+  if (get(serverConfig) !== config) return !!item.UserData?.IsFavorite;
+  item.UserData = { ...item.UserData, IsFavorite: next };
+  const update = (items: JellyfinItem[]) => items.map(i => i.Id === item.Id ? { ...i, UserData: { ...i.UserData, IsFavorite: next } } : i);
+  allLibraryItems.update(update); moviesList.update(update); showsList.update(update);
+  latestMedia.update(update); resumeMedia.update(update); nextUpMedia.update(update);
+  detailModalItem.update(current => current?.Id === item.Id ? { ...current, UserData: item.UserData } : current);
+  activePlayer.update(s => s.item?.Id === item.Id ? { ...s, item: { ...s.item, UserData: item.UserData } } : s);
+  clearAllCache();
+  favoritesRevision.update(n => n + 1);
+  showToast(next ? `Added "${item.Name}" to Favorites` : `Removed "${item.Name}" from Favorites`, 'success');
+  return next;
 }
+export const favoritesRevision = writable(0);
 
-// Trigger Direct PlayBridge Casting (Single Item)
+// Compatibility exports: explicit Cast is separate from the selected-destination Play action.
 export async function playWithDirectCast(item: JellyfinItem): Promise<boolean> {
-  let targetItem = item;
-  const config = get(serverConfig);
-
-  // If a series is clicked, resolve its first episode
-  if (item.Type === 'Series') {
-    if (!config.isDemo && (!item.seasons || item.seasons.length === 0)) {
-      try {
-        item.seasons = await jfApi.getSeasons(config.url, config.userId, config.token, item.Id);
-      } catch {}
-    }
-    const firstEp = item.seasons?.[0]?.Episodes?.[0];
-    if (firstEp) {
-      targetItem = firstEp;
-    }
-  } else if ((item.Type === 'MusicAlbum' || item.Type === 'Folder' || item.Type === 'Playlist') && !item.streamUrl) {
-    // If an album/folder is clicked, cast the whole album/folder!
-    return playFolderOrAlbumWithCast(item, item.tracks, 0);
-  }
-
-  const streamUrl = resolveItemStreamUrl(targetItem);
-  const posterUrl = resolveItemPosterUrl(targetItem);
-  const backdropUrl = resolveItemBackdropUrl(targetItem);
-
-  const payload = buildSingleCastPayload(targetItem, streamUrl, posterUrl, backdropUrl);
-  const success = castDirect(payload);
-
-  // Close details modal so user stays in library
-  detailModalItem.set(null);
-
-  // Show Toast
-  showToast(`Casting "${payload.title || targetItem.Name}" to PlayBridge`, 'cast');
-
-  // Keep player in bottom Mini Bar (not taking over screen)
-  activePlayer.set({
-    isOpen: true,
-    isExpanded: false,
-    item: targetItem,
-    streamUrl,
-    isCasting: true,
-    isLinkedCast: false,
-    title: payload.title || targetItem.Name,
-    season: targetItem.ParentIndexNumber,
-    episode: targetItem.IndexNumber,
-    playlist: [targetItem],
-    currentIndex: 0
-  });
-
-  return success;
+  return startPlayback(item, undefined, undefined, false, 'cast');
 }
-
-// Trigger Batch Playlist Casting for Folders, Music Albums, and Playlists
-export async function playFolderOrAlbumWithCast(
-  parentItem: JellyfinItem,
-  providedItems?: JellyfinItem[],
-  startIndex = 0
-): Promise<boolean> {
-  const config = get(serverConfig);
-  let tracks: JellyfinItem[] = [];
-
-  // Filter providedItems to only include playable items (Audio, Movie, Episode)
-  if (providedItems && providedItems.length > 0) {
-    tracks = providedItems.filter((i) => i.Type === 'Audio' || i.Type === 'Movie' || i.Type === 'Episode');
-  }
-
-  // If no playable items in providedItems, query server recursively with cache
-  if (tracks.length === 0 && !config.isDemo) {
-    try {
-      tracks = await jfApi.getPlayableFolderItems(config.url, config.userId, config.token, parentItem.Id);
-      parentItem.tracks = tracks;
-    } catch (err) {
-      console.error('Failed to fetch items for folder/album', err);
-    }
-  }
-
-  if (tracks.length === 0) {
-    addDiagnosticLog('warn', `No playable audio/video tracks found in "${parentItem.Name}"`);
-    showToast(`No playable tracks found in "${parentItem.Name}"`, 'info');
-    return false;
-  }
-
-  const playlistTitle = parentItem.Name;
-  const playlistPoster = resolveItemPosterUrl(parentItem);
-  const playlistBackdrop = resolveItemBackdropUrl(parentItem);
-
-  const playlistItems = tracks.map((track) => ({
-    item: track,
-    streamUrl: resolveItemStreamUrl(track),
-    posterUrl: resolveItemPosterUrl(track) || playlistPoster,
-    backdropUrl: resolveItemBackdropUrl(track) || playlistBackdrop
-  }));
-
-  const payload = buildPlaylistCastPayload(playlistItems, startIndex, playlistTitle, playlistPoster);
-  const success = castDirect(payload);
-
-  // Close details modal so user stays in library
-  detailModalItem.set(null);
-
-  showToast(`Casting "${playlistTitle}" (${tracks.length} items) to PlayBridge`, 'cast');
-
-  const startTrack = tracks[startIndex] || tracks[0];
-  activePlayer.set({
-    isOpen: true,
-    isExpanded: false, // Mini player bar
-    item: startTrack,
-    streamUrl: resolveItemStreamUrl(startTrack),
-    isCasting: true,
-    isLinkedCast: false,
-    title: `${playlistTitle} (${startIndex + 1}/${tracks.length})`,
-    playlist: tracks,
-    currentIndex: startIndex
-  });
-
-  return success;
+export async function playFolderOrAlbumWithCast(parent: JellyfinItem, items?: JellyfinItem[], startIndex = 0): Promise<boolean> {
+  return startPlayback(parent, items, startIndex, false, 'cast');
 }
-
-// Trigger Linked Queue Cast for Series / Playlists
-export async function playWithLinkedQueue(series: JellyfinItem, seasons?: JellyfinSeason[], startEpisodeIndex = 0) {
-  const allEpisodes: JellyfinItem[] = [];
-  const config = get(serverConfig);
-  let sourceSeasons = seasons || series.seasons || [];
-
-  if (sourceSeasons.length === 0 && !config.isDemo) {
-    try {
-      sourceSeasons = await jfApi.getSeasons(config.url, config.userId, config.token, series.Id);
-      series.seasons = sourceSeasons;
-    } catch {}
-  }
-
-  for (const s of sourceSeasons) {
-    for (const ep of s.Episodes) {
-      allEpisodes.push(ep);
-    }
-  }
-
-  if (allEpisodes.length === 0) {
-    return playWithDirectCast(series);
-  }
-
-  const castItems = allEpisodes.map((ep) => {
-    const sUrl = resolveItemStreamUrl(ep);
-    const pUrl = resolveItemPosterUrl(ep);
-    const bUrl = resolveItemBackdropUrl(ep);
-    let epTitle = ep.Name;
-    if (ep.IndexNumber != null) {
-      const s = ep.ParentIndexNumber ?? 1;
-      epTitle = `S${s}E${ep.IndexNumber} · ${ep.Name}`;
-    }
-    return {
-      id: ep.Id,
-      url: sUrl,
-      title: epTitle,
-      contentType: sUrl.includes('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp4',
-      metadata: formatVisualMetadata(ep, pUrl, bUrl)
-    };
-  });
-
-  const metadata = formatVisualMetadata(series, resolveItemPosterUrl(series), resolveItemBackdropUrl(series));
-  await castLinkedQueue(castItems, startEpisodeIndex, metadata);
-
-  detailModalItem.set(null);
-  showToast(`Casting "${series.Name}" queue to PlayBridge`, 'cast');
-
-  const startingEp = allEpisodes[startEpisodeIndex] || allEpisodes[0];
-  activePlayer.set({
-    isOpen: true,
-    isExpanded: false,
-    item: startingEp,
-    streamUrl: resolveItemStreamUrl(startingEp),
-    isCasting: true,
-    isLinkedCast: true,
-    title: `${series.Name} · ${startingEp.Name}`,
-    season: startingEp.ParentIndexNumber,
-    episode: startingEp.IndexNumber,
-    playlist: allEpisodes,
-    currentIndex: startEpisodeIndex
-  });
+export async function playWithLinkedQueue(series: JellyfinItem, seasons?: JellyfinSeason[], startIndex = 0): Promise<boolean> {
+  return startPlayback(series, seasons?.flatMap(s => s.Episodes), startIndex, false, 'cast');
 }
-
-// Queue navigation helpers with Repeat One / Repeat All / Next support
 export function skipNextTrack() {
-  const current = get(activePlayer);
-  const rep = get(repeatMode);
-
-  if (rep === 'one' && current.item) {
-    // Replay same track
-    playInBrowser(current.item, current.playlist, current.currentIndex, current.isExpanded);
-    return;
+  const state = get(activePlayer);
+  if (!state.playlist?.length) return;
+  const repeat = get(repeatMode);
+  let index = repeat === 'one' ? state.currentIndex ?? 0 : (state.currentIndex ?? 0) + 1;
+  if (index >= state.playlist.length) {
+    if (repeat !== 'all') { if (!state.isCasting) stopPlayback(); return; }
+    index = 0;
   }
-
-  if (!current.playlist || current.playlist.length <= 1) return;
-
-  const nextIdx = (current.currentIndex ?? 0) + 1;
-  if (nextIdx >= current.playlist.length) {
-    if (rep === 'all') {
-      // Loop back to first track
-      const firstItem = current.playlist[0];
-      if (current.isCasting) {
-        playWithDirectCast(firstItem);
-      } else {
-        playInBrowser(firstItem, current.playlist, 0, current.isExpanded);
-      }
-    }
-    return;
-  }
-
-  const nextItem = current.playlist[nextIdx];
-  if (current.isCasting) {
-    playWithDirectCast(nextItem);
-  } else {
-    playInBrowser(nextItem, current.playlist, nextIdx, current.isExpanded);
-  }
+  playQueueTrack(index);
 }
-
 export function skipPrevTrack() {
-  const current = get(activePlayer);
-  if (!current.playlist || current.playlist.length <= 1) return;
-  const prevIdx = ((current.currentIndex ?? 0) - 1 + current.playlist.length) % current.playlist.length;
-  const prevItem = current.playlist[prevIdx];
-  if (current.isCasting) {
-    playWithDirectCast(prevItem);
-  } else {
-    playInBrowser(prevItem, current.playlist, prevIdx, current.isExpanded);
-  }
+  const state = get(activePlayer);
+  if (state.playlist?.length) playQueueTrack(Math.max(0, (state.currentIndex ?? 0) - 1));
 }
-
 export function playQueueTrack(index: number) {
-  const current = get(activePlayer);
-  if (!current.playlist || index < 0 || index >= current.playlist.length) return;
-  const target = current.playlist[index];
-  if (current.isCasting) {
-    playWithDirectCast(target);
+  const state = get(activePlayer);
+  const item = state.playlist?.[index];
+  if (!item) return;
+  if (state.isLinkedCast) {
+    // Native queue indices begin at the initially selected item, not episode 1.
+    // Only supplied items can be jumped to; otherwise explicitly start a new queue.
+    const relativeIndex = index - nativeQueueStart;
+    const session = get(activeLinkedSession);
+    if (session && relativeIndex >= 0) {
+      void session.jump(relativeIndex).catch(() => showToast('That item is not yet in the native queue. Use Play on its episode card.', 'info'));
+    } else if (relativeIndex < 0) {
+      void startPlayback(item, state.playlist, index, false, 'cast');
+    }
   } else {
-    playInBrowser(target, current.playlist, index, current.isExpanded);
+    if (state.isCasting) void startPlayback(item, state.playlist, index, state.isExpanded, 'cast');
+    else void advanceBrowserQueue(state, index);
   }
 }
+async function advanceBrowserQueue(state: ActivePlayerState, index: number) {
+  if (get(playbackBusy)) return;
+  const config = get(serverConfig);
+  const item = state.playlist![index];
+  const selection = get(playbackSelections)[item.Id] || {};
+  const cached = browserPrefetch;
+  const canReuse = get(repeatMode) !== 'one' && cached?.config === config && cached.queue === state.playlist
+    && cached.index === index && cached.selection === JSON.stringify(selection) && cached.generation === playbackGeneration;
+  const ownGeneration = ++playbackGeneration;
+  const current = () => ownGeneration === playbackGeneration && get(serverConfig) === config;
+  playbackBusy.set(true); playbackError.set(null);
+  try {
+    const prepared = await (canReuse ? cached!.promise : preparePlayback(config, item, selection, 'browser',
+      get(repeatMode) === 'one' ? 0 : undefined));
+    if (!current() || !get(activePlayer).isOpen || get(activePlayer).isCasting
+      || get(activePlayer).playlist !== state.playlist) return;
+    // Do not close chrome or clear media nodes: the standby element already owns
+    // this exact source. Keep the old session reporting until the new source is ready.
+    reporter?.stop(); reporter = createReporter(config, item, prepared);
+    browserPrefetch = null; nextBrowserPlayback.set(null); lyricsData.set(null);
+    activePlayer.update(s => ({ ...s, item, title: item.Name, streamUrl: prepared.url, prepared,
+      isExpanded: s.isExpanded || item.Type !== 'Audio', currentIndex: index, season: item.ParentIndexNumber, episode: item.IndexNumber,
+      positionMs: prepared.startPositionMs, durationMs: undefined }));
+    if (item.Type === 'Audio' && !config.isDemo) {
+      void jfApi.getItemLyrics(config.url, config.token, item.Id).then(res => {
+        if (current() && get(activePlayer).prepared === prepared) lyricsData.set(res);
+      }).catch(() => {});
+    }
+  } catch (err) {
+    if (current()) playbackError.set(err instanceof Error ? err.message : 'The next item could not start. Try again.');
+  } finally { if (current()) playbackBusy.set(false); }
+}
+let nativeQueueStart = 0;

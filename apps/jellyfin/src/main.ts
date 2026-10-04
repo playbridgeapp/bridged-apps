@@ -1,11 +1,20 @@
 import { mount } from 'svelte';
 import './app.css';
+import { get } from 'svelte/store';
+import { diagnosticLogs, activeCastPayload } from './lib/cast/playbridge';
 import App from './App.svelte';
 import {
   switchAccount,
   connectToJellyfinServer,
   serverConfig,
   activeTab,
+  searchQuery,
+  playMedia,
+  stopPlayback,
+  logout,
+  playWithLinkedQueue,
+  playFolderOrAlbumWithCast,
+  playQueueTrack,
   playInBrowser,
   activePlayer,
   isQueueDrawerOpen,
@@ -16,6 +25,10 @@ import {
 // webview injects .cast / .linkCast / .capabilities on that name.
 if (typeof window !== 'undefined') {
   (window as any).__bridgedTest = {
+    ...(window as any).__bridgedTest,
+    searchQuery,
+    diagnostics: () => ({ logs: get(diagnosticLogs), payload: get(activeCastPayload) }),
+    playMedia, stopPlayback, logout, playWithLinkedQueue, playFolderOrAlbumWithCast, playQueueTrack,
     switchAccount,
     connectToJellyfinServer,
     serverConfig,

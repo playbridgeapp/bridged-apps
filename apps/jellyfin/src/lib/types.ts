@@ -58,6 +58,7 @@ export interface JellyfinSeason {
 
 export interface JellyfinMediaSource {
   Id: string;
+  Name?: string;
   Container?: string;
   Path?: string;
   Protocol?: string;
@@ -67,6 +68,9 @@ export interface JellyfinMediaSource {
   SupportsDirectPlay?: boolean;
   SupportsDirectStream?: boolean;
   SupportsTranscoding?: boolean;
+  MediaStreams?: JellyfinMediaStream[];
+  DefaultAudioStreamIndex?: number;
+  DefaultSubtitleStreamIndex?: number;
 }
 
 export interface JellyfinMediaStream {
@@ -83,6 +87,9 @@ export interface JellyfinMediaStream {
   Channels?: number;
   SampleRate?: number;
   Index?: number;
+  IsExternal?: boolean;
+  DeliveryMethod?: string;
+  DeliveryUrl?: string;
 }
 
 export interface JellyfinUser {
@@ -140,6 +147,9 @@ export interface PlayBridgeItem {
   posterUrl?: string;
   metadata?: VisualMetadata;
   customData?: Record<string, any>;
+  headers?: Record<string, string>;
+  startPositionMs?: number;
+  subtitleResources?: Array<{ url: string; language?: string; label?: string }>;
 }
 
 export interface PlayBridgeCastPayload {
@@ -164,8 +174,34 @@ export interface PlayBridgeLinkSession {
   unlink(): Promise<void>;
 }
 
+export interface PlaybackDestination {
+  id: string;
+  name: string;
+  kind: 'local' | 'native' | 'external';
+  connected: boolean;
+}
+
+export interface PlaybackSelection {
+  mediaSourceId?: string;
+  audioStreamIndex?: number;
+  subtitleStreamIndex?: number;
+}
+
+export interface PreparedPlayback {
+  url: string;
+  contentType: string;
+  mediaSourceId: string;
+  playSessionId?: string;
+  playMethod: 'DirectPlay' | 'DirectStream' | 'Transcode';
+  startPositionMs: number;
+  subtitleResources?: PlayBridgeItem['subtitleResources'];
+}
+
 export interface PlayBridgeAPI {
-  cast(payload: PlayBridgeCastPayload | PlayBridgeItem[]): void;
+  cast?(payload: PlayBridgeCastPayload | PlayBridgeItem[]): void | Promise<unknown>;
+  getPlaybackDestination?(): Promise<{ destination: PlaybackDestination }>;
+  choosePlaybackDestination?(options?: { destinationId: 'this-device' }): Promise<{ destination: PlaybackDestination }>;
+  play?(options: PlayBridgeCastPayload & { destinationId: string }): Promise<PlayBridgeLinkSession>;
   linkCast?(options: {
     items: PlayBridgeItem[];
     startIndex?: number;
@@ -174,7 +210,8 @@ export interface PlayBridgeAPI {
     skipPreplay?: boolean;
   }): Promise<PlayBridgeLinkSession>;
   capabilities?: {
-    linkedCast?: boolean;
+    linkedCast?: boolean | number;
+    playback?: number;
     mediaControls?: boolean;
   };
 }

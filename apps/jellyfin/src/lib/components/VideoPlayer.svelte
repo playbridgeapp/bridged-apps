@@ -1,13 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { BrowserResume, forwardNativeVideoEvents } from '../browser-resume';
+  import moviWasmUrl from 'movi-player/movi.wasm?url';
   import {
     activePlayer,
     stopPlayback,
-    playWithDirectCast,
-    serverConfig,
+    castCurrentPlayback,
+    playOnThisScreen,
+    recordBrowserProgress,
+    recordBrowserStopped,
     skipNextTrack,
     skipPrevTrack,
-    resolveItemStreamUrl,
+    nextBrowserPlayback,
+    prefetchNextBrowserTrack,
     resolveItemPosterUrl,
     resolveItemBackdropUrl,
     isShuffle,
@@ -20,10 +25,9 @@
   } from '../stores/appState';
   import {
     bridgeStatus,
-    activeLinkedSession,
+    playbackError,
     addDiagnosticLog
   } from '../cast/playbridge';
-  import * as jfApi from '../api/jellyfin';
   import {
     Play,
     Pause,
@@ -86,19 +90,20 @@
   $: isFavorite = !!playerState.item?.UserData?.IsFavorite;
   $: posterUrl = playerState.item ? resolveItemPosterUrl(playerState.item) : '';
   $: backdropUrl = isAudio ? posterUrl : (playerState.item ? resolveItemBackdropUrl(playerState.item) : '');
-  $: authHeadersJson = JSON.stringify({
-    'X-Emby-Authorization': jfApi.getAuthHeader($serverConfig.token)
-  });
+  // Stream URLs carry Jellyfin authentication. Never attach account headers to demo/public media.
+  $: authHeadersJson = '{}';
 
   // Next Track in playlist queue for pre-buffering
   $: nextItem = (hasPlaylist && playerState.playlist && playerState.currentIndex != null)
     ? playerState.playlist[playerState.currentIndex + 1]
     : null;
-  $: nextStreamUrl = nextItem ? resolveItemStreamUrl(nextItem) : '';
+  $: if (playerState.isOpen && isAudio && !isCastingActive) prefetchNextBrowserTrack(playerState);
+  $: nextStreamUrl = nextItem ? $nextBrowserPlayback?.url || '' : '';
   $: nextPosterUrl = nextItem ? resolveItemPosterUrl(nextItem) : '';
 
   let currentPlayingUrl = '';
   let prebufferedNextUrl = '';
+  let audioPrepared: typeof playerState.prepared;
 
   function audioHasUrl(el: HTMLAudioElement | undefined, url: string): boolean {
     if (!el || !url) return false;
@@ -107,13 +112,16 @@
   }
 
   function playAudioElement(el: HTMLAudioElement) {
+    const prepared = playerState.prepared;
+    const current = () => getActiveAudioEl() === el && playerState.prepared === prepared && !isCastingActive && playerState.isOpen;
     const pending = el.play();
     if (pending && typeof pending.then === 'function') {
       pending
         .then(() => {
-          isPlaying = true;
+          if (current()) isPlaying = true;
         })
         .catch((err) => {
+          if (!current()) return;
           isPlaying = false;
           addDiagnosticLog(
             'error',
@@ -143,12 +151,17 @@
     } else {
       if (!audioHasUrl(currentActive, url)) {
         currentActive.src = url;
+      } else {
+        // A repeat/duplicate entry is a new playback even when its URL is identical.
+        currentActive.pause();
+        currentActive.currentTime = 0;
       }
       currentActive.volume = volume;
       currentActive.muted = isMuted;
       playAudioElement(currentActive);
     }
     currentPlayingUrl = url;
+    audioPrepared = playerState.prepared;
     return true;
   }
 
@@ -161,31 +174,57 @@
     isAudio &&
     !playerState.isCasting &&
     playerState.streamUrl &&
-    playerState.streamUrl !== currentPlayingUrl
+    (playerState.streamUrl !== currentPlayingUrl || playerState.prepared !== audioPrepared)
   ) {
     applyAudioUrl(playerState.streamUrl);
   }
 
-  let sessionItemId: string | null = null;
-  let stopReported = false;
-
-  $: if (playerState.isOpen && playerState.item) {
-    sessionItemId = playerState.item.Id;
-    stopReported = false;
+  const browserResume = new BrowserResume();
+  let browserPrepared: typeof playerState.prepared;
+  let nativeCleanup: (() => void) | null = null;
+  $: if (playerState.prepared !== browserPrepared) {
+    nativeCleanup?.(); nativeCleanup = null;
+    browserPrepared = playerState.prepared;
+    currentTime = (browserPrepared?.startPositionMs || 0) / 1000;
+    duration = 0;
   }
-
+  $: if (isCastingActive) {
+    currentTime = (playerState.positionMs || 0) / 1000;
+    duration = (playerState.durationMs || 0) / 1000;
+    isPlaying = playerState.nativeState === 'playing';
+  }
+  function activeMedia(): any { return isAudio ? getActiveAudioEl() : moviEl || videoEl; }
+  function handleReady() {
+    if (isCastingActive || !playerState.isOpen) return;
+    const media = activeMedia();
+    if (media) browserResume.apply(media, browserPrepared);
+  }
+  function handlePlay() { isPlaying = true; handleReady(); }
+  function handlePlaybackError() {
+    playbackError.set('Browser playback failed. Try another media version or choose a PlayBridge device.');
+  }
+  function handlePause() { isPlaying = false; saveBrowserProgress(true); }
+  function saveBrowserProgress(force = false) {
+    const media = activeMedia();
+    if (!media || !playerState.isOpen || isCastingActive || (isAudio && !audioHasUrl(media, playerState.streamUrl))
+      || !browserResume.observe(media, browserPrepared)) return;
+    recordBrowserProgress(Number(media.currentTime || 0) * 1000, !!media.paused, force);
+  }
+  function handleNativeFallback(event: Event) {
+    nativeCleanup?.(); nativeCleanup = null;
+    const host = event.currentTarget as HTMLElement;
+    const prepared = browserPrepared;
+    const video = [...(host.shadowRoot?.querySelectorAll('video') || [])].find(media => getComputedStyle(media).display !== 'none');
+    if (!video) return;
+    nativeCleanup = forwardNativeVideoEvents(host, video,
+      () => host === moviEl && browserPrepared === prepared && host.shadowRoot?.contains(video) === true);
+  }
   function notifyPlaybackStopped() {
-    if (stopReported || $serverConfig.isDemo || !sessionItemId || !$serverConfig.url) {
-      sessionItemId = playerState.isOpen ? sessionItemId : null;
-      return;
-    }
-    stopReported = true;
-    const ticks = Math.round(currentTime * 1000 * 10000);
-    jfApi.reportPlaybackStopped($serverConfig.url, $serverConfig.token, sessionItemId, ticks);
-    sessionItemId = null;
+    saveBrowserProgress(true);
+    recordBrowserStopped();
   }
 
-  $: if (!playerState.isOpen || playerState.isCasting) {
+  $: if (!playerState.isOpen || playerState.isCasting || !isAudio) {
     audioElA?.pause();
     audioElB?.pause();
     if (!playerState.isOpen) {
@@ -207,8 +246,8 @@
   }
 
   // Pre-buffer next track into standby audio element ahead of time
-  $: if (isAudio && nextStreamUrl) {
-    const standby = getStandbyAudioEl();
+  $: if (playerState.isOpen && !isCastingActive && isAudio && nextStreamUrl) {
+    const standby = activeAudioIndex === 0 ? audioElB : audioElA;
     if (standby && nextStreamUrl !== prebufferedNextUrl && nextStreamUrl !== currentPlayingUrl) {
       prebufferedNextUrl = nextStreamUrl;
       standby.src = nextStreamUrl;
@@ -219,8 +258,9 @@
   } else if (!nextStreamUrl) {
     const standby = getStandbyAudioEl();
     prebufferedNextUrl = '';
-    if (standby && standby.src) {
-      standby.src = '';
+    if (standby && standby.getAttribute('src')) {
+      standby.removeAttribute('src');
+      standby.load();
     }
   }
 
@@ -258,10 +298,13 @@
 
   onMount(() => {
     document.addEventListener('fullscreenchange', handleFullscreenChange);
+    reportProgressTimer = setInterval(() => { handleTimeUpdate(); }, 1000);
   });
 
   onDestroy(() => {
+    notifyPlaybackStopped();
     document.removeEventListener('fullscreenchange', handleFullscreenChange);
+    nativeCleanup?.();
     clearInterval(reportProgressTimer);
     clearTimeout(hideControlsTimer);
   });
@@ -272,8 +315,7 @@
 
   function togglePlay() {
     if (isCastingActive) {
-      isPlaying = !isPlaying;
-      addDiagnosticLog('info', `Cast Remote: Toggle Play (${isPlaying ? 'Playing' : 'Paused'})`);
+      addDiagnosticLog('info', 'Use PlayBridge Remote for native playback controls.');
       return;
     }
     const currentActive = getActiveAudioEl();
@@ -294,22 +336,21 @@
   }
 
   function handleMediaEnded() {
-    addDiagnosticLog('info', `Playback ended for: ${playerState.title}`);
+    handleTimeUpdate();
+    saveBrowserProgress(true);
+    recordBrowserStopped();
     skipNextTrack();
   }
 
   function handleTimeUpdate() {
-    const currentActive = getActiveAudioEl();
-    if (isAudio && currentActive) {
-      currentTime = currentActive.currentTime;
-      duration = currentActive.duration || 0;
-    } else if (moviEl) {
-      currentTime = moviEl.currentTime || 0;
-      duration = moviEl.duration || 0;
-    } else if (videoEl) {
-      currentTime = videoEl.currentTime || 0;
-      duration = videoEl.duration || 0;
-    }
+    if (!playerState.isOpen || isCastingActive) return;
+    const media = activeMedia();
+    if (!media || (isAudio && !audioHasUrl(media, playerState.streamUrl))) return;
+    const time = Number(media.currentTime || 0);
+    duration = Number(media.duration || 0);
+    if (!browserResume.observe(media, browserPrepared)) return;
+    currentTime = time;
+    saveBrowserProgress();
   }
 
   function handleSeek(e: Event) {
@@ -432,34 +473,10 @@
     stopPlayback();
   }
 
-  function triggerDirectCast() {
-    if (playerState.item) {
-      getActiveAudioEl()?.pause();
-      if (moviEl) moviEl.pause();
-      if (videoEl) videoEl.pause();
-      playWithDirectCast(playerState.item);
-    }
+  async function triggerDirectCast() {
+    await castCurrentPlayback(currentTime * 1000);
   }
-
-  function disconnectCast() {
-    if ($activeLinkedSession) {
-      $activeLinkedSession.unlink().catch(() => {});
-      $activeLinkedSession = null;
-    }
-    activePlayer.update((state) => ({
-      ...state,
-      isCasting: false,
-      isLinkedCast: false
-    }));
-    const currentActive = getActiveAudioEl();
-    if (isAudio && currentActive) {
-      currentActive.play().catch(() => {});
-    } else if (moviEl) {
-      moviEl.play().catch(() => {});
-    } else if (videoEl) {
-      videoEl.play().catch(() => {});
-    }
-  }
+  function disconnectCast() { void playOnThisScreen(); }
 
   function formatTime(seconds: number): string {
     if (isNaN(seconds) || seconds < 0) return '0:00';
@@ -476,8 +493,11 @@
 <!-- Always mounted so the first Play after a refresh is not racing bind:this. -->
 <audio
   bind:this={audioElA}
-  on:play={() => { if (activeAudioIndex === 0) isPlaying = true; }}
-  on:pause={() => { if (activeAudioIndex === 0) isPlaying = false; }}
+  on:play={() => { if (activeAudioIndex === 0) handlePlay(); }}
+  on:pause={() => { if (activeAudioIndex === 0) handlePause(); }}
+  on:loadedmetadata={handleReady}
+  on:canplay={handleReady}
+  on:seeked={handleReady}
   on:timeupdate={() => { if (activeAudioIndex === 0) handleTimeUpdate(); }}
   on:ended={() => { if (activeAudioIndex === 0) handleMediaEnded(); }}
   class="hidden-audio-el"
@@ -485,8 +505,11 @@
 ></audio>
 <audio
   bind:this={audioElB}
-  on:play={() => { if (activeAudioIndex === 1) isPlaying = true; }}
-  on:pause={() => { if (activeAudioIndex === 1) isPlaying = false; }}
+  on:play={() => { if (activeAudioIndex === 1) handlePlay(); }}
+  on:pause={() => { if (activeAudioIndex === 1) handlePause(); }}
+  on:loadedmetadata={handleReady}
+  on:canplay={handleReady}
+  on:seeked={handleReady}
   on:timeupdate={() => { if (activeAudioIndex === 1) handleTimeUpdate(); }}
   on:ended={() => { if (activeAudioIndex === 1) handleMediaEnded(); }}
   class="hidden-audio-el"
@@ -519,7 +542,7 @@
               <ChevronUp size={14} />
             </span>
             {#if isCastingActive}
-              <div class="mini-cast-indicator" title="Casting to PlayBridge">
+              <div class="mini-cast-indicator" title={playerState.isLinkedCast ? 'Native playback session' : 'Cast request dispatched'}>
                 <Cast size={15} class="cast-glow-icon" />
               </div>
             {/if}
@@ -529,7 +552,7 @@
           {:else if playerState.season && playerState.episode}
             <span class="mini-sub">S{playerState.season}E{playerState.episode}</span>
           {:else}
-            <span class="mini-sub">{isCastingActive ? 'PlayBridge Receiver' : (isAudio ? 'Audio Player' : 'Video Player')}</span>
+            <span class="mini-sub">{isCastingActive ? playerState.destinationName || 'PlayBridge' : (isAudio ? 'Audio Player' : 'Video Player')}</span>
           {/if}
         </div>
       </div>
@@ -553,7 +576,7 @@
           </button>
         {/if}
 
-        <button class="mini-btn mini-play-btn" on:click={togglePlay} title={isPlaying ? 'Pause' : 'Play'}>
+        <button class="mini-btn mini-play-btn" disabled={isCastingActive} on:click={togglePlay} title={isCastingActive ? 'Use PlayBridge Remote for playback controls' : isPlaying ? 'Pause' : 'Play'}>
           {#if isPlaying}
             <Pause size={18} fill="currentColor" />
           {:else}
@@ -577,7 +600,7 @@
           <ChevronUp size={18} />
         </button>
 
-        <button class="mini-btn mini-close-btn" on:click={closePlayer} title="Stop & close">
+        <button class="mini-btn mini-close-btn" on:click={closePlayer} title={isCastingActive ? "Unlink & close (playback continues)" : "Stop & close"}>
           <X size={18} />
         </button>
       </div>
@@ -614,24 +637,25 @@
             </button>
           {/if}
 
-          {#if !isCastingActive}
+          {#if !isCastingActive && $bridgeStatus.available}
             <button class="cast-btn" on:click={triggerDirectCast} title="Switch to PlayBridge Casting">
               <Cast size={16} />
               <span class="cast-text">Cast</span>
             </button>
-          {:else}
-            <button class="cast-btn active-cast" on:click={disconnectCast} title="Disconnect cast">
+          {:else if isCastingActive}
+            <button class="cast-btn active-cast" on:click={disconnectCast} title="Switch to browser playback (native playback is unlinked)">
               <Cast size={16} />
-              <span class="cast-text">Casting</span>
+              <span class="cast-text">{playerState.isLinkedCast ? 'Native playback' : 'Cast sent'}</span>
             </button>
           {/if}
 
-          <button class="icon-btn-large" on:click={closePlayer} title="Stop and Close Player">
+          <button class="icon-btn-large" on:click={closePlayer} title={isCastingActive ? "Unlink & close (playback continues)" : "Stop and Close Player"}>
             <X size={22} />
           </button>
         </div>
       </div>
 
+      {#if $playbackError}<p class="player-error" role="alert">{$playbackError}</p>{/if}
       <!-- Center Player Body -->
       {#if isCastingActive}
         <!-- Cast HUD (Playing on TV Receiver) -->
@@ -650,8 +674,9 @@
                 <span class="radar-pulse"></span>
               </div>
               <div class="signal-details">
-                <h4>Streaming to PlayBridge Receiver</h4>
-                <p class="signal-url">{playerState.streamUrl}</p>
+                <h4>{playerState.isLinkedCast ? (playerState.nativeState === 'playing' ? 'Playing on' : playerState.nativeState === 'paused' ? 'Paused on' : 'Opening playback on') : 'Cast dispatched to'} {playerState.destinationName || 'PlayBridge receiver'}</h4>
+                <p>Use PlayBridge’s Remote to control native playback. Unlinking leaves playback running.</p>
+                <p class="signal-url">{playerState.isLinkedCast ? `Session status: ${playerState.nativeState || 'connecting'}` : 'This legacy host does not report playback status.'}</p>
               </div>
             </div>
 
@@ -747,7 +772,7 @@
                 </button>
               {/if}
 
-              <button class="play-toggle-btn-large" on:click={togglePlay}>
+              <button class="play-toggle-btn-large" disabled={isCastingActive} on:click={togglePlay}>
                 {#if isPlaying}
                   <Pause size={28} fill="currentColor" />
                 {:else}
@@ -787,7 +812,7 @@
                 <span>Lyrics</span>
               </button>
 
-              {#if !isCastingActive}
+              {#if !isCastingActive && $bridgeStatus.available}
                 <button class="quick-bar-btn" on:click={triggerDirectCast} title="Direct Cast">
                   <Cast size={15} />
                   <span>Cast</span>
@@ -805,42 +830,64 @@
           </div>
         {:else if isMoviLoaded && moviSupported}
           <div class="movi-player-wrapper">
-            <movi-player
-              bind:this={moviEl}
-              src={playerState.streamUrl}
-              poster={posterUrl}
-              title={playerState.title}
-              controls
-              autoplay
-              playsinline
-              theme="dark"
-              themecolor="#95FF50 #7A6BAE"
-              ambientmode
-              headers={authHeadersJson}
-              on:play={() => (isPlaying = true)}
-              on:pause={() => (isPlaying = false)}
-              on:timeupdate={handleTimeUpdate}
-              on:ended={handleMediaEnded}
-              class="movi-element"
-            ></movi-player>
+            {#key playerState.prepared}
+              <movi-player
+                bind:this={moviEl}
+                src={playerState.streamUrl}
+                poster={posterUrl}
+                title={playerState.title}
+                controls
+                autoplay
+                playsinline
+                theme="dark"
+                themecolor="#95FF50 #7A6BAE"
+                ambientmode
+                headers={authHeadersJson}
+                wasmurl={moviWasmUrl}
+                fallback="native"
+                on:nativefallback={handleNativeFallback}
+                on:error={handlePlaybackError}
+                on:play={handlePlay}
+                on:pause={handlePause}
+                on:loadedmetadata={handleReady}
+                on:canplay={handleReady}
+                on:seeked={handleReady}
+                on:timeupdate={handleTimeUpdate}
+                on:ended={handleMediaEnded}
+                class="movi-element"
+              >
+                {#each playerState.prepared?.subtitleResources || [] as track}
+                  <track kind="subtitles" src={track.url} label={track.label || 'Subtitles'} srclang={track.language || 'und'} default />
+                {/each}
+              </movi-player>
+            {/key}
           </div>
         {:else}
           <div class="video-player-container">
-            <video
-              bind:this={videoEl}
-              src={playerState.streamUrl}
-              poster={posterUrl}
-              autoplay
-              playsinline
-              controls
-              on:play={() => (isPlaying = true)}
-              on:pause={() => (isPlaying = false)}
-              on:timeupdate={handleTimeUpdate}
-              on:ended={handleMediaEnded}
-              class="native-video-el"
-            >
-              <track kind="captions" />
-            </video>
+            {#key playerState.prepared}
+              <video
+                bind:this={videoEl}
+                src={playerState.streamUrl}
+                poster={posterUrl}
+                autoplay
+                playsinline
+                controls
+                on:play={handlePlay}
+                on:pause={handlePause}
+                on:loadedmetadata={handleReady}
+                on:canplay={handleReady}
+                on:seeked={handleReady}
+                on:timeupdate={handleTimeUpdate}
+                on:ended={handleMediaEnded}
+                crossorigin="anonymous"
+                on:error={handlePlaybackError}
+                class="native-video-el"
+              >
+                {#each playerState.prepared?.subtitleResources || [] as track}
+                  <track kind="subtitles" src={track.url} label={track.label || 'Subtitles'} srclang={track.language || 'und'} default />
+                {/each}
+              </video>
+            {/key}
           </div>
         {/if}
       {/if}
@@ -849,6 +896,7 @@
 {/if}
 
 <style>
+  .player-error { position: absolute; bottom: 75px; left: 5%; right: 5%; z-index: 10; padding: 12px; color: #ffd5d0; background: #251719; border-radius: 8px; }
   .hidden-audio-el {
     display: none;
   }

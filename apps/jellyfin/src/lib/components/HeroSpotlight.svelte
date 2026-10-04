@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { JellyfinItem } from '../types';
   import {
-    playInBrowser,
+    playMedia,
     playWithDirectCast,
     openItemDetail,
     resolveItemBackdropUrl,
@@ -60,19 +60,21 @@
       <p class="hero-tagline">{item.Taglines[0]}</p>
     {/if}
 
-    <p class="hero-overview">{item.Overview || 'Explore and stream media seamlessly to PlayBridge receivers on your local network.'}</p>
+    <p class="hero-overview">{item.Overview || 'Browse your Jellyfin library and play here or on a PlayBridge device.'}</p>
 
     <div class="hero-actions">
       <!-- Direct PlayBridge Cast Button -->
-      <button class="btn-accent hero-btn action-cast" on:click={() => playWithDirectCast(item)}>
-        <Cast size={18} />
-        <span>Direct Cast</span>
-      </button>
+      {#if $bridgeStatus.available && !$bridgeStatus.playback}
+        <button class="btn-accent hero-btn action-cast" on:click={() => playWithDirectCast(item)}>
+          <Cast size={18} />
+          <span>Direct Cast</span>
+        </button>
+      {/if}
 
       <!-- Web Player Play Button -->
-      <button class="btn-primary hero-btn action-play" on:click={() => playInBrowser(item)}>
+      <button class="btn-primary hero-btn action-play" on:click={() => playMedia(item)}>
         <Play size={18} fill="currentColor" />
-        <span>Play</span>
+        <span>{item.UserData?.PlaybackPositionTicks ? 'Resume' : 'Play'}</span>
       </button>
 
       <!-- Details Modal Button -->

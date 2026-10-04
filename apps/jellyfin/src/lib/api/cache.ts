@@ -11,6 +11,7 @@ const MEMORY_CACHE = new Map<string, { data: any; timestamp: number }>();
 const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes fresh
 const DEFAULT_MAX_AGE_MS = 48 * 60 * 60 * 1000; // 48 hours stale
 
+let cacheRevision = 0;
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function getIDB(): Promise<IDBDatabase | null> {
@@ -53,11 +54,12 @@ export function getCachedData<T>(key: string, maxAgeMs = DEFAULT_MAX_AGE_MS): T 
 
 export function setCachedData<T>(key: string, data: T) {
   const entry = { data, timestamp: Date.now() };
+  const revision = cacheRevision;
   MEMORY_CACHE.set(key, entry);
 
   // Persist to IndexedDB asynchronously (no blocking, no 5MB quota limit)
   getIDB().then((db) => {
-    if (!db) return;
+    if (!db || revision !== cacheRevision) return;
     try {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
@@ -68,19 +70,23 @@ export function setCachedData<T>(key: string, data: T) {
 
 // Hydrate memory cache from IndexedDB on startup
 export async function hydrateCacheFromStorage(): Promise<void> {
+  const revision = cacheRevision;
   const db = await getIDB();
-  if (!db) return;
+  if (!db || revision !== cacheRevision) return;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
       const req = store.getAll();
       req.onsuccess = () => {
-        const items = req.result || [];
-        const now = Date.now();
-        for (const item of items) {
-          if (item && item.key && (now - item.timestamp) < DEFAULT_MAX_AGE_MS) {
-            MEMORY_CACHE.set(item.key, { data: item.data, timestamp: item.timestamp });
+        if (revision === cacheRevision) {
+          const items = req.result || [];
+          const now = Date.now();
+          for (const item of items) {
+            if (item && item.key && (now - item.timestamp) < DEFAULT_MAX_AGE_MS
+              && (MEMORY_CACHE.get(item.key)?.timestamp ?? -Infinity) < item.timestamp) {
+              MEMORY_CACHE.set(item.key, { data: item.data, timestamp: item.timestamp });
+            }
           }
         }
         resolve();
@@ -111,6 +117,7 @@ export async function fetchWithSWR<T>(
   onData?: (data: T) => void,
   freshTtlMs = DEFAULT_TTL_MS
 ): Promise<T> {
+  const revision = cacheRevision;
   const cached = getCachedData<T>(key);
   let returnedCached = false;
 
@@ -127,8 +134,10 @@ export async function fetchWithSWR<T>(
   // Background or initial fetch
   try {
     const fresh = await fetcher();
-    setCachedData(key, fresh);
-    if (onData) onData(fresh);
+    if (revision === cacheRevision) {
+      setCachedData(key, fresh);
+      if (onData) onData(fresh);
+    }
     return fresh;
   } catch (err) {
     if (returnedCached && cached !== null) {
@@ -138,7 +147,17 @@ export async function fetchWithSWR<T>(
   }
 }
 
+export function invalidateCache(key: string) {
+  cacheRevision++;
+  MEMORY_CACHE.delete(key);
+  void getIDB().then(db => {
+    if (!db) return;
+    try { db.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).delete(key); } catch {}
+  });
+}
+
 export function clearAllCache() {
+  cacheRevision++;
   MEMORY_CACHE.clear();
   getIDB().then((db) => {
     if (!db) return;

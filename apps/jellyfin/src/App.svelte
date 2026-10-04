@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import PlaybackDestination from './lib/components/PlaybackDestination.svelte';
   import Navbar from './lib/components/Navbar.svelte';
   import LoginScreen from './lib/components/LoginScreen.svelte';
   import HeroSpotlight from './lib/components/HeroSpotlight.svelte';
@@ -28,15 +29,16 @@
     isLoadingLibrary,
     initializeSession,
     playFolderOrAlbumWithCast,
-    playInBrowser,
+    playMedia,
     shufflePlay,
     shuffleCast,
-    activeToast
+    activeToast,
+    favoritesRevision
   } from './lib/stores/appState';
-  import { initPlayBridgeDetector } from './lib/cast/playbridge';
+  import { bridgeStatus, initPlayBridgeDetector } from './lib/cast/playbridge';
   import * as jfApi from './lib/api/jellyfin';
   import { getCachedData } from './lib/api/cache';
-  import type { JellyfinItem } from './lib/types';
+  import type { JellyfinItem, ServerConfig } from './lib/types';
   import {
     Film,
     Clapperboard,
@@ -67,9 +69,21 @@
   }
 
   onMount(() => {
-    initPlayBridgeDetector();
+    const disposeBridge = initPlayBridgeDetector();
     initializeSession();
+    return () => { disposeBridge(); clearTimeout(queryTimer); ++queryRequest; ++folderRequest; };
   });
+
+  // Folder state belongs to an account, even when library IDs coincide.
+  let folderConfig: ServerConfig;
+  $: if ($serverConfig !== folderConfig) {
+    folderConfig = $serverConfig;
+    ++folderRequest;
+    activeLibraryViewId = '';
+    folderStack = [];
+    customViewItems = [];
+    isLoadingCustomView = false;
+  }
 
   // Active view object
   $: currentView = $userViews.find((v) => v.Id === $activeTab);
@@ -108,7 +122,9 @@
       else if (collectionType === 'music') queryOptions.includeItemTypes = 'Audio,MusicAlbum,MusicArtist,Folder';
     }
 
-    const cacheKey = `lib_${$serverConfig.userId}_${folderId}_${queryOptions.includeItemTypes || 'direct'}_${queryOptions.recursive}`;
+    const config = $serverConfig;
+    const request = ++folderRequest;
+    const cacheKey = jfApi.cacheKey(config.url, config.userId, 'library', queryOptions);
     const cached = getCachedData<{ items: JellyfinItem[] }>(cacheKey);
     if (cached && cached.items && cached.items.length > 0) {
       customViewItems = cached.items;
@@ -119,21 +135,22 @@
 
     try {
       const res = await jfApi.getLibraryItems(
-        $serverConfig.url,
-        $serverConfig.userId,
-        $serverConfig.token,
+        config.url,
+        config.userId,
+        config.token,
         queryOptions,
         (fresh) => {
-          customViewItems = fresh.items;
+          if (request === folderRequest && config === $serverConfig) customViewItems = fresh.items;
         }
       );
-      customViewItems = res.items;
+      if (request === folderRequest && config === $serverConfig) customViewItems = res.items;
     } catch (err) {
       console.error('Failed to fetch folder items', err);
     } finally {
-      isLoadingCustomView = false;
+      if (request === folderRequest) isLoadingCustomView = false;
     }
   }
+  let folderRequest = 0;
 
   function handleNavigateIntoFolder(folderItem: JellyfinItem) {
     folderStack = [...folderStack, { id: folderItem.Id, name: folderItem.Name }];
@@ -185,19 +202,43 @@
     return matchGenre && matchSearch;
   });
 
-  // Search Results
-  $: searchResults = $searchQuery.trim()
-    ? $allLibraryItems.filter((i) =>
-        i.Name.toLowerCase().includes($searchQuery.toLowerCase()) ||
-        (i.Overview && i.Overview.toLowerCase().includes($searchQuery.toLowerCase())) ||
-        (i.Genres && i.Genres.some((g) => g.toLowerCase().includes($searchQuery.toLowerCase()))) ||
-        (i.AlbumArtist && i.AlbumArtist.toLowerCase().includes($searchQuery.toLowerCase())) ||
-        (i.Artists && i.Artists.some((a) => a.toLowerCase().includes($searchQuery.toLowerCase())))
-      )
-    : [];
-
-  // Favorites
-  $: favoriteItems = $allLibraryItems.filter((i) => i.UserData?.IsFavorite);
+  let remoteItems: JellyfinItem[] = [];
+  let remoteTotal = 0;
+  let remoteBusy = false;
+  let remoteError = '';
+  let queryRequest = 0;
+  let queryTimer: ReturnType<typeof setTimeout>;
+  let queryScope = '';
+  $: scheduleServerQuery($serverConfig, $activeTab, $searchQuery.trim(), $favoritesRevision);
+  function scheduleServerQuery(config: ServerConfig, tab: string, term: string, revision: number) {
+    clearTimeout(queryTimer);
+    ++queryRequest;
+    remoteItems = []; remoteTotal = 0; remoteError = ''; remoteBusy = false;
+    queryScope = `${config.url}|${config.userId}|${tab}|${term}|${revision}`;
+    if (config.isDemo || !config.connected || !['search', 'favorites'].includes(tab) || (tab === 'search' && !term)) return;
+    remoteBusy = true;
+    queryTimer = setTimeout(() => void fetchServerQuery(config, tab, term, false), tab === 'search' ? 250 : 0);
+  }
+  async function fetchServerQuery(config = $serverConfig, tab = $activeTab, term = $searchQuery.trim(), append = true) {
+    const request = ++queryRequest;
+    const scope = queryScope;
+    const startIndex = append ? remoteItems.length : 0;
+    remoteBusy = true; remoteError = '';
+    try {
+      const options = { searchTerm: tab === 'search' ? term : undefined, filters: tab === 'favorites' ? 'IsFavorite' : undefined,
+        recursive: true, sortBy: 'SortName', sortOrder: 'Ascending' as const, limit: 48, startIndex };
+      const result = await jfApi.getLibraryItems(config.url, config.userId, config.token, options);
+      if (request !== queryRequest || scope !== queryScope || config !== $serverConfig) return;
+      remoteItems = append ? [...remoteItems, ...result.items] : result.items;
+      remoteTotal = result.totalRecordCount;
+    } catch {
+      if (request === queryRequest) remoteError = 'Could not load this server view. Please retry.';
+    } finally { if (request === queryRequest) remoteBusy = false; }
+  }
+  $: searchResults = !$serverConfig.isDemo ? remoteItems : $searchQuery.trim()
+    ? $allLibraryItems.filter(i => [i.Name, i.Overview, i.AlbumArtist, ...(i.Genres || []), ...(i.Artists || [])]
+      .some(value => value?.toLowerCase().includes($searchQuery.toLowerCase()))) : [];
+  $: favoriteItems = !$serverConfig.isDemo ? remoteItems : $allLibraryItems.filter(i => i.UserData?.IsFavorite);
 
   function handleBatchCastFolder() {
     if (!currentView || customViewItems.length === 0) return;
@@ -218,7 +259,7 @@
       Type: 'Folder',
       tracks: customViewItems
     };
-    playInBrowser(folderItem, customViewItems, 0, false);
+    playMedia(folderItem, customViewItems, 0, false);
   }
 
   function handleShufflePlayFolder() {
@@ -263,6 +304,7 @@
     {/if}
 
     <main class="main-content">
+      <PlaybackDestination />
       {#if $isLoadingLibrary}
         <div class="loading-state">
           <Loader2 size={36} class="spinner" />
@@ -368,7 +410,7 @@
               {#if $showsList.length > 0}
                 <MediaSection
                   title="TV Series"
-                  subtitle="Series with full episode and seasonal direct casting"
+                  subtitle="Series, seasons and next episodes"
                   items={$showsList}
                 />
               {/if}
@@ -491,10 +533,12 @@
               <!-- Quick actions for Music/Audio folders -->
               {#if currentView.CollectionType === 'music' || customViewItems.some((i) => i.Type === 'Audio' || i.Type === 'MusicAlbum')}
                 <div class="batch-cast-actions">
-                  <button class="btn-primary batch-btn" on:click={handleBatchCastFolder}>
-                    <Cast size={16} />
-                    <span>Cast All</span>
-                  </button>
+                  {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                    <button class="btn-primary batch-btn" on:click={handleBatchCastFolder}>
+                      <Cast size={16} />
+                      <span>Cast All</span>
+                    </button>
+                  {/if}
                   <button class="btn-secondary batch-btn" on:click={handlePlayFolder}>
                     <Play size={16} />
                     <span>Play</span>
@@ -503,10 +547,12 @@
                     <Shuffle size={16} />
                     <span>Shuffle</span>
                   </button>
-                  <button class="btn-accent batch-btn" on:click={handleShuffleCastFolder} title="Shuffle Cast to PlayBridge Receiver">
-                    <Shuffle size={16} />
-                    <span>Shuffle Cast</span>
-                  </button>
+                  {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                    <button class="btn-accent batch-btn" on:click={handleShuffleCastFolder} title="Shuffle Cast to PlayBridge Receiver">
+                      <Shuffle size={16} />
+                      <span>Shuffle Cast</span>
+                    </button>
+                  {/if}
                 </div>
               {/if}
             </div>
@@ -550,7 +596,9 @@
               </div>
             </div>
 
-            {#if searchResults.length === 0}
+            {#if remoteBusy}<p role="status">Searching server…</p>{/if}
+            {#if remoteError}<p role="alert">{remoteError}</p><button class="btn-secondary" on:click={() => fetchServerQuery(undefined, undefined, undefined, false)}>Retry</button>{/if}
+            {#if searchResults.length === 0 && !remoteBusy && !remoteError}
               <div class="empty-state">
                 <Search size={44} class="empty-icon" />
                 <p>No results found for "{$searchQuery}"</p>
@@ -563,6 +611,8 @@
                 {/each}
               </div>
             {/if}
+
+            {#if !$serverConfig.isDemo && remoteItems.length < remoteTotal}<button class="btn-secondary" disabled={remoteBusy} on:click={() => fetchServerQuery()}>Load more results</button>{/if}
           </div>
 
         <!-- TAB: FAVORITES -->
@@ -575,7 +625,9 @@
               </div>
             </div>
 
-            {#if favoriteItems.length === 0}
+            {#if remoteBusy}<p role="status">Loading favorites…</p>{/if}
+            {#if remoteError}<p role="alert">{remoteError}</p><button class="btn-secondary" on:click={() => fetchServerQuery(undefined, undefined, undefined, false)}>Retry</button>{/if}
+            {#if favoriteItems.length === 0 && !remoteBusy && !remoteError}
               <div class="empty-state">
                 <Sparkles size={44} class="empty-icon" />
                 <p>No favorites yet</p>
@@ -587,6 +639,8 @@
                 {/each}
               </div>
             {/if}
+
+            {#if !$serverConfig.isDemo && remoteItems.length < remoteTotal}<button class="btn-secondary" disabled={remoteBusy} on:click={() => fetchServerQuery()}>Load more results</button>{/if}
           </div>
         {/if}
       {/if}

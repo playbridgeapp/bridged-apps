@@ -98,7 +98,7 @@
       <h1 class="login-title">PlayBridge Jellyfin</h1>
       <div class="bridge-tag">
         <Cast size={13} />
-        <span>Multi-Server Casting Suite</span>
+        <span>Browse, play and cast</span>
       </div>
     </div>
 
@@ -107,8 +107,8 @@
       <span class={$bridgeStatus.available ? 'pulsing-dot' : 'static-dot'}></span>
       <span>
         {$bridgeStatus.available
-          ? 'PlayBridge Native Bridge Connected — Ready for Direct TV Casting'
-          : 'PlayBridge Bridge Ready (In-browser playback + Cast payload inspector)'}
+          ? 'PlayBridge connected — native playback and casting available'
+          : 'Browser playback available — open in PlayBridge for native playback and casting'}
       </span>
     </div>
 

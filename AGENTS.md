@@ -45,7 +45,7 @@ pnpm exec node --test apps/streams/test/*.test.mjs
 ```
 
 Never overwrite `window.playbridge` (native playback/Cast/plugin API). E2E hooks
-are `window.__bridgedTest`; Streams accepts a mock bridge at
+are `window.__bridgedTest`; both clients accept a mock bridge at
 `window.__bridgedTest.playbridge`. Keep account credentials, configured private
 addon URLs and signed streams out of committed fixtures and logs. Live Jellyfin
 test credentials belong in gitignored `e2e/.env.local`.

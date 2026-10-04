@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { JellyfinItem } from '../types';
+  import { bridgeStatus } from '../cast/playbridge';
   import {
-    playInBrowser,
+    playMedia,
     playWithDirectCast,
     openItemDetail,
     resolveItemPosterUrl
@@ -33,7 +34,7 @@
 
   function handlePlayClick(e: MouseEvent | TouchEvent) {
     e.stopPropagation();
-    playInBrowser(item);
+    playMedia(item);
   }
 
   function handleCastClick(e: MouseEvent | TouchEvent) {
@@ -91,20 +92,24 @@
 
     <!-- Desktop Hover Overlay -->
     <div class="desktop-overlay desktop-only">
-      <button class="overlay-btn overlay-play" on:click={handlePlayClick} title="Play in Browser">
+      <button class="overlay-btn overlay-play" on:click={handlePlayClick} title={item.UserData?.PlaybackPositionTicks ? "Resume" : "Play"}>
         <Play size={18} fill="currentColor" />
       </button>
-      <button class="overlay-btn overlay-cast" on:click={handleCastClick} title="Direct Cast">
-        <Cast size={18} />
-      </button>
+      {#if $bridgeStatus.available && !$bridgeStatus.playback}
+        <button class="overlay-btn overlay-cast" on:click={handleCastClick} title="Direct Cast">
+          <Cast size={18} />
+        </button>
+      {/if}
     </div>
 
     <!-- Mobile Quick Cast & Play Badges -->
     <div class="mobile-quick-actions mobile-only">
-      <button class="mobile-tap-btn mobile-cast-btn" on:click={handleCastClick} title="Direct Cast">
-        <Cast size={14} />
-      </button>
-      <button class="mobile-tap-btn mobile-play-btn" on:click={handlePlayClick} title="Play in Browser">
+      {#if $bridgeStatus.available && !$bridgeStatus.playback}
+        <button class="mobile-tap-btn mobile-cast-btn" on:click={handleCastClick} title="Direct Cast">
+          <Cast size={14} />
+        </button>
+      {/if}
+      <button class="mobile-tap-btn mobile-play-btn" on:click={handlePlayClick} title={item.UserData?.PlaybackPositionTicks ? "Resume" : "Play"}>
         <Play size={13} fill="currentColor" />
       </button>
     </div>

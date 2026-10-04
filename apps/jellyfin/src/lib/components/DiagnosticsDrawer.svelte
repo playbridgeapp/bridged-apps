@@ -84,14 +84,14 @@
           <p class="status-sub">
             {$bridgeStatus.available
               ? 'Native PlayBridge bridge detected in window.playbridge'
-              : 'Running in standard browser. Cast requests will output payloads below.'}
+              : 'Running in a standard browser with website playback.'}
           </p>
         </div>
 
         <div class="cap-grid">
           <div class="cap-pill" class:active={$bridgeStatus.available}>
             <span class="cap-dot"></span>
-            <span>Direct Cast</span>
+            <span>Native playback / Cast</span>
           </div>
           <div class="cap-pill" class:active={$bridgeStatus.linkedCast}>
             <span class="cap-dot"></span>
@@ -107,6 +107,7 @@
             <Code size={14} />
             <span>Latest Dispatched Cast Payload</span>
           </div>
+          <p>Authenticated URLs, headers and credentials are redacted.</p>
           <pre class="json-code">{JSON.stringify($activeCastPayload, null, 2)}</pre>
         </div>
       {/if}

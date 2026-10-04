@@ -2,16 +2,18 @@
   import type { JellyfinItem, JellyfinSeason } from '../types';
   import {
     detailModalItem,
-    playInBrowser,
+    playMedia,
     playWithDirectCast,
     playWithLinkedQueue,
     playFolderOrAlbumWithCast,
     shufflePlay,
     shuffleCast,
     toggleFavorite,
+    playbackSelections,
     resolveItemPosterUrl,
     resolveItemBackdropUrl
   } from '../stores/appState';
+  import PlaybackDestination from './PlaybackDestination.svelte';
   import { bridgeStatus } from '../cast/playbridge';
   import {
     X,
@@ -51,6 +53,19 @@
 
   $: posterUrl = item ? resolveItemPosterUrl(item) : '';
   $: backdropUrl = item ? resolveItemBackdropUrl(item) : '';
+  $: selection = item ? $playbackSelections[item.Id] || {} : {};
+  $: selectedSource = item?.MediaSources?.find(source => source.Id === selection.mediaSourceId) || item?.MediaSources?.[0];
+  $: streams = selectedSource?.MediaStreams || item?.MediaStreams || [];
+  function selectPlayback(key: 'mediaSourceId' | 'audioStreamIndex' | 'subtitleStreamIndex', event: Event) {
+    if (!item) return;
+    const value = (event.target as HTMLSelectElement).value;
+    $playbackSelections = { ...$playbackSelections, [item.Id]: { ...(key === 'mediaSourceId' ? {} : selection),
+      [key]: value === '' ? undefined : key === 'mediaSourceId' ? value : Number(value) } };
+  }
+  function playEpisode(ep: JellyfinItem) {
+    const episodes = item?.seasons?.flatMap(season => season.Episodes) || [ep];
+    void playMedia(ep, episodes, Math.max(0, episodes.findIndex(episode => episode.Id === ep.Id)));
+  }
 </script>
 
 {#if item}
@@ -141,45 +156,63 @@
               <p class="item-tagline">{item.Taglines[0]}</p>
             {/if}
 
+            {#if item.MediaSources?.length || streams.length}
+              <div class="playback-options">
+                {#if (item.MediaSources?.length || 0) > 1}
+                  <label>Version <select aria-label="Media version" value={selection.mediaSourceId || ''} on:change={(e) => selectPlayback('mediaSourceId', e)}>
+                    <option value="">Server default</option>
+                    {#each item.MediaSources || [] as source}<option value={source.Id}>{source.Name || source.Container || 'Source'} · {source.Id.slice(0, 8)}</option>{/each}
+                  </select></label>
+                {/if}
+                {#if streams.some(track => track.Type === 'Audio' && track.Index != null)}
+                  <label>Audio <select aria-label="Audio track" value={selection.audioStreamIndex ?? ''} on:change={(e) => selectPlayback('audioStreamIndex', e)}>
+                    <option value="">Server default</option>
+                    {#each streams.filter(track => track.Type === 'Audio' && track.Index != null) as track}<option value={track.Index}>{track.DisplayTitle || track.Language || track.Codec || 'Audio'}</option>{/each}
+                  </select></label>
+                {/if}
+                {#if streams.some(track => track.Type === 'Subtitle' && track.Index != null)}
+                  <label>Subtitles <select aria-label="Subtitle track" value={selection.subtitleStreamIndex ?? ''} on:change={(e) => selectPlayback('subtitleStreamIndex', e)}>
+                    <option value="">Server default</option><option value="-1">Off</option>
+                    {#each streams.filter(track => track.Type === 'Subtitle' && track.Index != null) as track}<option value={track.Index}>{track.DisplayTitle || track.Language || track.Codec || 'Subtitles'}</option>{/each}
+                  </select></label>
+                {/if}
+              </div>
+            {/if}
+            <PlaybackDestination compact />
             <div class="action-buttons">
-              <!-- If Album / Folder / Playlist: Cast All / Play All / Shuffle -->
-              {#if (item.Type === 'MusicAlbum' || item.Type === 'Folder' || item.Type === 'Playlist') && item.tracks && item.tracks.length > 0}
-                <button class="btn-accent modal-action-btn" on:click={() => item && playFolderOrAlbumWithCast(item, item.tracks, 0)}>
-                  <Cast size={18} />
-                  <span>Cast All ({item.tracks.length})</span>
+              {#if (item.Type === 'MusicAlbum' || item.Type === 'Folder' || item.Type === 'Playlist') && item.tracks?.length}
+                <button class="btn-primary modal-action-btn" on:click={() => item && playMedia(item, item.tracks, 0)}>
+                  <Play size={18} fill="currentColor" /><span>Play All</span>
                 </button>
-                <button class="btn-primary modal-action-btn" on:click={() => item && item.tracks && playInBrowser(item, item.tracks, 0)}>
-                  <Play size={18} fill="currentColor" />
-                  <span>Play All</span>
+                <button class="btn-secondary modal-action-btn" on:click={() => item && shufflePlay(item, item.tracks)} title="Shuffle Play">
+                  <Shuffle size={17} /><span>Shuffle</span>
                 </button>
-                <button class="btn-secondary modal-action-btn" on:click={() => item && item.tracks && shufflePlay(item, item.tracks)} title="Shuffle Play in Browser">
-                  <Shuffle size={17} />
-                  <span>Shuffle</span>
+                {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                  <button class="btn-accent modal-action-btn" on:click={() => item && playFolderOrAlbumWithCast(item, item.tracks, 0)}>
+                    <Cast size={18} /><span>Cast All ({item.tracks.length})</span>
+                  </button>
+                  <button class="btn-secondary modal-action-btn" on:click={() => item && shuffleCast(item, item.tracks)} title="Shuffle Cast to TV">
+                    <Shuffle size={17} /><Cast size={15} />
+                  </button>
+                {/if}
+              {:else if item.Type === 'Series' && item.seasons?.length}
+                <button class="btn-primary modal-action-btn" on:click={() => item && playMedia(item)}>
+                  <Play size={18} fill="currentColor" /><span>Play / Resume series</span>
                 </button>
-                <button class="btn-secondary modal-action-btn" on:click={() => item && item.tracks && shuffleCast(item, item.tracks)} title="Shuffle Cast to TV">
-                  <Shuffle size={17} />
-                  <Cast size={15} />
-                </button>
-              {:else if item.Type === 'Series' && item.seasons && item.seasons.length > 0}
-                <!-- For TV Series: Cast Series Queue (Linked Cast) -->
-                <button class="btn-accent modal-action-btn" on:click={() => item && playWithLinkedQueue(item, item.seasons, 0)}>
-                  <Cast size={18} />
-                  <span>Cast Series Queue</span>
-                </button>
-                <button class="btn-primary modal-action-btn" on:click={() => item && playInBrowser(item)}>
-                  <Play size={18} fill="currentColor" />
-                  <span>Play Ep 1</span>
-                </button>
+                {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                  <button class="btn-accent modal-action-btn" on:click={() => item && playWithLinkedQueue(item, item.seasons, 0)}>
+                    <Cast size={18} /><span>Cast Series Queue</span>
+                  </button>
+                {/if}
               {:else}
-                <!-- Standard Single Video / Audio Item -->
-                <button class="btn-accent modal-action-btn" on:click={() => item && playWithDirectCast(item)}>
-                  <Cast size={18} />
-                  <span>Direct Cast</span>
+                <button class="btn-primary modal-action-btn" on:click={() => item && playMedia(item)}>
+                  <Play size={18} fill="currentColor" /><span>{item.UserData?.PlaybackPositionTicks ? 'Resume' : 'Play'}</span>
                 </button>
-                <button class="btn-primary modal-action-btn" on:click={() => item && playInBrowser(item)}>
-                  <Play size={18} fill="currentColor" />
-                  <span>Play in Browser</span>
-                </button>
+                {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                  <button class="btn-accent modal-action-btn" on:click={() => item && playWithDirectCast(item)}>
+                    <Cast size={18} /><span>Direct Cast</span>
+                  </button>
+                {/if}
               {/if}
             </div>
           </div>
@@ -219,19 +252,21 @@
                   <Shuffle size={14} />
                   <span>Shuffle</span>
                 </button>
-                <button
-                  class="btn-secondary tracks-sub-btn"
-                  on:click={() => item && playFolderOrAlbumWithCast(item, item.tracks, 0)}
-                >
-                  <Cast size={14} />
-                  <span>Cast All</span>
-                </button>
+                {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                  <button
+                    class="btn-secondary tracks-sub-btn"
+                    on:click={() => item && playFolderOrAlbumWithCast(item, item.tracks, 0)}
+                  >
+                    <Cast size={14} />
+                    <span>Cast All</span>
+                  </button>
+                {/if}
               </div>
             </div>
 
             <div class="tracks-list">
               {#each item.tracks as track, index}
-                <div class="track-row" on:click={() => item && playInBrowser(track, item.tracks, index)}>
+                <div class="track-row" on:click={() => item && playMedia(track, item.tracks, index)}>
                   <span class="track-number">{track.IndexNumber != null ? track.IndexNumber : index + 1}</span>
                   <div class="track-info">
                     <span class="track-title">{track.Name}</span>
@@ -251,17 +286,19 @@
                     >
                       <Heart size={15} fill={track.UserData?.IsFavorite ? '#e74c3c' : 'none'} color={track.UserData?.IsFavorite ? '#e74c3c' : 'currentColor'} />
                     </button>
-                    <button
-                      class="track-action-btn cast-btn"
-                      title="Cast from this track"
-                      on:click|stopPropagation={() => item && playFolderOrAlbumWithCast(item, item.tracks, index)}
-                    >
-                      <Cast size={15} />
-                    </button>
+                    {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                      <button
+                        class="track-action-btn cast-btn"
+                        title="Cast from this track"
+                        on:click|stopPropagation={() => item && playFolderOrAlbumWithCast(item, item.tracks, index)}
+                      >
+                        <Cast size={15} />
+                      </button>
+                    {/if}
                     <button
                       class="track-action-btn play-btn"
                       title="Play in browser"
-                      on:click|stopPropagation={() => item && playInBrowser(track, item.tracks, index)}
+                      on:click|stopPropagation={() => item && playMedia(track, item.tracks, index)}
                     >
                       <Play size={14} fill="currentColor" />
                     </button>
@@ -297,7 +334,7 @@
               <div class="episodes-list">
                 {#each item.seasons[activeSeasonIndex].Episodes as ep, epIdx}
                   <div class="episode-card">
-                    <div class="ep-thumb-wrapper" on:click={() => playInBrowser(ep)}>
+                    <div class="ep-thumb-wrapper" on:click={() => playEpisode(ep)}>
                       <img
                         src={ep.posterUrl || resolveItemPosterUrl(ep)}
                         alt={ep.Name}
@@ -324,19 +361,21 @@
                       {/if}
 
                       <div class="ep-actions">
-                        <button
-                          class="btn-secondary ep-cast-btn"
-                          on:click={() => playWithDirectCast(ep)}
-                        >
-                          <Cast size={14} />
-                          <span>Cast Episode</span>
-                        </button>
+                        {#if $bridgeStatus.available && !$bridgeStatus.playback}
+                          <button
+                            class="btn-secondary ep-cast-btn"
+                            on:click={() => playWithDirectCast(ep)}
+                          >
+                            <Cast size={14} />
+                            <span>Cast Episode</span>
+                          </button>
+                        {/if}
                         <button
                           class="btn-primary ep-play-btn"
-                          on:click={() => playInBrowser(ep)}
+                          on:click={() => playEpisode(ep)}
                         >
                           <Play size={14} fill="currentColor" />
-                          <span>Play</span>
+                          <span>{ep.UserData?.PlaybackPositionTicks ? 'Resume' : 'Play'}</span>
                         </button>
                       </div>
                     </div>
@@ -352,6 +391,9 @@
 {/if}
 
 <style>
+  .playback-options { display: flex; flex-wrap: wrap; gap: 12px; margin: 12px 0; }
+  .playback-options label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+  .playback-options select { max-width: 230px; background: var(--bg-surface); color: var(--text-primary); border: 1px solid #555; border-radius: 6px; padding: 6px; }
   .modal-backdrop {
     position: fixed;
     inset: 0;

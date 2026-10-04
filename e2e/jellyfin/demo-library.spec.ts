@@ -20,8 +20,8 @@ test.describe('Jellyfin demo library — shows & login', () => {
 
     const modal = page.locator('.modal-backdrop .modal-container');
     await expect(modal).toBeVisible();
-    await expect(modal.getByRole('button', { name: 'Cast Series Queue' })).toBeVisible();
-    await expect(modal.getByRole('button', { name: /Play Ep 1/i })).toBeVisible();
+    await expect(modal.getByRole('button', { name: 'Cast Series Queue' })).toHaveCount(0);
+    await expect(modal.getByRole('button', { name: /Play \/ Resume series/i })).toBeVisible();
     await expect(modal.getByRole('heading', { name: 'Seasons & Episodes' })).toBeVisible();
     await expect(modal.locator('.episode-card').first()).toBeVisible();
 
@@ -37,7 +37,7 @@ test.describe('Jellyfin demo library — shows & login', () => {
     await chromeButton(page, isMobile, 'Shows').click();
     await page.locator('.media-card .card-title').first().click();
     await expect(page.locator('.modal-container')).toBeVisible();
-    await page.getByRole('button', { name: /Play Ep 1/i }).click();
+    await page.getByRole('button', { name: /Play \/ Resume series/i }).click();
     await expect(page.locator('.player-overlay')).toBeVisible({ timeout: 20_000 });
     await page.getByTitle('Minimize to mini-player (keep browsing)').click();
     await expect(page.locator('.mini-player-bar')).toBeVisible();
@@ -45,6 +45,10 @@ test.describe('Jellyfin demo library — shows & login', () => {
 
   test('demo home layout screenshot', async ({ page }) => {
     test.skip(!!process.env.CI, 'Screenshot baselines are darwin-only so far');
+    // Keep the masked-image layout deterministic without external image services.
+    await page.route('**/*', route => route.request().resourceType() === 'image'
+      ? route.fulfill({ contentType: 'image/gif', body: Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64') })
+      : route.fallback());
     await enterDemoLibrary(page);
     await expect(page).toHaveScreenshot('demo-home.png', {
       animations: 'disabled',

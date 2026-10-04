@@ -129,7 +129,7 @@
         </div>
         <div class="brand-text">
           <span class="brand-name">PlayBridge</span>
-          <span class="brand-sub">Jellyfin Cast</span>
+          <span class="brand-sub">Jellyfin</span>
         </div>
       </div>
 
@@ -256,8 +256,8 @@
         class:cast-active={$bridgeStatus.available}
         on:click={() => ($isDiagnosticsOpen = true)}
         title={$bridgeStatus.available
-          ? 'PlayBridge Receiver Active'
-          : 'PlayBridge Receiver not detected'}
+          ? 'PlayBridge playback available'
+          : 'Browser playback · PlayBridge not detected'}
       >
         <Cast size={16} class="cast-symbol" />
         {#if $bridgeStatus.available}
