@@ -112,17 +112,26 @@ export async function fetchCatalog(addon: InstalledAddon, catalog: AddonCatalog,
 
 export async function fetchMeta(addons: InstalledAddon[], preview: MetaPreview, signal?: AbortSignal): Promise<Meta> {
   const candidates = addons.filter((addon) => supports(addon, 'meta', preview.type, preview.id));
-  for (const addon of candidates) {
-    try {
-      const data = await getJson<{ meta?: Meta }>(resourceUrl(addon, 'meta', preview.type, preview.id), signal);
-      if (data.meta) return { ...preview, ...data.meta, videos: (data.meta.videos || []).map((video) => ({
+  // Ask every candidate at once, but keep addon priority: take the first one in order that answers,
+  // so a slow or failing first addon no longer delays the others.
+  const controller = new AbortController();
+  const abortAll = () => controller.abort();
+  signal?.addEventListener('abort', abortAll, { once: true });
+  const requests = candidates.map((addon) => getJson<{ meta?: Meta }>(resourceUrl(addon, 'meta', preview.type, preview.id), controller.signal)
+    .then((data) => data.meta || null, () => null));
+  try {
+    for (const request of requests) {
+      const meta = await request;
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+      if (meta) return { ...preview, ...meta, videos: (meta.videos || []).map((video) => ({
         ...video, title: video.title || video.name, description: video.description || video.overview
       })) };
-    } catch (error) {
-      if (signal?.aborted) throw error;
     }
+    return { ...preview, videos: [] };
+  } finally {
+    signal?.removeEventListener('abort', abortAll);
+    controller.abort();
   }
-  return { ...preview, videos: [] };
 }
 
 export async function fetchStreams(
