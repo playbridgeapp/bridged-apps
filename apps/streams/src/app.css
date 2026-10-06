@@ -755,3 +755,7 @@ img.fade-img.is-loaded{opacity:1}
   .detail-facts-card{-webkit-backdrop-filter:none;backdrop-filter:none;background:#11161bdb}
   .detail-back,.detail-action-icon,.feature-info{-webkit-backdrop-filter:none;backdrop-filter:none}
 }
+
+/* These entrance animations end on the identity transform. `both` kept that transform applied afterwards, which pinned
+   the whole tall detail content (and every episode/stream row) as its own compositor layer while scrolling. */
+.detail-hero .detail-intro,.detail-facts-card,.detail-content,.stream-hero-copy,.stream-screen-body,.stream-provider,.stream-result,.episode-row,.stream-resume-banner{animation-fill-mode:backwards}
