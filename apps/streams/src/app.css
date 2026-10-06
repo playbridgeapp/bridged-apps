@@ -747,3 +747,11 @@ img.fade-img.is-loaded{opacity:1}
 @media(max-width:800px){.episode-skeleton{width:min(275px,76vw)}}
 @keyframes skeleton-shimmer{to{background-position-x:-200%}}
 @media(prefers-reduced-motion:reduce){img.fade-img{transition:none}.episode-skeletons .episode-skeleton-art,.episode-skeletons .skeleton-line{animation:none}}
+
+/* Touch devices: full-screen backdrop blurs are costly on phone GPUs, so use a slightly more opaque scrim instead. */
+@media(pointer:coarse){
+  .overlay:not(.detail-overlay):not(.stream-overlay){-webkit-backdrop-filter:none;backdrop-filter:none;background:#02060be6}
+  .discover-sheet-scrim{-webkit-backdrop-filter:none;backdrop-filter:none;background:#020508d6}
+  .detail-facts-card{-webkit-backdrop-filter:none;backdrop-filter:none;background:#11161bdb}
+  .detail-back,.detail-action-icon,.feature-info{-webkit-backdrop-filter:none;backdrop-filter:none}
+}

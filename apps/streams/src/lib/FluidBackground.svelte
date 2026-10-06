@@ -1,7 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  // Set while an opaque overlay (details, player) covers the page, so the shader isn't drawn for nothing.
+  export let paused = false;
+
   let canvas: HTMLCanvasElement;
+  let resume: (() => void) | undefined;
+  $: if (!paused) resume?.();
 
   const vertexSource = `
     attribute vec2 p;
@@ -179,6 +184,7 @@
     let last = -Infinity;
     const draw = (now: number) => {
       frame = 0;
+      if (paused) return;
       if (!reduced) frame = requestAnimationFrame(draw);
       if (document.hidden || (!reduced && now - last < 33)) return; // ~30fps cap
       last = now;
@@ -190,6 +196,7 @@
       last = -Infinity;
       if (!frame) frame = requestAnimationFrame(draw);
     };
+    resume = requestDraw;
     const scale = 0.75;
     const resize = () => {
       canvas.width = Math.max(2, Math.round(canvas.clientWidth * scale));
@@ -213,6 +220,7 @@
     document.addEventListener('visibilitychange', handleVisibility);
 
     return () => {
+      resume = undefined;
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', resize);
       motionPreference.removeEventListener('change', updateMotion);

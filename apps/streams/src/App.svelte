@@ -2933,7 +2933,7 @@
   </header>
 
   <main aria-busy={startupLoading}>
-    {#if !startupLoading && (tab === 'search' || tab === 'library' || tab === 'settings')}<FluidBackground />{/if}
+    {#if !startupLoading && (tab === 'search' || tab === 'library' || tab === 'settings')}<FluidBackground paused={!!selected || !!playing} />{/if}
     {#if startupLoading}
       <section class="startup-screen" role="status" aria-live="polite">
         <div class="startup-copy"><div class="eyebrow">BRIDGED STREAMS</div><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> Restoring your accounts and addons…</p></div>
