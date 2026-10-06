@@ -76,7 +76,8 @@ export async function fixture(page: Page, options: { watched?: NuvioWatchedItem[
 }
 export async function browserPlayer(page: Page) {
   await page.getByRole('button', { name: 'View details for Test Series', exact: true }).first().click();
-  // The first card is Continue Watching and goes directly to the saved episode.
+  // The first card is Continue Watching; it opens details, then Resume goes to the saved episode.
+  await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
   await expect(page.getByRole('dialog', { name: 'Streams for Test Series' })).toBeVisible();
   const banner = page.locator('.stream-resume-banner');
   await expect(banner).toBeVisible();

@@ -73,6 +73,7 @@ async function noCorsMedia() {
 
 async function openPlayer(page: Page, title: string) {
   await page.getByRole('button', { name: `View details for ${title}`, exact: true }).first().click();
+  await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
   await expect(page.getByRole('dialog', { name: `Streams for ${title}` })).toBeVisible();
   await page.locator('.stream-result .watch-button').click();
   await expect(page.getByRole('dialog', { name: `Now playing ${title}` })).toBeVisible();

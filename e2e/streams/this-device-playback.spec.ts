@@ -26,6 +26,7 @@ async function closeSettings(page: Page) {
 }
 async function play(page: Page) {
   await page.getByRole('button', { name: 'View details for Test Series', exact: true }).first().click();
+  await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
   await expect(page.getByRole('dialog', { name: 'Streams for Test Series' })).toBeVisible();
   await page.locator('.stream-result .watch-button').click();
 }
@@ -117,6 +118,7 @@ test('a changed destination cannot silently start browser playback for an old lo
   await page.getByRole('switch', { name: 'Use PlayBridge video player on this device' }).uncheck();
   await closeSettings(page);
   await page.getByRole('button', { name: 'View details for Test Series', exact: true }).first().click();
+  await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
   await expect(page.getByRole('dialog', { name: 'Streams for Test Series' })).toBeVisible();
   await expect(page.locator('.stream-result .watch-button')).toBeVisible();
   await page.evaluate(() => {
