@@ -2272,9 +2272,9 @@
   function openDetail(preview: MetaPreview, fromContinue = false) {
     previewMemory.set(`${preview.type}:${preview.id}`, preview);
     const nextUp = fromContinue ? (preview as MetaPreview & { nextUp?: Video }).nextUp : undefined;
-    pendingAutoAction = streamSelection.enabled && fromContinue
-      ? { type: preview.type, id: preview.id, videoId: nextUp?.id, destinationId: playbackDestination?.id } : null;
-    router?.push({ kind: fromContinue ? 'streams' : 'detail', type: preview.type, id: preview.id,
+    // Continue Watching opens the detail screen (with the resume/next-up episode selected) rather than jumping to sources.
+    pendingAutoAction = null;
+    router?.push({ kind: 'detail', type: preview.type, id: preview.id,
       ...(nextUp ? { videoId: nextUp.id, season: nextUp.season, episode: nextUp.episode } : {}) });
   }
 
