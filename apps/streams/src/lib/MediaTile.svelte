@@ -1,6 +1,7 @@
 <script lang="ts">
   import { Film, Info, Star } from 'lucide-svelte';
   import { desktopHover } from './view-preferences';
+  import { fadeIn } from './image-fade';
   import type { MetaPreview } from './types';
 
   export let item: MetaPreview;
@@ -15,7 +16,7 @@
 
 <button class="media-card" aria-label={`View details for ${item.name}`} onclick={onSelect}>
   <span class="poster">
-    {#if item.poster}<img src={item.poster} alt="" loading="lazy" decoding="async" />{:else}<Film size={34} />{/if}
+    {#if item.poster}<img use:fadeIn src={item.poster} alt="" loading="lazy" decoding="async" />{:else}<Film size={34} />{/if}
     {#if $desktopHover}
     <span class="tile-hover" aria-hidden="true">
       <span class="tile-hover-icon"><Info size={23} /></span>

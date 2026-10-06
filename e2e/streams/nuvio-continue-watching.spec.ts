@@ -106,6 +106,7 @@ for (const inLibrary of [false, true]) {
     await expect(card).toBeVisible();
     await expect(card).toContainText('<1% watched');
     await card.click();
+    await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
     await expect(page.getByRole('dialog', { name: 'Streams for Outlander' })).toContainText('Episode six');
   });
 
@@ -115,6 +116,7 @@ for (const inLibrary of [false, true]) {
       .getByRole('button', { name: 'View details for Outlander', exact: true });
     await expect(card).toBeVisible();
     await card.click();
+    await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
     await expect(page.getByRole('dialog', { name: 'Streams for Outlander' })).toContainText('Episode four');
   });
 }
@@ -144,6 +146,7 @@ test('resolves a watched show outside library/catalogs in the background and cac
     expect(state.catalogRequests).toBe(catalogRequests);
 
     await card.click();
+    await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
     await expect(page.getByRole('dialog', { name: 'Streams for Outlander' })).toContainText('Episode four');
     await expect(page.getByText('Episode source', { exact: true })).toBeVisible();
     expect(state.metadataRequests).toBe(1);
@@ -211,6 +214,7 @@ for (const inLibrary of [false, true]) {
     const card = continueCard(page);
     await expect(card).toContainText('Next up: S2E5');
     await card.click();
+    await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
     const streams = page.getByRole('dialog', { name: 'Streams for Outlander' });
     await expect(streams).toContainText('Episode five');
     await expect(streams).not.toContainText('Resume from');
@@ -234,6 +238,7 @@ test('imports paginated watched history for the selected profile even without pl
     { p_profile_id: 2, p_page: 1, p_page_size: 100 }, { p_profile_id: 2, p_page: 2, p_page_size: 100 }
   ]);
   await continueCard(page).click();
+  await page.locator('.detail-overlay .detail-play').click(); // Continue Watching opens details first.
   await expect(page.getByRole('dialog', { name: 'Streams for Outlander' })).toContainText('Episode five');
 });
 

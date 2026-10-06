@@ -735,3 +735,27 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 
 /* html already paints #090b0f; body must not paint over negative-z background layers. */
 body{background:transparent}
+
+/* Image fade-in over the placeholder background, and loading skeletons. */
+img.fade-img{opacity:0;transition:opacity .25s ease,transform .2s}
+img.fade-img.is-loaded{opacity:1}
+.episode-skeletons{overflow:hidden}
+.episode-skeleton{flex:none;width:min(315px,75vw)}.episode-skeleton-art{display:block;aspect-ratio:16/9;border:1px solid #ffffff22;border-radius:11px}
+.episode-skeletons .episode-skeleton-art,.episode-skeletons .skeleton-line{background:linear-gradient(110deg,#ffffff08 10%,#ffffff15 50%,#ffffff08 90%) #20262b;background-size:200% 100%;animation:skeleton-shimmer 1.7s ease-in-out infinite}
+.episode-skeleton-text{display:flex;flex-direction:column;gap:9px;padding-top:11px}
+.skeleton-line{display:block;height:13px;border-radius:6px}.skeleton-line.short{width:55%}
+@media(max-width:800px){.episode-skeleton{width:min(275px,76vw)}}
+@keyframes skeleton-shimmer{to{background-position-x:-200%}}
+@media(prefers-reduced-motion:reduce){img.fade-img{transition:none}.episode-skeletons .episode-skeleton-art,.episode-skeletons .skeleton-line{animation:none}}
+
+/* Touch devices: full-screen backdrop blurs are costly on phone GPUs, so use a slightly more opaque scrim instead. */
+@media(pointer:coarse){
+  .overlay:not(.detail-overlay):not(.stream-overlay){-webkit-backdrop-filter:none;backdrop-filter:none;background:#02060be6}
+  .discover-sheet-scrim{-webkit-backdrop-filter:none;backdrop-filter:none;background:#020508d6}
+  .detail-facts-card{-webkit-backdrop-filter:none;backdrop-filter:none;background:#11161bdb}
+  .detail-back,.detail-action-icon,.feature-info{-webkit-backdrop-filter:none;backdrop-filter:none}
+}
+
+/* These entrance animations end on the identity transform. `both` kept that transform applied afterwards, which pinned
+   the whole tall detail content (and every episode/stream row) as its own compositor layer while scrolling. */
+.detail-hero .detail-intro,.detail-facts-card,.detail-content,.stream-hero-copy,.stream-screen-body,.stream-provider,.stream-result,.episode-row,.stream-resume-banner{animation-fill-mode:backwards}
