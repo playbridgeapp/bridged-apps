@@ -304,16 +304,21 @@
 
   async function refreshPlaybackDestination() {
     if (destinationBusy || destinationRefreshing || document.hidden) return;
-    bridge = bridgeAvailable();
-    if (!bridge) { playbackDestination = null; return; }
+    const available = bridgeAvailable();
+    if (bridge !== available) bridge = available;
+    if (!available) { if (playbackDestination) playbackDestination = null; return; }
     const api = playbackBridge();
     if (!api?.getPlaybackDestination || !api.capabilities?.playback) return;
     const request = ++destinationRequest;
     destinationRefreshing = true;
     try {
       const response = await api.getPlaybackDestination();
-      if (request === destinationRequest) { playbackDestination = response.destination; destinationLookupFailed = false; }
-    } catch { if (request === destinationRequest) destinationLookupFailed = true; }
+      if (request === destinationRequest) {
+        const next = response.destination, current = playbackDestination;
+        if (!current || !next || current.id !== next.id || current.name !== next.name || current.kind !== next.kind || current.connected !== next.connected) playbackDestination = next;
+        if (destinationLookupFailed) destinationLookupFailed = false;
+      }
+    } catch { if (request === destinationRequest && !destinationLookupFailed) destinationLookupFailed = true; }
     finally { destinationRefreshing = false; }
   }
 
@@ -541,11 +546,12 @@
   $: if (nextDismissalScope !== dismissalScope) { dismissalScope = nextDismissalScope; dismissedWatching = watchingDismissals(dismissalScope); }
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
   $: nuvioMetadataProviders = addons.filter((addon) => supports(addon, 'meta', 'movie') || supports(addon, 'meta', 'series'));
+  $: rowItemKeys = new Set(rows.flatMap((row) => row.items.map((item) => `${item.type}:${item.id}`)));
   $: nuvioMetadataTargets = nuvioWatchingTargets(nuvioProgress, nuvioWatched)
     .filter((entry) => entry.content_type === 'movie' || entry.content_type === 'series')
     .sort((a, b) => b.last_watched - a.last_watched).slice(0, 16)
     .filter((entry) => entry.needsEpisodes || (!nuvioLibrary.some((item) => item.type === entry.content_type && item.id === entry.content_id)
-      && !rows.some((row) => row.items.some((item) => item.type === entry.content_type && item.id === entry.content_id))));
+      && !rowItemKeys.has(`${entry.content_type}:${entry.content_id}`)));
   $: nuvioMetadataKey = JSON.stringify([nuvioMetadataScope, nuvioGeneration, nuvioSyncRequest,
     nuvioMetadataProviders.map((addon) => [addon.manifestUrl, addon.manifest.version, addon.manifest.resources, addon.manifest.types, addon.manifest.idPrefixes]),
     nuvioMetadataTargets.map((entry) => [entry.content_type, entry.content_id, entry.needsEpisodes])]);
@@ -781,7 +787,7 @@
     const refreshSettings = savedCatalogRefresh();
     autoRefreshCatalogs = refreshSettings.auto;
     catalogRefreshInterval = refreshSettings.intervalMinutes;
-    const detector = window.setInterval(() => { void refreshPlaybackDestination(); }, 2000);
+    const detector = window.setInterval(() => { if (!playing) void refreshPlaybackDestination(); }, 2000);
     if (addons.length) void loadCatalogs();
     restoreReady = Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio(), restorePlugins()])
       .then(() => { startupLoading = false; restorationComplete = true; });
@@ -1211,20 +1217,42 @@
         || cachedCatalog(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`), loading: true
     }));
     if (currentAddons.length) startupLoading = false;
-    await Promise.all(definitions.map(async ({ addon, catalog, extras }) => {
-      const key = `${addon.manifestUrl}:${catalog.type}:${catalog.id}`;
-      try {
-        const page = await fetchCatalogPage(addon, catalog, extras);
-        if (request === catalogRequest) {
-          const items = uniqueCatalogItems(page.items);
-          rows = rows.map((row) => row.key === key ? { ...row, items, loading: false,
-            nextSkip: catalogNextSkip(catalog, page.rawItemCount, 0, 0), duplicatePages: 0 } : row);
-          saveCatalogCache(key, items);
+    const patches = new Map<string, (row: CatalogRow) => CatalogRow>();
+    let flushTimer: number | undefined, flushFrame: number | undefined;
+    const flush = () => {
+      window.clearTimeout(flushTimer); if (flushFrame !== undefined) cancelAnimationFrame(flushFrame);
+      flushTimer = flushFrame = undefined;
+      if (request !== catalogRequest) { patches.clear(); return; }
+      if (!patches.size) return;
+      const applied = new Map(patches); patches.clear();
+      rows = rows.map((row) => applied.get(row.key)?.(row) ?? row);
+    };
+    const queue = (key: string, patch: (row: CatalogRow) => CatalogRow) => {
+      if (request !== catalogRequest) return;
+      patches.set(key, patch);
+      if (flushTimer !== undefined || flushFrame !== undefined) return;
+      if (document.hidden) flushTimer = window.setTimeout(flush, 50);
+      else { flushFrame = requestAnimationFrame(flush); flushTimer = window.setTimeout(flush, 250); }
+    };
+    let next = 0;
+    const worker = async () => {
+      while (request === catalogRequest && next < definitions.length) {
+        const { addon, catalog, extras } = definitions[next++];
+        const key = `${addon.manifestUrl}:${catalog.type}:${catalog.id}`;
+        try {
+          const page = await fetchCatalogPage(addon, catalog, extras);
+          if (request === catalogRequest) {
+            const items = uniqueCatalogItems(page.items);
+            queue(key, (row) => ({ ...row, items, loading: false, nextSkip: catalogNextSkip(catalog, page.rawItemCount, 0, 0), duplicatePages: 0 }));
+            saveCatalogCache(key, items);
+          }
+        } catch (error) {
+          queue(key, (row) => ({ ...row, loading: false, error: message(error) }));
         }
-      } catch (error) {
-        if (request === catalogRequest) rows = rows.map((row) => row.key === key ? { ...row, loading: false, error: message(error) } : row);
       }
-    }));
+    };
+    await Promise.all(Array.from({ length: Math.min(6, definitions.length) }, worker));
+    flush();
     if (request === catalogRequest) loadingCatalogs = false;
   }
 
@@ -2779,11 +2807,13 @@
   }
 
   function resetPlayer() {
+    const wasPlaying = !!playing;
     if (playing) logPlayback('player closed');
     if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'stopped');
     clearNativeVideoEvents();
     playerElement?.removeAttribute('src');
     playing = null;
+    if (wasPlaying) void refreshPlaybackDestination();
     playerLoading = false;
     playerError = '';
   }
