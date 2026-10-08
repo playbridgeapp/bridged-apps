@@ -128,9 +128,8 @@
       // Blend the massive sweeping fluid ribbon out to the background
       vec3 col = mix(c0, baseColor, mask);
 
-      // Subtle dynamic grain
-      float grain = fract(sin(dot(gl_FragCoord.xy + uTime * 10.0, vec2(12.9898, 78.233))) * 43758.5453);
-      col += (grain - 0.5) * 0.04;
+      // Slight saturation boost (replaces the old CSS saturate filter); no grain, it would be blocky at low res.
+      col = mix(vec3(dot(col, vec3(0.299, 0.587, 0.114))), col, 1.06);
 
       gl_FragColor = vec4(col, 1.0);
     }
@@ -186,7 +185,7 @@
       frame = 0;
       if (paused) return;
       if (!reduced) frame = requestAnimationFrame(draw);
-      if (document.hidden || (!reduced && now - last < 33)) return; // ~30fps cap
+      if (document.hidden || (!reduced && now - last < 50)) return; // ~20fps cap; the motion is very slow
       last = now;
       gl.uniform2f(uResolution, canvas.width, canvas.height);
       gl.uniform1f(uTime, reduced ? 6.0 : (now - start) / 1000 + 6.0);
@@ -197,7 +196,8 @@
       if (!frame) frame = requestAnimationFrame(draw);
     };
     resume = requestDraw;
-    const scale = 0.75;
+    // Low internal resolution: bilinear upscaling of the smooth noise field supplies the softness.
+    const scale = 0.25;
     const resize = () => {
       canvas.width = Math.max(2, Math.round(canvas.clientWidth * scale));
       canvas.height = Math.max(2, Math.round(canvas.clientHeight * scale));
@@ -243,10 +243,9 @@
   }
   canvas {
     position: absolute;
-    inset: -48px;
-    width: calc(100% + 96px);
-    height: calc(100% + 96px);
-    filter: blur(24px) saturate(1.06);
+    inset: 0;
+    width: 100%;
+    height: 100%;
     transform: translateZ(0);
   }
   canvas:global(.fallback) {

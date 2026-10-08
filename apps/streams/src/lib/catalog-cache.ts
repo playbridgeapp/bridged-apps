@@ -8,11 +8,35 @@ const MAX_ITEMS = 24;
 type CachedRow = { items: MetaPreview[]; savedAt: number };
 type Cache = Record<string, CachedRow>;
 
+const WRITE_DELAY_MS = 500;
+
+let memory: Cache | undefined;
+let writeTimer: ReturnType<typeof setTimeout> | undefined;
+let listening = false;
+
 function readCache(): Cache {
+  if (memory) return memory;
   try {
     const value: unknown = JSON.parse(localStorage.getItem(CACHE_KEY) || '{}');
-    return value && typeof value === 'object' && !Array.isArray(value) ? value as Cache : {};
-  } catch { return {}; }
+    memory = value && typeof value === 'object' && !Array.isArray(value) ? value as Cache : {};
+  } catch { memory = {}; }
+  return memory;
+}
+
+/** Writes any pending catalog cache to storage immediately. */
+export function flushCatalogCache(): void {
+  if (writeTimer === undefined) return;
+  clearTimeout(writeTimer);
+  writeTimer = undefined;
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(readCache())); }
+  catch { /* catalog display must work even when browser storage is full */ }
+}
+
+function listenForExit(): void {
+  if (listening || typeof window === 'undefined' || typeof document === 'undefined') return;
+  listening = true;
+  window.addEventListener('pagehide', flushCatalogCache);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushCatalogCache(); });
 }
 
 export function cachedCatalog(key: string): MetaPreview[] {
@@ -23,12 +47,17 @@ export function cachedCatalog(key: string): MetaPreview[] {
 export function saveCatalogCache(key: string, items: MetaPreview[]): void {
   const cache = readCache();
   cache[key] = { items: items.slice(0, MAX_ITEMS), savedAt: Date.now() };
-  const compact = Object.fromEntries(Object.entries(cache).sort((a, b) => b[1].savedAt - a[1].savedAt).slice(0, MAX_ROWS));
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify(compact)); }
-  catch { /* catalog display must work even when browser storage is full */ }
+  const kept = Object.entries(cache).sort((a, b) => b[1].savedAt - a[1].savedAt).slice(0, MAX_ROWS);
+  memory = Object.fromEntries(kept);
+  listenForExit();
+  if (writeTimer === undefined) writeTimer = setTimeout(flushCatalogCache, WRITE_DELAY_MS);
 }
 
-export function clearCatalogCache(): void { localStorage.removeItem(CACHE_KEY); }
+export function clearCatalogCache(): void {
+  memory = {};
+  if (writeTimer !== undefined) { clearTimeout(writeTimer); writeTimer = undefined; }
+  try { localStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ }
+}
 
 export function savedCatalogRefresh(): { auto: boolean; intervalMinutes: 15 | 30 | 60 } {
   try {
