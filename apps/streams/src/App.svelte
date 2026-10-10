@@ -2,7 +2,7 @@
   import { onDestroy, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
-  import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronRight, ChevronDown, Clapperboard, Film, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
+  import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronRight, ChevronDown, Clapperboard, ExternalLink, Film, Github, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
@@ -2998,6 +2998,7 @@
           <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('integrations')}><span class="settings-card-icon"><Info size={24} /></span><span class="settings-card-copy"><strong>Integrations</strong><small>TMDB enrichment · {tmdbSettings.enabled ? 'On' : 'Off'}</small></span><ArrowRight size={19} /></button>
+          <a class="settings-card" href="https://github.com/playbridgeapp/bridged-apps" target="_blank" rel="noopener noreferrer" aria-label="About this project: source code on GitHub (opens in a new tab)"><span class="settings-card-icon"><Github size={24} /></span><span class="settings-card-copy"><strong>About this project</strong><small>Open source on GitHub · playbridgeapp/bridged-apps</small></span><ExternalLink size={19} /></a>
         </div>
       </section>
     {/if}
