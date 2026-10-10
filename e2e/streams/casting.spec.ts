@@ -1674,6 +1674,59 @@ test('shows the native destination and opens the existing device picker without 
   await expect(page.getByRole('button', { name: /Cast with|Cast best|^Cast$/ })).toHaveCount(0);
 });
 
+test('Play obtains consent and opens the picker when the destination is redacted', async ({ page }) => {
+  await enableNativePlayback(page);
+  await page.evaluate(() => {
+    const state = (window as any).__streamTest;
+    state.bridge.getPlaybackDestination = async () => ({ ok: true, destination: state.consented
+      ? { id: 'tv-1', name: 'Living Room TV', kind: 'native', connected: true }
+      : { id: null, name: null, kind: 'native', connected: true } });
+    state.bridge.choosePlaybackDestination = async () => {
+      state.calls.push({ method: 'choose', payload: { active: navigator.userActivation.isActive } });
+      state.consented = true;
+      return state.bridge.getPlaybackDestination();
+    };
+  });
+  await openMovieStreams(page);
+  await expect(page.locator('.stream-panel').getByRole('button', { name: 'Choose where to play', exact: true })).toBeVisible();
+  await page.locator('.stream-result .watch-button').click();
+  await expect(page.locator('.stream-panel .playback-destination')).toContainText('Plays on Living Room TV');
+  // The first Play only obtains consent and opens the picker; it must not start playback.
+  expect(await page.evaluate(() => (window as any).__streamTest.calls)).toEqual([{ method: 'choose', payload: { active: true } }]);
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  expect(calls[1]).toMatchObject({ method: 'play', payload: { destinationId: 'tv-1' } });
+});
+
+for (const code of ['not_allowed', 'user_gesture_required']) {
+  test(`retains the attempted stream after destination consent rejects with ${code}`, async ({ page }) => {
+    await enableNativePlayback(page);
+    await page.evaluate((errorCode) => {
+      const state = (window as any).__streamTest;
+      state.bridge.getPlaybackDestination = async () => ({ ok: true, destination:
+        { id: null, name: null, kind: 'native', connected: true } });
+      state.bridge.choosePlaybackDestination = async (options: any) => {
+        state.calls.push({ method: 'choose', payload: options });
+        if (options?.destinationId === 'this-device') return { ok: true, destination:
+          { id: 'this-device', name: 'This device', kind: 'local', connected: true } };
+        throw Object.assign(new Error('Choose a device and try again.'), { code: errorCode });
+      };
+    }, code);
+    await openMovieStreams(page);
+    await expect(page.locator('.stream-panel').getByRole('button', { name: 'Choose where to play', exact: true })).toBeVisible();
+    await page.locator('.stream-result .watch-button').click();
+    await expect(page.getByRole('alert')).toContainText(code === 'not_allowed'
+      ? 'Allow Streams to use your PlayBridge devices to play here.' : 'Choose a device and try again.');
+    expect(await page.evaluate(() => (window as any).__streamTest.calls.map((call: any) => call.method))).toEqual(['choose']);
+    await page.getByRole('button', { name: 'Play on this device', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(3);
+    const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+    expect(calls[1]).toEqual({ method: 'choose', payload: { destinationId: 'this-device' } });
+    expect(calls[2]).toMatchObject({ method: 'play', payload: { destinationId: 'this-device' } });
+  });
+}
+
 test('uses the selected native phone player and preserves headers and addon subtitles', async ({ page }) => {
   await page.route('https://subtitles.test/**', (route) => route.fulfill({ json: route.request().url().endsWith('/manifest.json')
     ? { id: 'subs', name: 'Test Subtitles', version: '1.0.0', types: ['movie'], resources: ['subtitles'], catalogs: [] }

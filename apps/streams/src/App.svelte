@@ -338,7 +338,8 @@
         sourceError = '';
         await playStream(retry.stream, retry.selection, response.destination.id);
       }
-    } catch (error) { sourceError = message(error); }
+    } catch (error) { sourceError = (error as { code?: string })?.code === 'not_allowed'
+      ? 'Allow Streams to use your PlayBridge devices to play here.' : message(error); }
     finally { destinationBusy = false; }
   }
 
@@ -2728,6 +2729,15 @@
     ++streamActionRequest;
     try {
       if (!api?.play || !api.capabilities?.playback) throw new Error('Update PlayBridge to use playback destinations.');
+      if (!destinationId && api.choosePlaybackDestination) {
+        // Asks for website consent and opens the native picker; the reply is the destination
+        // before the user picks, so don't start playback here. Play again after choosing.
+        const response = await api.choosePlaybackDestination();
+        if (navigation !== routeRequest || selected?.id !== meta.id) return;
+        playbackDestination = response.destination;
+        destinationLookupFailed = false;
+        return;
+      }
       if (!destinationId) throw new Error('The playback destination is not ready. Choose a device and try again.');
       if (destinationId === 'this-device' && !thisDevicePlayback.useNativePlayer) {
         if (!api.getPlaybackDestination) throw new Error('Update PlayBridge to choose a playback destination.');
@@ -2755,6 +2765,8 @@
       if (navigation === routeRequest && selected?.id === meta.id) {
         const code = (error as { code?: string })?.code;
         sourceError = code === 'receiver_changed' ? 'The selected receiver disconnected or changed. Reconnect, choose a device, or play on this device.'
+          : code === 'user_gesture_required' ? 'The playback destination is not ready. Choose a device and try again.'
+          : code === 'not_allowed' ? 'Allow Streams to use your PlayBridge devices to play here.'
           : code === 'connect_failed' ? 'Cannot reach the selected device. Reconnect or play on this device.' : message(error);
         failedPlayback = api?.play && api.capabilities?.playback ? { stream, selection, metaId: meta.id, videoId: chosenEpisode?.id } : null;
       }
@@ -2941,8 +2953,8 @@
   <div class="playback-destination">
     {#if bridge}
       <button onclick={() => void choosePlaybackDestination()} disabled={destinationBusy || nativePlayBusy}
-        aria-label={!destinationSupported ? 'Update PlayBridge to choose a destination' : destinationPending ? 'Checking playback destination. Change device' : destinationLookupFailed && !playbackDestination ? 'Playback destination unavailable. Retry' : `Playback destination: ${destinationName}. Change device`}>
-        <span>{#if !destinationSupported}Update PlayBridge to choose a destination{:else if destinationPending}Checking destination…{:else if destinationLookupFailed && !playbackDestination}Destination unavailable · Retry{:else}Plays on {destinationName}{/if}{#if playbackDestination && !playbackDestination.connected}<span class="destination-offline"> · Disconnected</span>{/if}</span><ChevronRight size={15} aria-hidden="true" />
+        aria-label={!destinationSupported ? 'Update PlayBridge to choose a destination' : destinationPending ? 'Checking playback destination. Change device' : destinationLookupFailed && !playbackDestination ? 'Playback destination unavailable. Retry' : playbackDestination?.id === null ? 'Choose where to play' : `Playback destination: ${destinationName}. Change device`}>
+        <span>{#if !destinationSupported}Update PlayBridge to choose a destination{:else if destinationPending}Checking destination…{:else if destinationLookupFailed && !playbackDestination}Destination unavailable · Retry{:else if playbackDestination?.id === null}Choose where to play{:else}Plays on {destinationName}{/if}{#if playbackDestination && !playbackDestination.connected}<span class="destination-offline"> · Disconnected</span>{/if}</span><ChevronRight size={15} aria-hidden="true" />
       </button>
     {:else}<span>Plays on this device</span>{/if}
     {#if sourceError && !streamScreen}<p class="destination-error" role="alert">{sourceError}</p>{/if}
