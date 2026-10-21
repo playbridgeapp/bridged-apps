@@ -398,6 +398,8 @@ test('enriches movie details, caches TMDB results, and opens recommendations wit
   await page.locator('.stream-result .watch-button').click();
   const cast = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'play').payload);
   expect(cast.items[0].id).toBe('tt444');
+  expect(cast.metadata).toMatchObject({ imdbId: 'tt444', tmdbId: '444' });
+  expect(cast.items[0].metadata).toMatchObject({ imdbId: 'tt444', tmdbId: '444' });
 });
 
 for (const mobile of [false, true]) {
@@ -956,6 +958,8 @@ test('plays a selected movie as one tracked item', async ({ page }) => {
   expect(calls).toHaveLength(1);
   expect(calls[0].method).toBe('play');
   expect(calls[0].payload.items[0].url).toBe('https://media.test/movie.mp4');
+  expect(calls[0].payload.metadata.imdbId).toBe('tt100');
+  expect(calls[0].payload.items[0].metadata.imdbId).toBe('tt100');
   const notice = page.locator('.toast');
   await expect(notice).toContainText('Playing Sample Film');
   await page.clock.fastForward(3000);
@@ -1017,11 +1021,14 @@ test('resolves the next episode only after PlayBridge requests it', async ({ pag
   expect(calls).toHaveLength(1);
   expect(calls[0].method).toBe('play');
   expect(calls[0].payload.items[0].url).toBe('https://media.test/ep1.mp4');
+  expect(calls[0].payload.metadata.imdbId).toBe('tt200');
+  expect(calls[0].payload.items[0].metadata).toMatchObject({ imdbId: 'tt200', season: 1, episode: 1 });
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'request-1', count: 1 } })));
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
   calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls[1].method).toBe('provideItems');
   expect(calls[1].payload.items[0].url).toBe('https://media.test/ep2.mp4');
+  expect(calls[1].payload.items[0].metadata).toMatchObject({ imdbId: 'tt200', season: 1, episode: 2 });
   expect(calls[1].payload.endOfList).toBe(true);
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'request-1', count: 1 } })));
   expect(await page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);

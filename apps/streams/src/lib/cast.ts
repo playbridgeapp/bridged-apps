@@ -1,4 +1,5 @@
 import { fetchAddonSubtitles } from './subtitles';
+import { castMetadata as metadata } from './cast-metadata';
 import { fetchStreams, playableStream } from './addons';
 import { savedStreamSelection, selectionContext, selectNextStream } from './stream-selection';
 import type { StreamSelectionContext } from './stream-selection';
@@ -38,20 +39,6 @@ let generation = 0;
 export function bridgeAvailable(): boolean {
   const bridge = playbackBridge();
   return typeof bridge?.cast === 'function' || typeof bridge?.play === 'function';
-}
-
-function metadata(meta: Meta, video?: Video): Record<string, unknown> {
-  return {
-    title: meta.name,
-    ...(meta.description ? { overview: meta.description.slice(0, 2000) } : {}),
-    ...(meta.poster ? { posterUrl: meta.poster } : {}),
-    ...(meta.background ? { backdropUrl: meta.background } : {}),
-    ...(meta.releaseInfo ? { year: meta.releaseInfo.slice(0, 4) } : {}),
-    ...(meta.genres?.length ? { genres: meta.genres.slice(0, 8) } : {}),
-    ...(video?.season != null ? { season: video.season } : {}),
-    ...(video?.episode != null ? { episode: video.episode } : {}),
-    ...(video?.title ? { episodeTitle: video.title } : {})
-  };
 }
 
 function contentType(url: string): string {
