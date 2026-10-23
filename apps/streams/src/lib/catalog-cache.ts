@@ -39,9 +39,9 @@ function listenForExit(): void {
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushCatalogCache(); });
 }
 
-export function cachedCatalog(key: string): MetaPreview[] {
+export function cachedCatalog(key: string, maxAge = Infinity): MetaPreview[] {
   const row = readCache()[key];
-  return Array.isArray(row?.items) ? row.items.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string') : [];
+  return Array.isArray(row?.items) && Date.now() - row.savedAt >= 0 && Date.now() - row.savedAt < maxAge ? row.items.filter((item) => item && typeof item.id === 'string' && typeof item.name === 'string') : [];
 }
 
 export function saveCatalogCache(key: string, items: MetaPreview[]): void {

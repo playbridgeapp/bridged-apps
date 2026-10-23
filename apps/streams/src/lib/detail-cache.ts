@@ -29,3 +29,7 @@ export function saveDetailPreview(meta: MetaPreview): void {
   try { sessionStorage.setItem(CACHE_KEY, JSON.stringify(entries)); }
   catch { /* Unavailable storage must not interrupt navigation. */ }
 }
+
+export function clearDetailPreviews(): void {
+  try { sessionStorage.removeItem(CACHE_KEY); } catch { /* storage unavailable */ }
+}

@@ -58,6 +58,11 @@ test('dismissal persists without removing progress, merges settings, and newer d
   await page.goto('/');
   await expect(page.getByRole('heading', { name: 'Test shows', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Watching options for Test Series', exact: true })).toHaveCount(0);
+  // Cached Home is now visible before profile/initial sync completes. This probe
+  // measures a subsequent delta refresh, so explicitly wait for account readiness.
+  const restored = await accounts(page);
+  await expect(restored.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
+  await restored.getByRole('button', { name: 'Close account' }).click(); await tab(page, 'Home');
   const fullBefore = state.pulls.filter((p) => p === 'sync_pull_watch_progress' || p === 'sync_pull_watched_items').length;
   const newer = point(4, Date.now() + 1000); state.progress = [newer]; state.events.push({ ...newer, event_id: ++state.cursor, operation: 'upsert' });
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
@@ -82,6 +87,11 @@ test('failed playback saves survive reload, but newer TV progress wins over an o
   await expect(page.getByRole('heading', { name: 'Test shows', exact: true })).toBeVisible();
   const pending = await outbox(page); expect(pending).toHaveLength(1);
   expect(pending[0].write.entry.position).toBe(700000);
+  // Wait for this reopen's initial retry to fail before introducing later TV
+  // activity. A catalog heading alone now intentionally means cached display.
+  const restored = await accounts(page);
+  await expect(restored.getByText(/Watching change saved on this device;/)).toBeVisible();
+  await restored.getByRole('button', { name: 'Close account' }).click(); await tab(page, 'Home');
   const latest = { ...point(4, pending[0].observedAt + 1000), position: 900000 }; state.progress = [latest]; state.events.push({ ...latest, event_id: ++state.cursor, operation: 'upsert' });
   state.failWrites = false;
   const before = state.writes.length;
