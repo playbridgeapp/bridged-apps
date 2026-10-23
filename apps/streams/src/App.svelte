@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from 'svelte';
   import { fade } from 'svelte/transition';
+  import { screenTransition, type NavigationMotion } from './lib/screen-transition';
   import { cubicIn, cubicOut } from 'svelte/easing';
   import { ArrowLeft, ArrowRight, Bookmark, Check, ChevronRight, ChevronDown, Clapperboard, ExternalLink, Film, Github, History, Home, Info, Library, LoaderCircle, Play, Plus, RefreshCw, Search, Settings2, Star, Trash2, Tv, UserRound, X } from 'lucide-svelte';
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
@@ -75,16 +76,9 @@
         .map((item) => item.trim().slice(0, 100)).slice(0, 8) : [];
     } catch { return []; }
   }
-  // Browser back/forward (incl. iOS edge-swipe) already animates natively; skip our own fades then.
-  let historyTraversal = false;
-  if (typeof window !== 'undefined') {
-    window.addEventListener('popstate', () => {
-      historyTraversal = true;
-      setTimeout(() => { historyTraversal = false; }, 700);
-    }, true);
-  }
+  let navigationMotion: NavigationMotion = 'history';
   const motionDuration = (milliseconds: number) => typeof window !== 'undefined'
-    && (historyTraversal || window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : milliseconds;
+    && (navigationMotion === 'history' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) ? 0 : milliseconds;
   function savedDiscoverCatalogKey(): string {
     try { return localStorage.getItem(DISCOVER_CATALOG_KEY) || ''; } catch { return ''; }
   }
@@ -723,7 +717,8 @@
     window.addEventListener('PlayBridgePluginsReady', handlePluginsReady);
     window.addEventListener('pageshow', handleVisibilityReturn);
     document.addEventListener('visibilitychange', handleVisibilityReturn);
-    router = new HashRouter((route) => {
+    router = new HashRouter((route, motion) => {
+      navigationMotion = motion;
       cancelNativeResolution();
       const returningToTab = currentRoute.kind !== 'tab' && route.kind === 'tab' && route.tab === tab;
       rememberRoutePosition();
@@ -3148,7 +3143,7 @@
 </div>
 
 {#if catalogPage}
-  <div class="catalog-page-overlay" role="presentation" aria-hidden={selected ? 'true' : undefined} in:fade={{ duration: motionDuration(210), easing: cubicOut }} out:fade={{ duration: motionDuration(150), easing: cubicIn }}>
+  <div class="catalog-page-overlay" role="presentation" aria-hidden={selected ? 'true' : undefined} in:screenTransition={{ direction: navigationMotion }} out:screenTransition={{ direction: navigationMotion, outgoing: true }}>
     <div class="catalog-page-panel" role="dialog" aria-modal="true" aria-label={`${catalogPage.title} catalog`}>
       <header class="catalog-page-header"><button class="catalog-page-back" onclick={closeCatalogPage} aria-label="Back to home"><ArrowLeft size={21} /></button><div><span class="section-type">{catalogPage.addon.manifest.name}</span><h1>{catalogPage.title}</h1></div></header>
       <div class="catalog-page-content">
@@ -3341,7 +3336,7 @@
 {/if}
 
 {#if selected && streamScreen}
-  <div class="overlay stream-overlay" role="presentation" in:fade={{ duration: motionDuration(240), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeStreamScreen(); }}>
+  <div class="overlay stream-overlay" role="presentation" in:screenTransition={{ direction: navigationMotion }} out:screenTransition={{ direction: navigationMotion, outgoing: true }} onclick={(event) => { if (event.target === event.currentTarget) closeStreamScreen(); }}>
     <div class="stream-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? `Streams for ${selected.name}` : 'Title streams'}>
       <div class="stream-screen-hero" class:without-art={!episode?.thumbnail && !selected.background && !selected.poster} style:background-image={(episode?.thumbnail || selected.background || selected.poster) ? `linear-gradient(0deg, #090b0f 0%, #090b0f5c 100%), url('${(episode?.thumbnail || selected.background || selected.poster || '').replaceAll("'", '%27')}')` : ''}>
         <button class="stream-back" onclick={closeStreamScreen}><ArrowLeft size={20} /> {streamBackToDetail ? 'Details' : 'Back'}</button>
@@ -3386,7 +3381,7 @@
 {/if}
 
 {#if selected && !streamScreen}
-  <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:fade={{ duration: motionDuration(260), easing: cubicOut }} out:fade={{ duration: motionDuration(170), easing: cubicIn }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
+  <div class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:screenTransition={{ direction: navigationMotion }} out:screenTransition={{ direction: navigationMotion, outgoing: true }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
     <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'} style:--ambient-bg={detailBackdrop ? `url('${detailBackdrop.replaceAll("'", '%27')}')` : null}>
       {#if detailBackdrop}<div class="detail-ambient" aria-hidden="true"></div>{/if}
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>

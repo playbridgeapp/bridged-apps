@@ -1907,3 +1907,42 @@ test('allows retry after the initial native destination request fails', async ({
   await expect(page.locator('.stream-panel .playback-destination')).toHaveText('Plays on this device');
   await captureMobile(page, '/private/tmp/streams-unified-play-browser-streams.png');
 });
+
+test('route content has one short transition and browser history does not replay it', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect.poll(() => page.locator('.detail-intro').evaluate(node => getComputedStyle(node).animationName)).toBe('none');
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await expect(page.locator('.detail-overlay')).toHaveCount(0);
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.goForward();
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  // Hover/press transitions on a button under the pointer are independent of
+  // screen navigation. Check the route surface and its main content, not controls.
+  expect(await page.locator('.detail-overlay').evaluate(node => [node,
+    ...node.querySelectorAll('.detail-intro,.detail-facts-card,.detail-content,.episode-row')]
+    .flatMap(element => element.getAnimations()).filter(animation =>
+      animation.playState !== 'finished' && Number(animation.effect?.getTiming().duration) > 0).length)).toBe(0);
+});
+
+test('detail push and explicit Back use the same short directional screen transition', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  const overlay = page.locator('.detail-overlay');
+  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(220);
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await expect.poll(() => overlay.evaluate(node => node.getAnimations().filter(animation => animation.playState === 'running').length)).toBe(0);
+  await page.getByRole('button', { name: 'Back to browsing' }).click();
+  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(220);
+  await expect(overlay).toHaveCount(0);
+});
+
+test('fonts load from local versioned assets without contacting Google Fonts', async ({ page }) => {
+  const requests: string[] = [];
+  page.on('request', request => { if (/fonts\.googleapis|fonts\.gstatic/.test(request.url())) requests.push('external-font'); });
+  await page.reload();
+  await page.evaluate(() => document.fonts.ready);
+  expect(requests).toEqual([]);
+  expect(await page.evaluate(() => document.fonts.check('700 16px Manrope') && document.fonts.check('400 16px "DM Sans"'))).toBe(true);
+});
