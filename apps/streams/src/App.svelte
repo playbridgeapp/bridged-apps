@@ -7,6 +7,7 @@
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
+  import { SearchSession, emptySearchState, searchScope } from './lib/search';
   import PlayerSubtitles from './lib/PlayerSubtitles.svelte';
   import HomeContent from './lib/HomeContent.svelte';
   import FluidBackground from './lib/FluidBackground.svelte';
@@ -240,8 +241,11 @@
   let submittedSearch = '';
   let searchHistory = savedSearchHistory();
   let searchHistoryOpen = false;
-  let searchResults: MetaPreview[] = [];
-  let searching = false;
+  let searchState = emptySearchState();
+  const searchSession = new SearchSession((state) => { searchState = state; });
+  let activeSearchScope = '';
+  $: searchResults = searchState.items;
+  $: searching = searchState.pending > 0;
   let searchHistoryTimer: number | undefined;
   let loadingCatalogs = false;
   let managing = false;
@@ -465,7 +469,6 @@
   let detailArtwork = '';
   let detailArtworkUpgraded = false;
   let streamRequest = 0;
-  let searchRequest = 0;
 
   $: addons = uniqueEnabledAddons([...accountAddons, ...nuvioAddons, ...localAddons]);
   $: browsableAddons = addons.filter((addon) => catalogs([addon])
@@ -546,6 +549,13 @@
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
+  $: currentSearchScope = searchScope([account?.user._id ?? null,
+    nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], addons);
+  $: if (currentSearchScope !== activeSearchScope) {
+    activeSearchScope = currentSearchScope;
+    searchSession.setScope(currentSearchScope);
+    resetSubmittedSearch();
+  }
   $: nextDismissalScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
   $: if (nextDismissalScope !== dismissalScope) { dismissalScope = nextDismissalScope; dismissedWatching = watchingDismissals(dismissalScope); }
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
@@ -693,6 +703,7 @@
   }
 
   onDestroy(() => {
+    searchSession.invalidate();
     clearNativeVideoEvents();
     nuvioMetadataController?.abort();
     cancelNativeResolution();
@@ -904,6 +915,7 @@
   }
 
   function disconnectAccount() {
+    invalidateSearch();
     if (account) { try { discardPlaybackWrites(`stremio:${account.user._id}`); clearWatchingDismissals(`stremio:${account.user._id}`); } catch { /* storage error */ } }
     stremioWatchingReady = false;
     accountGeneration += 1;
@@ -1009,6 +1021,7 @@
 
   async function chooseNuvioProfile(index: number) {
     if (!nuvioProfiles.some((profile) => profile.profile_index === index)) return;
+    invalidateSearch();
     nuvioGeneration += 1;
     pluginMutation++;
     pluginSaving = '';
@@ -1055,6 +1068,7 @@
     try {
       await verifyNuvioPin(current, index, nuvioPin);
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex) return;
+      invalidateSearch();
       nuvioUnlockedProfile = index;
       nuvioPin = '';
       hydrateNuvioCache(current, index);
@@ -1126,6 +1140,7 @@
   }
 
   function disconnectNuvio() {
+    invalidateSearch();
     if (nuvioSession) {
       try { clearAccountPlaybackWrites(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`); } catch { /* storage error */ }
       clearAccountDeltaSnapshots(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`);
@@ -1990,37 +2005,45 @@
     } catch (error) { pluginError = message(error); }
   }
 
-  async function runSearch() {
+  function resetSubmittedSearch() {
+    window.clearTimeout(searchHistoryTimer);
+    if (!submittedSearch) return;
+    submittedSearch = '';
+    if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
+      replaceRoute({ ...currentRoute, query: undefined });
+    }
+  }
+
+  function invalidateSearch() {
+    searchSession.invalidate();
+    resetSubmittedSearch();
+  }
+
+  function runSearch() {
+    // Scope changes flush before a submission, even if Svelte has not flushed yet.
+    const scope = searchScope([account?.user._id ?? null,
+      nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], addons);
+    activeSearchScope = scope;
+    searchSession.setScope(scope);
     const query = search.trim();
     submittedSearch = query;
     selectTab('search');
     if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
       replaceRoute({ ...currentRoute, query: query || undefined });
     }
-    const request = ++searchRequest;
-    searchResults = [];
     window.clearTimeout(searchHistoryTimer);
-    if (!query) { searching = false; return; }
+    if (!query) { searchSession.clear(); return; }
     searchHistoryTimer = window.setTimeout(() => {
       if (submittedSearch !== query) return;
       searchHistory = [query, ...searchHistory.filter((item) => item.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 8);
       saveSearchHistory();
     }, SEARCH_HISTORY_DELAY_MS);
-    searching = true;
     const targets = catalogs(addons).flatMap(({ addon, catalog }) => {
       if (!(catalog.extra || []).some((extra) => extra.name === 'search')) return [];
       const extras = requiredCatalogExtras(catalog, query);
-      return extras ? [{ addon, catalog, extras }] : [];
+      return extras ? [(signal: AbortSignal) => fetchCatalog(addon, catalog, extras, signal)] : [];
     });
-    const results = await Promise.allSettled(targets.map(({ addon, catalog, extras }) => fetchCatalog(addon, catalog, extras)));
-    if (request === searchRequest) {
-      const unique = new Map<string, MetaPreview>();
-      results.forEach((result) => {
-        if (result.status === 'fulfilled') result.value.forEach((item) => unique.set(`${item.type}:${item.id}`, item));
-      });
-      searchResults = [...unique.values()];
-      searching = false;
-    }
+    searchSession.search(query, targets);
   }
 
   function saveSearchHistory() {
@@ -3048,10 +3071,15 @@
       </section>
       {#if submittedSearch}
         <section class="search-results browse" aria-label="Search results">
-          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching ? 'Searching…' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div></div>
-          {#if searching}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}
-          {#if !searching && searchResults.length}<div class="poster-grid">{#each searchResults as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{/if}
-          {#if !searching && !searchResults.length}<div class="empty-state">No results. Make sure an installed catalog supports search.</div>{/if}
+          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching && !searchResults.length ? 'Searching…' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div>
+            {#if searching && searchResults.length}<span class="search-pending" role="status">Still searching…</span>{/if}
+          </div>
+          {#if searching && !searchResults.length}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}
+          {#if searchResults.length}<div class="poster-grid">{#each searchResults as item (JSON.stringify([item.type, item.id]))}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{/if}
+          {#if !searching && !searchState.total}<div class="empty-state">No installed catalog supports search. Add or enable a searchable catalog in Settings.</div>
+          {:else if !searching && !searchResults.length && !searchState.failed && !searchState.timedOut}<div class="empty-state">No results.</div>{/if}
+          {#if !searching && (searchState.failed || searchState.timedOut)}<div class="search-notice" role="status">{searchState.timedOut ? 'Some catalogs timed out.' : 'Some catalogs could not be searched.'} Results may be incomplete. <button class="text-action" onclick={runSearch}>Retry search</button></div>{/if}
+          {#if !searching && searchState.retained && !searchState.failed && !searchState.timedOut}<p class="search-notice">Some previous previews are kept in place. Search again to see only the updated matches.</p>{/if}
         </section>
       {:else}
         <section class="discover-page browse" aria-label="Discover">
