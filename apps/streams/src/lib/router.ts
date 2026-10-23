@@ -1,4 +1,5 @@
 import type { MediaType } from './types';
+import type { NavigationMotion } from './screen-transition';
 
 export type Tab = 'home' | 'search' | 'library' | 'settings';
 export type MediaRoute = {
@@ -66,14 +67,17 @@ type RouteState = { streamsRouter: 1; depth: number; parent?: string };
 // Hash routes also work when the site is hosted without an SPA rewrite rule.
 export class HashRouter {
   private lastHash: string;
+  private requestedBack = false;
   private previousScrollRestoration: ScrollRestoration;
   private onHistory = () => {
     if (window.location.hash === this.lastHash) return; // popstate + hashchange can describe the same traversal.
     this.lastHash = window.location.hash;
-    this.changed(parseRoute(this.lastHash));
+    const motion = this.requestedBack ? 'back' : 'history';
+    this.requestedBack = false;
+    this.changed(parseRoute(this.lastHash), motion);
   };
 
-  constructor(private changed: (route: AppRoute) => void) {
+  constructor(private changed: (route: AppRoute, motion: NavigationMotion) => void) {
     this.lastHash = window.location.hash;
     this.previousScrollRestoration = history.scrollRestoration;
     history.scrollRestoration = 'manual';
@@ -94,7 +98,7 @@ export class HashRouter {
     const state: RouteState = { streamsRouter: 1, depth: this.state().depth + 1, parent: window.location.hash };
     history.pushState(state, '', hash);
     this.lastHash = hash;
-    this.changed(route);
+    this.changed(route, 'push');
   }
 
   replace(route: AppRoute) {
@@ -103,8 +107,8 @@ export class HashRouter {
   }
 
   back(fallback: AppRoute) {
-    if (this.state().depth > 0) history.back();
-    else { this.replace(fallback); this.changed(fallback); }
+    if (this.state().depth > 0) { this.requestedBack = true; history.back(); }
+    else { this.replace(fallback); this.changed(fallback, 'back'); }
   }
 
   parent(): AppRoute | null {
