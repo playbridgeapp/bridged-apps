@@ -33,7 +33,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     });
 
 
-    test('returns from titles and catalogs to the browsing position while tab switches reset it', async ({ page }) => {
+    test('returns from titles, catalogs and tab switches to the browsing position', async ({ page }) => {
       const browsingCatalogs = catalogs.map((catalog, index) => ({ ...catalog, type: index % 2 ? 'series' : 'movie' }));
       const items = browsingCatalogs.map((catalog, row) => Array.from({ length: 24 }, (_, index) => ({
         id: `tt${row}${String(index).padStart(3, '0')}`, type: catalog.type, name: `Title ${row}-${index}`, poster
@@ -95,6 +95,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await catalog.getByRole('button', { name: 'Back to home' }).click();
       await expect(page).toHaveURL(/#\/$/);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(homePosition);
+      const homeTop = await catalogButton.evaluate((element) => element.getBoundingClientRect().top);
 
       await goTab(page, 'Search');
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
@@ -108,13 +109,18 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await page.locator('.detail-back').click();
       await expect(page).toHaveURL(/#\/search\?q=Title$/);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(searchPosition);
+      // Each tab keeps its own place. Home's off-screen rows have estimated heights after it
+      // remounts, so compare what is on screen rather than raw pixels.
       await goTab(page, 'Home');
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await expect.poll(() => catalogButton.evaluate((element, top) => Math.abs(element.getBoundingClientRect().top - top), homeTop)).toBeLessThan(2);
+      await goTab(page, 'Search');
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(searchPosition);
+      // Tapping the current tab returns it to the top.
       await goTab(page, 'Search');
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
     });
 
-    test('unmounts inactive posters, keeps cached content and drafts, and resets tab scroll', async ({ page }) => {
+    test('unmounts inactive posters, keeps cached content, drafts and each tab\'s place', async ({ page }) => {
       const requests: string[] = [];
       await page.addInitScript((url) => {
         localStorage.setItem('bridged-streams.addons.v1', JSON.stringify([`${url}/manifest.json`]));
@@ -143,6 +149,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await expect.poll(() => rail.evaluate((element) => element.scrollLeft)).toBe(350);
       await page.evaluate(() => window.scrollTo(0, 700));
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(700);
+      const railTop = await rail.evaluate((element) => element.getBoundingClientRect().top);
+      const homePlace = () => rail.evaluate((element, top) => Math.abs(element.getBoundingClientRect().top - top), railTop);
 
       await goTab(page, 'Search');
       await expect(page.locator('.home-panel')).toHaveCount(0);
@@ -157,9 +165,13 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await goTab(page, 'Settings');
       await expect(page.locator('.library-panel')).toHaveCount(0);
       await expect(page.locator('main img')).toHaveCount(0);
+      // Tab switches don't stack history: Back from any tab goes Home.
       await page.goBack();
-      await expect(page.locator('.library-panel')).toBeVisible();
+      await expect(page.locator('.home-panel')).toBeVisible();
       await expect(page.locator('.settings-page')).toHaveCount(0);
+      await expect.poll(homePlace).toBeLessThan(2);
+      await goTab(page, 'Library');
+      await expect(page.locator('.library-panel')).toBeVisible();
 
       await page.evaluate(() => {
         (window as any).__homePaint = null;
@@ -180,14 +192,14 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       });
       await goTab(page, 'Home');
       await expect(page.locator('.home-panel .catalog-section')).toHaveCount(8);
-      expect(await page.evaluate(() => (window as any).__homePaint)).toEqual({
-        images: 0, placeholder: true, searchPresent: false, activeTab: 'Home'
+      // A remembered place renders its rows at once so it can be restored without a jump.
+      await expect.poll(() => page.evaluate(() => (window as any).__homePaint)).toMatchObject({
+        placeholder: false, searchPresent: false, activeTab: 'Home'
       });
       await expect(page.locator('.library-panel')).toHaveCount(0);
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
-      await rail.scrollIntoViewIfNeeded();
-      await expect(rail.locator('img')).toHaveCount(12);
-      await expect.poll(() => rail.evaluate((element) => element.scrollLeft)).toBe(0);
+      await expect.poll(homePlace).toBeLessThan(2);
+      await expect(rail.locator('img')).toHaveCount(24);
+      await expect.poll(() => rail.evaluate((element) => element.scrollLeft)).toBe(350);
 
       await goTab(page, 'Search');
       await expect(input).toHaveValue('Unsubmitted draft');
@@ -205,14 +217,11 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await goTab(page, 'Search');
       await expect(input).toHaveValue('Film');
       await expect(page.locator('.search-results img')).toHaveCount(192);
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
-      await page.evaluate(() => window.scrollTo(0, 600));
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(500);
-      await goTab(page, 'Home');
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await expect.poll(() => page.evaluate(() => Math.abs(window.scrollY - 600))).toBeLessThan(8);
+      // Back from Search goes Home, at Home's place.
       await page.goBack();
-      await expect(page.locator('.search-results img')).toHaveCount(192);
-      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await expect(page.locator('.home-panel')).toBeVisible();
+      await expect.poll(homePlace).toBeLessThan(2);
       expect(requests).toHaveLength(searchRequestCount);
     });
   });

@@ -1613,7 +1613,8 @@ test('compacts the dock after startup and keeps it compact across scroll and tab
   await goTab(page, 'Settings');
   await expect(dock).toHaveClass(/compact/);
   await goTab(page, 'Home');
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  // Home keeps its place across tab switches.
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
   await expect(dock).toHaveClass(/compact/);
   await page.reload();
   await expect(dock).not.toHaveClass(/compact/);
@@ -1653,7 +1654,7 @@ test('unmounts inactive tabs and restores cached search without fetching it agai
   await goTab(page, 'Search');
   await expect(input).toHaveValue('Film');
   await expect(cards).toHaveCount(41);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(600);
   expect(await cards.first().evaluate((node, original) => node === original, firstCard!)).toBe(false);
   expect(searchRequests).toBe(completedSearchRequests);
   await firstCard!.dispose();

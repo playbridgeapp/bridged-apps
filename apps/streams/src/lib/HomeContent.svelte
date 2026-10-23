@@ -1,13 +1,18 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
 
-  let ready = false;
+  /** Returning to a remembered place: build the rows now so the position can be restored without a jump. */
+  export let immediate = false;
+  export let onReady: () => void = () => {};
+
+  let ready = immediate;
 
   onMount(() => {
+    if (ready) { void tick().then(onReady); return; }
     let frame = requestAnimationFrame(() => {
       // Give the tab shell a paint opportunity before creating Home's content.
       frame = requestAnimationFrame(() => {
-        timer = window.setTimeout(() => { ready = true; }, 0);
+        timer = window.setTimeout(() => { ready = true; void tick().then(onReady); }, 0);
       });
     });
     let timer = 0;
