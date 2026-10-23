@@ -2,10 +2,10 @@ export type NavigationMotion = 'push' | 'back' | 'history';
 
 /** Browser history gestures already animate their snapshots; never animate them twice. */
 export function screenMotion(direction: NavigationMotion, reduced: boolean, width: number, outgoing = false) {
-  const distance = Math.min(48, width * 0.1);
+  const distance = width;
   return {
-    duration: reduced || direction === 'history' ? 0 : 220,
-    x: direction === 'back' ? (outgoing ? distance : -distance / 3) : (outgoing ? -distance / 3 : distance)
+    duration: reduced || direction === 'history' ? 0 : 280,
+    x: direction === 'back' ? (outgoing ? distance : -distance * 0.28) : (outgoing ? -distance * 0.28 : distance)
   };
 }
 
@@ -14,6 +14,6 @@ export function screenTransition(node: Element, options: { direction: Navigation
   return {
     duration: motion.duration,
     easing: (t: number) => 1 - Math.pow(1 - t, 3),
-    css: (t: number) => `transform: translate3d(${(1 - t) * motion.x}px,0,0); opacity: ${0.9 + 0.1 * t}`
+    css: (t: number) => `transform: translate3d(${(1 - t) * motion.x}px,0,0)`
   };
 }
