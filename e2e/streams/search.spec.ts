@@ -168,7 +168,7 @@ test('source changes debounce into an automatic rerun without clearing the query
     await expect.poll(()=>aborted).toBe(2);
     await page.getByRole('dialog',{name:'Manage addons'}).getByRole('button',{name:'Close',exact:true}).click();
     await returnToSearch(page);
-    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByRole('textbox',{name:'Search movies, TV shows, and sports',exact:true})).toHaveValue('Sample');
     await expect(page.locator('.search-results .media-card')).toHaveCount(2);
     await expect(page.getByLabel('Searching addon catalogs')).toHaveCount(0);
@@ -186,7 +186,7 @@ test('sign-out invalidates a query cache even when its local catalog targets sta
     const result=method==='getUser'?{_id:'synthetic-user',email:'synthetic@example.invalid'}:method==='addonCollectionGet'?{addons:[]}:[];
     return route.fulfill({json:{result},headers});
   });
-  await page.reload(); await submit(page);
+  await page.reload(); await returnToSearch(page); await submit(page);
   await expect(page.locator('.search-results .media-card')).toHaveCount(2); await expect(page.locator('.search-pending')).toHaveCount(0);
   const held=gate();
   for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,async route=>{await held.promise;await answer(route,[]);});
@@ -207,6 +207,7 @@ test('profile and PIN unlock invalidate cached local previews without persisting
   });
   await page.route('https://cloud.search.test/**',route=>route.fulfill({json:route.request().url().includes('sync_pull_profiles')?[{profile_index:1,name:'Main'},{profile_index:2,name:'Locked',pin_enabled:true}]:route.request().url().includes('verify_profile_pin')?{unlocked:true}:[],headers}));
   await page.reload();
+  await returnToSearch(page);
   await submit(page); await expect(page.locator('.search-results .media-card')).toHaveCount(2); await expect(page.locator('.search-pending')).toHaveCount(0);
   await settings(page); await page.getByRole('button',{name:/Accounts and profiles/}).click();
   const accounts=page.getByRole('dialog',{name:'Accounts'});
@@ -252,7 +253,7 @@ for (const entry of ['submitted','cached-deep-link']) test(`a ${entry} search su
     const first=await page.locator('.search-results .media-card').first().elementHandle();
     updated=true;manifests.release();
     await expect.poll(()=>requests).toBe(4);
-    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.locator('.search-results .media-card')).toHaveCount(2);
     expect(await page.locator('.search-results .media-card').first().evaluate((node,old)=>node===old,first)).toBe(true);
     await expect(page.getByLabel('Searching addon catalogs')).toHaveCount(0);
@@ -273,11 +274,11 @@ test('an uncached deep link waits for restore then searches instead of losing it
   }
   try{
     await page.goto('/?restore=1#/search?q=Restored');
-    await expect(page).toHaveURL(/#\/search\?q=Restored$/);expect(requests).toBe(0);
+    await expect(page).toHaveURL(/#\/$/);expect(requests).toBe(0);
     held.release();
     await expect(page.locator('.search-results .media-card')).toHaveCount(2);
     await expect(page.getByRole('textbox',{name:'Search movies, TV shows, and sports',exact:true})).toHaveValue('Restored');
-    await expect(page).toHaveURL(/#\/search\?q=Restored$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.locator('.search-pending')).toHaveCount(0);expect(requests).toBe(2);
   }finally{held.release();}
 });

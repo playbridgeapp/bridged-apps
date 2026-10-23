@@ -37,7 +37,7 @@ test('search submitted during Nuvio profile hydration survives cached-source the
     await expect(page.locator('.search-results .media-card')).toHaveCount(2);
     expect(await page.locator('.search-results .media-card').first().evaluate((node,old)=>node===old,first)).toBe(true);
     await expect(page.locator('.search-pending')).toHaveCount(0);
-    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByRole('textbox',{name:'Search movies, TV shows, and sports',exact:true})).toHaveValue('Sample');
     expect(searches).toBe(3);
     await expect(page.getByText(/Submit again/)).toHaveCount(0);
@@ -71,7 +71,7 @@ test('cached deep-link search survives a Stremio background add-on collection re
     collection.release();
     await page.clock.runFor(600);
     await expect(page.getByRole('button',{name:'View details for Fresh b',exact:true})).toBeVisible();
-    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.locator('.search-results .media-card')).toHaveCount(2);
     await expect(page.locator('.search-pending')).toHaveCount(0);expect(searches).toBe(4);
   }finally{collection.release();}

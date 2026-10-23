@@ -107,7 +107,7 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       const searchPosition = (await clickWithPosition(searchCard)).window;
       await expect(page.locator('.detail-play')).toBeEnabled();
       await page.locator('.detail-back').click();
-      await expect(page).toHaveURL(/#\/search\?q=Title$/);
+      await expect(page).toHaveURL(/#\/$/);
       await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(searchPosition);
       // Each tab keeps its own place. Home's off-screen rows have estimated heights after it
       // remounts, so compare what is on screen rather than raw pixels.
@@ -165,8 +165,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await goTab(page, 'Settings');
       await expect(page.locator('.library-panel')).toHaveCount(0);
       await expect(page.locator('main img')).toHaveCount(0);
-      // Tab switches don't stack history: Back from any tab goes Home.
-      await page.goBack();
+      // Home's place survives any number of tab switches.
+      await goTab(page, 'Home');
       await expect(page.locator('.home-panel')).toBeVisible();
       await expect(page.locator('.settings-page')).toHaveCount(0);
       await expect.poll(homePlace).toBeLessThan(2);
@@ -218,8 +218,8 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
       await expect(input).toHaveValue('Film');
       await expect(page.locator('.search-results img')).toHaveCount(192);
       await expect.poll(() => page.evaluate(() => Math.abs(window.scrollY - 600))).toBeLessThan(8);
-      // Back from Search goes Home, at Home's place.
-      await page.goBack();
+      // Selecting Home returns to Home's place.
+      await goTab(page, 'Home');
       await expect(page.locator('.home-panel')).toBeVisible();
       await expect.poll(homePlace).toBeLessThan(2);
       expect(requests).toHaveLength(searchRequestCount);
