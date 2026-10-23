@@ -241,6 +241,7 @@
   let submittedSearch = '';
   let searchHistory = savedSearchHistory();
   let searchHistoryOpen = false;
+  let searchScopeChanged = false;
   let searchState = emptySearchState();
   const searchSession = new SearchSession((state) => { searchState = state; });
   let activeSearchScope = '';
@@ -549,11 +550,13 @@
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
+  $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
   $: currentSearchScope = searchScope([account?.user._id ?? null,
-    nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], addons);
+    nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], searchAddons);
   $: if (currentSearchScope !== activeSearchScope) {
     activeSearchScope = currentSearchScope;
     searchSession.setScope(currentSearchScope);
+    searchScopeChanged = !!submittedSearch;
     resetSubmittedSearch();
   }
   $: nextDismissalScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
@@ -2015,17 +2018,21 @@
   }
 
   function invalidateSearch() {
+    search = '';
+    searchScopeChanged = false;
     searchSession.invalidate();
     resetSubmittedSearch();
   }
 
   function runSearch() {
     // Scope changes flush before a submission, even if Svelte has not flushed yet.
+    const eligibleAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
     const scope = searchScope([account?.user._id ?? null,
-      nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], addons);
+      nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioProfileReady, nuvioUnlockedProfile] : null], eligibleAddons);
     activeSearchScope = scope;
     searchSession.setScope(scope);
     const query = search.trim();
+    searchScopeChanged = false;
     submittedSearch = query;
     selectTab('search');
     if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
@@ -2038,7 +2045,7 @@
       searchHistory = [query, ...searchHistory.filter((item) => item.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 8);
       saveSearchHistory();
     }, SEARCH_HISTORY_DELAY_MS);
-    const targets = catalogs(addons).flatMap(({ addon, catalog }) => {
+    const targets = catalogs(eligibleAddons).flatMap(({ addon, catalog }) => {
       if (!(catalog.extra || []).some((extra) => extra.name === 'search')) return [];
       const extras = requiredCatalogExtras(catalog, query);
       return extras ? [(signal: AbortSignal) => fetchCatalog(addon, catalog, extras, signal)] : [];
@@ -3069,9 +3076,10 @@
           {/if}
         </div>
       </section>
+      {#if searchScopeChanged}<p class="search-notice search-scope-notice" role="status">Search sources changed. Submit again to search the updated catalogs.</p>{/if}
       {#if submittedSearch}
         <section class="search-results browse" aria-label="Search results">
-          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching && !searchResults.length ? 'Searching…' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div>
+          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching && !searchResults.length ? 'Searching…' : !searchState.total ? 'Search unavailable' : !searchResults.length && (searchState.failed || searchState.timedOut) ? 'Search incomplete' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div>
             {#if searching && searchResults.length}<span class="search-pending" role="status">Still searching…</span>{/if}
           </div>
           {#if searching && !searchResults.length}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}

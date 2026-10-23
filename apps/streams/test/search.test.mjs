@@ -44,6 +44,9 @@ test('duplicate priority and same-batch order are deterministic; published posit
   await flush(t);
   assert.deepEqual(f.state.items.map(x => x.id), ['a', 'dup', 'b']);
   assert.equal(f.state.items[1].name, 'Preferred');
+  f.session.search('one-batch', [delay(10, [item('a')]), delay(0, [item('b')])]);
+  await drain(); t.mock.timers.tick(0); await drain(); t.mock.timers.tick(10); await flush(t);
+  assert.deepEqual(f.state.items.map(x => x.id), ['a', 'b']);
 });
 
 test('deadline settles and aborts a hung transport even if it ignores its signal; partial results are not cached', async t => {
@@ -151,5 +154,26 @@ test('failed refresh does not replace or renew the last complete snapshot', asyn
   f.session.search('q',[()=>Promise.resolve([item('partial')]),()=>Promise.reject(new Error('unavailable'))]); await flush(t);
   f.session.search('q',[()=>new Promise(()=>{})]); assert.deepEqual(f.state.items.map(x=>x.id),['complete']);
   f.session.clear(); await advance(t,SEARCH_CACHE_TTL_MS);
+  f.session.search('q',[()=>new Promise(()=>{})]); assert.equal(f.state.cached,false); f.session.clear();
+});
+
+test('scope changes cancel an already queued publication before it can update UI or cache', async t => {
+  const f = fixture(t);
+  f.session.search('q',[()=>Promise.resolve([item('old-scope')])]); await drain();
+  f.session.setScope('new-scope'); const writes=f.states.length;
+  await advance(t,SEARCH_BATCH_MS);
+  assert.equal(f.states.length,writes); assert.deepEqual(f.state.items,[]);
+  f.session.setScope('account/profile/sources');
+  f.session.search('q',[()=>new Promise(()=>{})]);
+  assert.equal(f.state.cached,false); f.session.clear();
+});
+
+test('late success after its hard deadline cannot change UI or cache', async t => {
+  const f=fixture(t);
+  f.session.search('q',[delay(9000,[item('too-late')]),()=>Promise.resolve([item('ready')])]);
+  await flush(t); await advance(t,SEARCH_DEADLINE_MS);
+  assert.equal(f.state.timedOut,1); const writes=f.states.length;
+  await advance(t,1000); assert.equal(f.states.length,writes);
+  assert.deepEqual(f.state.items.map(x=>x.id),['ready']);
   f.session.search('q',[()=>new Promise(()=>{})]); assert.equal(f.state.cached,false); f.session.clear();
 });

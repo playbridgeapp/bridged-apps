@@ -13,6 +13,14 @@ pnpm dev:streams
 
 Open `http://127.0.0.1:5182`. Install at least one Stremio-compatible addon with a catalog and metadata resource to browse titles. Add configured manifest URLs directly. Home shows featured titles, Continue Watching, Browse by Addon, and catalog rows. Search has a search bar and a Discover feed with Type, Catalog, and Genre dropdowns; compatible catalogs load more titles as you scroll. Catalogs that require an option use the addon's first listed option by default, such as the current year in Cinemeta's New rows. Nuvio plugin repositories add stream sources to those titles; they do not supply catalogs.
 
+## Search
+
+Search runs on Submit/Enter or selecting a recent query. Each searchable catalog runs concurrently with an eight-second deadline. Usable previews publish in 32 ms batches while a quiet **Still searching…** status remains for pending catalogs; failures/timeouts are distinct from a completed no-match and can be retried.
+
+New cards append in publication order. Catalogs ready in one batch use configured catalog/item order, and the earliest configured catalog has priority for duplicate fields. Existing keyed cards never move or remount during the query, including a cached refresh. Cached previews no longer returned by a fully successful refresh stay pinned in that view, with a notice; the next submission uses only the updated matches. This avoids moving cards under a tap.
+
+A memory-only cache keeps complete successful queries for five minutes, with LRU limits of twelve queries, 1,200 total previews and one million serialized characters. Oversized queries are not cached. Exact repeats/recent queries show cached previews immediately and refresh in the background; repeated Submit while a query is already running joins the same requests. Partial/failed/timed-out refreshes never replace or renew a completed snapshot. The cache clears on account/profile/PIN or enabled source configuration changes, which also cancel requests and clear the submitted route; submit again to search the new scope. Locked Nuvio sources are excluded. Clear/new queries cancel their previous requests, while ordinary tab return retains the current query without refetching. Existing recent-query history remains separate; result previews are never persisted.
+
 ## Navigation and shared links
 
 Cached addons and available catalogs open while account and manifest refreshes run in the background. The player keeps its source screen and unfinished provider requests alive, so starting a ready source or returning to its list does not repeat the lookups. Sources restored later are added to the open stream list.

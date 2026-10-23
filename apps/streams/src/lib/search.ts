@@ -14,7 +14,8 @@ export type SearchState = {
 };
 export const emptySearchState = (): SearchState => ({ items: [], total: 0, pending: 0, failed: 0, timedOut: 0, cached: false, retained: 0 });
 
-/** Memory-only identity; never put tokens in this descriptor or log its value. */
+/** Memory-only account/profile identity and source configuration. Account tokens
+ * are excluded; source URLs may be private, so never persist or log this descriptor. */
 export function searchScope(identity: unknown, addons: InstalledAddon[]): string {
   return JSON.stringify([identity, addons.map(a => [a.manifestUrl, a.enabled, a.disabledFeatures,
     a.manifest.version, a.manifest.types, a.manifest.resources, a.manifest.idPrefixes, a.manifest.catalogs])]);
