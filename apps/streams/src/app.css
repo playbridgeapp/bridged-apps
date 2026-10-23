@@ -330,7 +330,6 @@ main{width:100%;min-height:100vh}
 .search-history-query svg{flex:none;color:#aebabb}
 .search-history-remove{display:grid;place-items:center;flex:none;width:36px;height:36px;margin-right:5px;border-radius:9px;color:#9faaaa!important}
 .search-history-remove:hover{background:#ffffff20;color:#fff!important}
-.search-scope-notice{padding:0 18px}
 .search-pending,.search-notice{color:#95a7b2;font-size:12px}.search-notice{margin-top:18px;line-height:1.6}.search-notice button{margin-left:8px}
 .search-results{padding-top:5px}
 .search-results .poster-grid{margin-top:15px}

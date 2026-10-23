@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SearchSession, SEARCH_BATCH_MS, SEARCH_DEADLINE_MS, SEARCH_CACHE_TTL_MS, searchScope } from '../src/lib/search.ts';
+import { SearchSession, SEARCH_BATCH_MS, SEARCH_DEADLINE_MS, SEARCH_CACHE_TTL_MS, SEARCH_SOURCE_DEBOUNCE_MS, SEARCH_INTERACTION_SETTLE_MS, searchSources } from '../src/lib/search.ts';
 
 const item = (id, name = id) => ({ id, type: 'movie', name });
 const drain = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
@@ -9,7 +9,7 @@ function fixture(t) {
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
   const states = [];
   const session = new SearchSession(s => states.push(structuredClone(s)));
-  session.setScope('account/profile/sources');
+  session.setIdentity('account/profile/sources');
   return { session, states, get state() { return states.at(-1); } };
 }
 async function flush(t) { await drain(); t.mock.timers.tick(SEARCH_BATCH_MS); await drain(); }
@@ -85,7 +85,7 @@ test('new queries, clear and scope invalidation abort every old request and fenc
   f.session.clear(); assert.equal(signals.at(-1).aborted, true);
   resolve.at(-1)([item('late')]); await flush(t); assert.deepEqual(f.state.items, []);
   f.session.search('old', [held]); await drain();
-  f.session.setScope('different-user/profile'); assert.equal(signals.at(-1).aborted, true);
+  f.session.setIdentity('different-user/profile'); assert.equal(signals.at(-1).aborted, true);
   resolve.at(-1)([item('late')]); await flush(t); assert.deepEqual(f.state.items, []);
 });
 
@@ -102,11 +102,26 @@ test('same query in flight joins one lookup; exact completed repeats seed previe
   assert.equal(f.state.items[0].name, 'Updated');
 });
 
-test('cached positions survive refresh removals, but only fresh complete matches enter the next snapshot', async t => {
+test('successful refresh drops obsolete previews immediately when there is no interaction', async t => {
   const f = fixture(t);
   f.session.search('q', [() => Promise.resolve([item('old'), item('keep')])]); await flush(t);
   f.session.search('q', [() => Promise.resolve([item('keep'), item('new')])]); await flush(t);
-  assert.deepEqual(f.state.items.map(x => x.id), ['old', 'keep', 'new']); assert.equal(f.state.retained, 1);
+  assert.deepEqual(f.state.items.map(x => x.id), ['keep', 'new']);
+  f.session.search('q', [() => new Promise(() => {})]);
+  assert.deepEqual(f.state.items.map(x => x.id), ['keep', 'new']); f.session.clear();
+});
+
+test('only the prefix needed to protect interaction is pinned; release reconciles after click settles', async t => {
+  const f = fixture(t);
+  f.session.search('q', [() => Promise.resolve([item('old-before'), item('pressed'), item('old-after'), item('keep')])]); await flush(t);
+  f.session.protectThrough(1);
+  f.session.search('q', [() => Promise.resolve([item('keep'), item('new')])]); await flush(t);
+  assert.deepEqual(f.state.items.map(x => x.id), ['old-before', 'pressed', 'keep', 'new']);
+  f.session.protectThrough(null);
+  t.mock.timers.tick(SEARCH_INTERACTION_SETTLE_MS - 1); await drain();
+  assert.equal(f.state.items[1].id, 'pressed');
+  await advance(t, 1);
+  assert.deepEqual(f.state.items.map(x => x.id), ['keep', 'new']);
   f.session.search('q', [() => new Promise(() => {})]);
   assert.deepEqual(f.state.items.map(x => x.id), ['keep', 'new']); f.session.clear();
 });
@@ -135,15 +150,14 @@ test('cache bounds include item and character budgets, not only query count', as
   f.session.search('a', [() => Promise.resolve([])]); assert.equal(f.state.cached, false); f.session.clear();
 });
 
-test('account/profile/PIN and enabled catalog configuration changes invalidate cached and in-flight work', async t => {
+test('account/profile/PIN identity changes clear cached previews and pending work', async t => {
   const f = fixture(t);
-  const addon = {manifestUrl:'https://addon.test/manifest.json',manifest:{id:'test',name:'Test',version:'1',types:['movie'],resources:['catalog'],catalogs:[{id:'all',type:'movie',name:'All',extra:[{name:'search'}]}]}};
-  const identities = [['user-a',1,false],['user-a',2,false],['user-a',2,true],['user-b',2,true],null];
-  const configs = [[addon],[{...addon,disabledFeatures:['catalog']}],[{...addon,manifest:{...addon.manifest,version:'2'}}],[]];
-  const scopes = [...identities.map(i => searchScope(i,[addon])),...configs.map(c => searchScope(['user-a',1,false],c))];
-  for (let i=0;i<scopes.length;i++) {
-    f.session.setScope(scopes[i]); f.session.search('q',[()=>Promise.resolve([item('private-preview')])]); await flush(t);
-    f.session.setScope(scopes[(i+1)%scopes.length]); f.session.search('q',[()=>new Promise(()=>{})]);
+  const identities = [['user-a',1,null],['user-a',2,null],['user-a',2,2],['user-b',2,2],null];
+  for (let i=0;i<identities.length;i++) {
+    f.session.setIdentity(JSON.stringify(identities[i]));
+    f.session.search('q',[()=>Promise.resolve([item('private-preview')])]); await flush(t);
+    f.session.setIdentity(JSON.stringify(identities[(i+1)%identities.length]));
+    f.session.search('q',[()=>new Promise(()=>{})]);
     assert.equal(f.state.cached,false); assert.deepEqual(f.state.items,[]); f.session.clear();
   }
 });
@@ -160,10 +174,10 @@ test('failed refresh does not replace or renew the last complete snapshot', asyn
 test('scope changes cancel an already queued publication before it can update UI or cache', async t => {
   const f = fixture(t);
   f.session.search('q',[()=>Promise.resolve([item('old-scope')])]); await drain();
-  f.session.setScope('new-scope'); const writes=f.states.length;
+  f.session.setIdentity('new-scope'); const writes=f.states.length;
   await advance(t,SEARCH_BATCH_MS);
   assert.equal(f.states.length,writes); assert.deepEqual(f.state.items,[]);
-  f.session.setScope('account/profile/sources');
+  f.session.setIdentity('account/profile/sources');
   f.session.search('q',[()=>new Promise(()=>{})]);
   assert.equal(f.state.cached,false); f.session.clear();
 });
@@ -176,4 +190,76 @@ test('late success after its hard deadline cannot change UI or cache', async t =
   await advance(t,1000); assert.equal(f.states.length,writes);
   assert.deepEqual(f.state.items.map(x=>x.id),['ready']);
   f.session.search('q',[()=>new Promise(()=>{})]); assert.equal(f.state.cached,false); f.session.clear();
+});
+
+test('source refresh bursts cancel immediately, preserve previews and rerun the submitted query once', async t => {
+  const f=fixture(t), queries=[], signals=[];
+  f.session.configure('identity','v1',q=>[()=>Promise.resolve([item(q)])]);
+  f.session.search('submitted'); await flush(t);
+  f.session.search('submitted',[s=>{signals.push(s);return new Promise(()=>{});}]); await drain();
+  const load=q=>[()=>{queries.push(q);return Promise.resolve([item('fresh')]);}];
+  assert.equal(f.session.configure('identity','v2',load),'sources');
+  assert.equal(signals[0].aborted,true);
+  assert.deepEqual(f.state.items.map(x=>x.id),['submitted']); assert.equal(f.state.queued,true);
+  await advance(t,200);
+  f.session.configure('identity','v3',load);
+  t.mock.timers.tick(SEARCH_SOURCE_DEBOUNCE_MS-1); await drain(); assert.deepEqual(queries,[]);
+  await advance(t,1);
+  assert.deepEqual(queries,['submitted']); assert.deepEqual(f.state.items.map(x=>x.id),['fresh']);
+  f.session.search('submitted',[()=>new Promise(()=>{})]);
+  assert.equal(f.state.cached,true); f.session.clear();
+});
+
+test('old configuration cache is discarded, and clear/new submissions/identity changes cancel queued reruns', async t => {
+  const f=fixture(t);let calls=0;
+  const targets=q=>[()=>{calls++;return Promise.resolve([item(q)]);}];
+  f.session.configure('identity','v1',targets); f.session.search('first'); await flush(t);
+  f.session.configure('identity','v2',targets);
+  f.session.search('first'); assert.equal(f.state.cached,false); assert.equal(f.state.items[0].id,'first');
+  await flush(t); await advance(t,SEARCH_SOURCE_DEBOUNCE_MS); assert.equal(calls,2);
+  f.session.configure('identity','v3',targets); f.session.clear();
+  await advance(t,SEARCH_SOURCE_DEBOUNCE_MS); assert.equal(calls,2); assert.deepEqual(f.state.items,[]);
+  f.session.search('first');await flush(t);
+  f.session.configure('identity','v4',targets); f.session.search('second');await flush(t);
+  await advance(t,SEARCH_SOURCE_DEBOUNCE_MS); assert.equal(f.state.items[0].id,'second');assert.equal(calls,4);
+  f.session.configure('identity','v5',targets);
+  assert.equal(f.session.configure('different-user','v5',targets),'identity');
+  await advance(t,SEARCH_SOURCE_DEBOUNCE_MS);assert.equal(calls,4);assert.deepEqual(f.state.items,[]);
+});
+
+test('an empty source set still preserves submitted intent until restored targets arrive', async t => {
+  const f=fixture(t);
+  f.session.configure('identity','empty',()=>[]); f.session.search('deep-link');
+  assert.equal(f.state.total,0);
+  f.session.configure('identity','restored',q=>[()=>Promise.resolve([item(q)])]);
+  await advance(t,SEARCH_SOURCE_DEBOUNCE_MS);
+  assert.equal(f.state.items[0].id,'deep-link');
+});
+
+test('source configuration fingerprints include manifest metadata and enablement without changing identity', () => {
+  const addon={manifestUrl:'https://addon.test/manifest.json',manifest:{id:'test',name:'Test',version:'1',types:['movie'],resources:['catalog'],catalogs:[{id:'all',type:'movie',name:'All',extra:[{name:'search'}]}]}};
+  const initial=searchSources([addon]);
+  for(const change of [{...addon,disabledFeatures:['catalog']},{...addon,manifest:{...addon.manifest,version:'2'}},{...addon,manifest:{...addon.manifest,catalogs:[]}}]) assert.notEqual(searchSources([change]),initial);
+});
+
+
+test('temporarily unavailable source configuration preserves previews and submitted intent until recovery', async t => {
+  const f=fixture(t);
+  f.session.configure('identity','v1',q=>[()=>Promise.resolve([item(q)])]);
+  f.session.search('submitted');await flush(t);
+  f.session.configure('identity','unavailable',()=>[]);await advance(t,SEARCH_SOURCE_DEBOUNCE_MS);
+  assert.equal(f.state.total,0);assert.equal(f.state.items[0].id,'submitted');
+  f.session.configure('identity','recovered',q=>[()=>Promise.resolve([item('fresh-'+q)])]);await advance(t,SEARCH_SOURCE_DEBOUNCE_MS);
+  assert.deepEqual(f.state.items.map(x=>x.id),['fresh-submitted']);
+});
+
+test('an old interaction reconciliation cannot publish after a privacy boundary', async t => {
+  const f=fixture(t);
+  f.session.search('q',[()=>Promise.resolve([item('stale'),item('keep')])]);await flush(t);
+  f.session.protectThrough(0);
+  f.session.search('q',[()=>Promise.resolve([item('keep')])]);await flush(t);
+  f.session.protectThrough(null);
+  f.session.setIdentity('another-user');const writes=f.states.length;
+  await advance(t,SEARCH_INTERACTION_SETTLE_MS);
+  assert.equal(f.states.length,writes);assert.deepEqual(f.state.items,[]);
 });

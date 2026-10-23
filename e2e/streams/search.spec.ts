@@ -19,7 +19,7 @@ async function returnToSearch(page: Page) {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(defs => {
     localStorage.setItem('bridged-streams.addons.v1', JSON.stringify(defs.map(d => d.manifestUrl)));
-    localStorage.setItem('bridged-streams.startup-cache.v1.local-addons', JSON.stringify({ scope: 'browser', value: defs }));
+    if (!sessionStorage.getItem('search-test-no-cache')) localStorage.setItem('bridged-streams.startup-cache.v1.local-addons', JSON.stringify({ scope: 'browser', value: defs }));
   }, definitions);
   for (const def of definitions) await page.route(`${new URL(def.manifestUrl).origin}/**`, async route => {
     if (route.request().url().endsWith('/manifest.json')) await route.fulfill({ json: def.manifest, headers });
@@ -149,22 +149,34 @@ test('new query and clear abort prior transports and prevent late results', asyn
   } finally { held.release(); }
 });
 
-test('source changes abort a refresh and invalidate the completed query cache', async ({ page }) => {
+test('source changes debounce into an automatic rerun without clearing the query or current cards', async ({ page }) => {
   await submit(page); await expect(page.locator('.search-results .media-card')).toHaveCount(2);
   await expect(page.locator('.search-pending')).toHaveCount(0);
-  const held=gate(); let aborted=0;
+  const old=gate(), fresh=gate();let updating=false,aborted=0,reruns=0;
   page.on('requestfailed',r=>{if(r.url().includes('/catalog/'))aborted++;});
-  for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,async route=>{await held.promise;await answer(route,[meta('updated')]);});
+  for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,async route=>{
+    const refresh=updating;
+    if(refresh)reruns++;
+    await (refresh?fresh:old).promise;
+    await answer(route,[meta(id.toUpperCase())]);
+  });
   try {
     await submit(page); await expect(page.locator('.search-pending')).toBeVisible();
     await settings(page); await page.getByRole('button',{name:/Addons and playback/}).click();
+    updating=true;
     await page.getByRole('checkbox',{name:'Disable Search A',exact:true}).uncheck();
     await expect.poll(()=>aborted).toBe(2);
     await page.getByRole('dialog',{name:'Manage addons'}).getByRole('button',{name:'Close',exact:true}).click();
-    await returnToSearch(page); await submit(page);
-    await expect(page.locator('.search-results .media-card')).toHaveCount(0);
-    await expect(page.getByLabel('Searching addon catalogs')).toBeVisible();
-  }finally{held.release();}
+    await returnToSearch(page);
+    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page.getByRole('textbox',{name:'Search movies, TV shows, and sports',exact:true})).toHaveValue('Sample');
+    await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+    await expect(page.getByLabel('Searching addon catalogs')).toHaveCount(0);
+    await expect.poll(()=>reruns).toBe(1);
+    fresh.release();await expect(page.locator('.search-results .media-card')).toHaveCount(1);
+    await expect(page.locator('.search-results .media-card')).toHaveAttribute('aria-label','View details for B');
+    await expect(page.getByText(/Submit again/)).toHaveCount(0);
+  }finally{old.release();fresh.release();}
 });
 
 test('sign-out invalidates a query cache even when its local catalog targets stay the same', async ({ page }) => {
@@ -219,5 +231,109 @@ test('profile and PIN unlock invalidate cached local previews without persisting
       await expect(page.getByLabel('Searching addon catalogs')).toBeVisible();
       expect(await page.evaluate(()=>Object.keys(localStorage).filter(k=>k.startsWith('bridged-streams.search') && k !== 'bridged-streams.search-history.v1'))).toEqual([]);
     }finally{refreshed.release();}
+  }finally{held.release();}
+});
+
+for (const entry of ['submitted','cached-deep-link']) test(`a ${entry} search survives startup manifest replacement`, async ({ page }) => {
+  const manifests=gate(),fresh=gate();let updated=false,requests=0;
+  for(const def of definitions) {
+    await page.route(def.manifestUrl,async route=>{await manifests.promise;await route.fulfill({json:{...def.manifest,version:'2.0.0'},headers});});
+    await page.route(`${new URL(def.manifestUrl).origin}/catalog/**`,async route=>{
+      requests++;const isUpdated=updated;
+      if(isUpdated)await fresh.promise;
+      await answer(route,[meta(def.manifest.id,isUpdated?'Fresh '+def.manifest.id:'Cached '+def.manifest.id)]);
+    });
+  }
+  try {
+    await page.goto(entry==='submitted'?'/?entry=submitted#/':'/?entry=cached-deep-link#/search?q=Sample');
+    if(entry==='submitted'){await returnToSearch(page);await submit(page);}
+    await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+    await expect(page.locator('.search-pending')).toHaveCount(0);
+    const first=await page.locator('.search-results .media-card').first().elementHandle();
+    updated=true;manifests.release();
+    await expect.poll(()=>requests).toBe(4);
+    await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+    await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+    expect(await page.locator('.search-results .media-card').first().evaluate((node,old)=>node===old,first)).toBe(true);
+    await expect(page.getByLabel('Searching addon catalogs')).toHaveCount(0);
+    fresh.release();
+    await expect(page.getByRole('button',{name:'View details for Fresh a',exact:true})).toBeVisible();
+    await expect(page.locator('.search-pending')).toHaveCount(0);
+    expect(requests).toBe(4);
+    await expect(page.getByText(/Submit again/)).toHaveCount(0);
+  }finally{manifests.release();fresh.release();}
+});
+
+test('an uncached deep link waits for restore then searches instead of losing its route intent',async({page})=>{
+  const held=gate();let requests=0;
+  await page.evaluate(()=>{sessionStorage.setItem('search-test-no-cache','1');localStorage.removeItem('bridged-streams.startup-cache.v1.local-addons');});
+  for(const def of definitions){
+    await page.route(def.manifestUrl,async route=>{await held.promise;await route.fulfill({json:{...def.manifest,version:'3'},headers});});
+    await page.route(`${new URL(def.manifestUrl).origin}/catalog/**`,route=>{requests++;return answer(route,[meta(def.manifest.id,'Restored '+def.manifest.id)]);});
+  }
+  try{
+    await page.goto('/?restore=1#/search?q=Restored');
+    await expect(page).toHaveURL(/#\/search\?q=Restored$/);expect(requests).toBe(0);
+    held.release();
+    await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+    await expect(page.getByRole('textbox',{name:'Search movies, TV shows, and sports',exact:true})).toHaveValue('Restored');
+    await expect(page).toHaveURL(/#\/search\?q=Restored$/);
+    await expect(page.locator('.search-pending')).toHaveCount(0);expect(requests).toBe(2);
+  }finally{held.release();}
+});
+
+test('successful cache refresh drops stale cards except the prefix protecting an active press',async({page})=>{
+  await page.route('https://search-a.test/catalog/**',route=>answer(route,[meta('keep'),meta('pressed')]));
+  await page.route('https://search-b.test/catalog/**',route=>answer(route,[meta('unseen')]));
+  await submit(page);await expect(page.locator('.search-results .media-card')).toHaveCount(3);
+  await expect(page.locator('.search-pending')).toHaveCount(0);
+  const held=gate();
+  await page.route('https://search-a.test/catalog/**',async route=>{await held.promise;await answer(route,[meta('keep'),meta('new')]);});
+  await page.route('https://search-b.test/catalog/**',async route=>{await held.promise;await answer(route,[]);});
+  try{
+    await submit(page);await expect(page.locator('.search-pending')).toBeVisible();
+    const pressed=page.getByRole('button',{name:'View details for pressed',exact:true});
+    const node=await pressed.elementHandle();
+    await pressed.dispatchEvent('pointerdown',{pointerId:1});
+    held.release();await expect(page.locator('.search-pending')).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'View details for unseen',exact:true})).toHaveCount(0);
+    expect(await pressed.evaluate((element,old)=>element===old,node)).toBe(true);
+    await pressed.dispatchEvent('pointercancel',{pointerId:1});
+    await expect(pressed).toHaveCount(0);
+    await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+    await expect(page.getByText(/Some previous previews/)).toHaveCount(0);
+  }finally{held.release();}
+});
+
+test('idle successful refresh shows exactly fresh matches including an authoritative no-match',async({page})=>{
+  await submit(page);await expect(page.locator('.search-results .media-card')).toHaveCount(2);
+  await expect(page.locator('.search-pending')).toHaveCount(0);
+  for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,route=>answer(route,[]));
+  await submit(page);
+  await expect(page.locator('.search-results .media-card')).toHaveCount(0);
+  await expect(page.getByText('No results.',{exact:true})).toBeVisible();
+});
+
+test('removing stale cards below a press does not clamp the viewport and move its target',async({page})=>{
+  await page.setViewportSize({width:390,height:844});
+  await page.route('https://search-a.test/catalog/**',route=>answer(route,Array.from({length:100},(_,i)=>meta('old-'+i))));
+  await page.route('https://search-b.test/catalog/**',route=>answer(route,[]));
+  await submit(page);await expect(page.locator('.search-results .media-card')).toHaveCount(100);
+  await expect(page.locator('.search-pending')).toHaveCount(0);
+  await page.evaluate(()=>document.fonts.ready);
+  const held=gate();
+  await page.route('https://search-a.test/catalog/**',async route=>{await held.promise;await answer(route,[meta('new')]);});
+  await page.route('https://search-b.test/catalog/**',async route=>{await held.promise;await answer(route,[]);});
+  try{
+    await submit(page);await expect(page.locator('.search-pending')).toBeVisible();
+    const pressed=page.getByRole('button',{name:'View details for old-84',exact:true});
+    await pressed.scrollIntoViewIfNeeded();const before=await pressed.boundingBox();
+    await pressed.dispatchEvent('pointerdown',{pointerId:1});
+    held.release();await expect(page.locator('.search-pending')).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'View details for old-99',exact:true})).toHaveCount(0);
+    const after=await pressed.boundingBox();
+    expect(Math.abs(after!.y-before!.y)).toBeLessThan(1);
+    await pressed.dispatchEvent('pointercancel',{pointerId:1});
+    await expect(pressed).toHaveCount(0);await expect(page.locator('.search-results .media-card')).toHaveCount(1);
   }finally{held.release();}
 });
