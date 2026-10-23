@@ -7,6 +7,7 @@
   import { catalogs, fetchCatalog, fetchCatalogPage, fetchMeta, fetchStreams, installAddon, playableStream, requiredCatalogExtras, savedAddonUrls, saveAddonUrls, supports } from './lib/addons';
   import AddonManagementCard from './lib/AddonManagementCard.svelte';
   import MediaTile from './lib/MediaTile.svelte';
+  import { SearchSession, emptySearchState, searchSources, SEARCH_INTERACTION_SETTLE_MS, type SearchTarget } from './lib/search';
   import PlayerSubtitles from './lib/PlayerSubtitles.svelte';
   import HomeContent from './lib/HomeContent.svelte';
   import FluidBackground from './lib/FluidBackground.svelte';
@@ -121,7 +122,7 @@
   let resolvedNuvioMetadataScope = '';
   let nuvioSession: NuvioSession | null = initialNuvioSession;
   let nuvioProfiles: NuvioProfile[] = [];
-  let nuvioProfileIndex = 1;
+  let nuvioProfileIndex = initialNuvioSession ? savedNuvioProfile(initialNuvioSession.user.id) : 1;
   let nuvioUnlockedProfile: number | null = null;
   let nuvioBackend = NUVIO_CLOUD_URL;
   let nuvioKey = NUVIO_CLOUD_PUBLISHABLE_KEY;
@@ -240,8 +241,11 @@
   let submittedSearch = '';
   let searchHistory = savedSearchHistory();
   let searchHistoryOpen = false;
-  let searchResults: MetaPreview[] = [];
-  let searching = false;
+  let searchState = emptySearchState();
+  let searchInteractionHeight = 0;
+  const searchSession = new SearchSession((state) => { searchState = state; });
+  $: searchResults = searchState.items;
+  $: searching = searchState.pending > 0 || searchState.queued;
   let searchHistoryTimer: number | undefined;
   let loadingCatalogs = false;
   let managing = false;
@@ -465,7 +469,6 @@
   let detailArtwork = '';
   let detailArtworkUpgraded = false;
   let streamRequest = 0;
-  let searchRequest = 0;
 
   $: addons = uniqueEnabledAddons([...accountAddons, ...nuvioAddons, ...localAddons]);
   $: browsableAddons = addons.filter((addon) => catalogs([addon])
@@ -546,6 +549,11 @@
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
+  $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
+  $: currentSearchIdentity = JSON.stringify([account?.user._id ?? null,
+    nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]);
+  $: currentSearchSources = searchSources(searchAddons);
+  $: syncSearchConfiguration(currentSearchIdentity, currentSearchSources, searchAddons);
   $: nextDismissalScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
   $: if (nextDismissalScope !== dismissalScope) { dismissalScope = nextDismissalScope; dismissedWatching = watchingDismissals(dismissalScope); }
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
@@ -693,9 +701,51 @@
   }
 
   onDestroy(() => {
+    searchSession.invalidate();
     clearNativeVideoEvents();
     nuvioMetadataController?.abort();
     cancelNativeResolution();
+  });
+
+  onMount(() => {
+    let pressedThrough: number | null = null;
+    let releaseHeightTimer: number | undefined;
+    const updateProtection = () => {
+      const cards = [...document.querySelectorAll('.search-results .media-card')];
+      const focused = cards.indexOf(document.activeElement as Element);
+      const index = Math.max(pressedThrough ?? -1, focused);
+      searchSession.protectThrough(index < 0 ? null : index);
+      window.clearTimeout(releaseHeightTimer);
+      if (index >= 0) {
+        // Removing stale tail rows must not clamp scrollY and move the pressed card.
+        const section = document.querySelector('.search-results');
+        searchInteractionHeight = Math.max(searchInteractionHeight, section?.getBoundingClientRect().height || 0);
+      } else if (searchInteractionHeight) {
+        releaseHeightTimer = window.setTimeout(() => { searchInteractionHeight = 0; }, SEARCH_INTERACTION_SETTLE_MS);
+      }
+    };
+    const press = (event: PointerEvent) => {
+      const card = event.target instanceof Element ? event.target.closest('.search-results .media-card') : null;
+      pressedThrough = card ? [...document.querySelectorAll('.search-results .media-card')].indexOf(card) : null;
+      updateProtection();
+    };
+    const release = () => { pressedThrough = null; updateProtection(); };
+    const focus = () => queueMicrotask(updateProtection);
+    document.addEventListener('pointerdown', press);
+    document.addEventListener('pointerup', release);
+    document.addEventListener('pointercancel', release);
+    document.addEventListener('focusin', focus);
+    document.addEventListener('focusout', focus);
+    window.addEventListener('blur', release);
+    return () => {
+      window.clearTimeout(releaseHeightTimer);
+      document.removeEventListener('pointerdown', press);
+      document.removeEventListener('pointerup', release);
+      document.removeEventListener('pointercancel', release);
+      document.removeEventListener('focusin', focus);
+      document.removeEventListener('focusout', focus);
+      window.removeEventListener('blur', release);
+    };
   });
 
   onMount(() => {
@@ -904,6 +954,7 @@
   }
 
   function disconnectAccount() {
+    invalidateSearch();
     if (account) { try { discardPlaybackWrites(`stremio:${account.user._id}`); clearWatchingDismissals(`stremio:${account.user._id}`); } catch { /* storage error */ } }
     stremioWatchingReady = false;
     accountGeneration += 1;
@@ -977,6 +1028,11 @@
     try {
       const profiles = create ? await createNuvioPrimaryProfile(current) : await fetchNuvioProfiles(current);
       if (generation !== nuvioGeneration || nuvioSession !== current) return;
+      const previousProfile = nuvioProfiles.find(profile => profile.profile_index === nuvioProfileIndex);
+      const nextIndex = savedNuvioProfile(current.user.id, profiles);
+      if (previousProfile && !previousProfile.pin_enabled
+        && profiles.find(profile => profile.profile_index === nextIndex)?.pin_enabled
+        && nuvioUnlockedProfile !== nextIndex) invalidateSearch();
       nuvioProfiles = profiles;
       if (!profiles.length) {
         if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
@@ -1009,6 +1065,7 @@
 
   async function chooseNuvioProfile(index: number) {
     if (!nuvioProfiles.some((profile) => profile.profile_index === index)) return;
+    invalidateSearch();
     nuvioGeneration += 1;
     pluginMutation++;
     pluginSaving = '';
@@ -1055,6 +1112,7 @@
     try {
       await verifyNuvioPin(current, index, nuvioPin);
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex) return;
+      invalidateSearch();
       nuvioUnlockedProfile = index;
       nuvioPin = '';
       hydrateNuvioCache(current, index);
@@ -1126,6 +1184,7 @@
   }
 
   function disconnectNuvio() {
+    invalidateSearch();
     if (nuvioSession) {
       try { clearAccountPlaybackWrites(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`); } catch { /* storage error */ }
       clearAccountDeltaSnapshots(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`);
@@ -1190,14 +1249,15 @@
     saveNuvioLibrary(scope, nuvioLibrary);
   }
 
-  function savedNuvioProfile(userId: string, profiles: NuvioProfile[]): number {
+  function savedNuvioProfile(userId: string, profiles?: NuvioProfile[]): number {
     const saved = readPersistentSession(NUVIO_PROFILE_KEY, (value): value is { userId: string; index: number } => {
       if (!value || typeof value !== 'object') return false;
       const profile = value as { userId?: unknown; index?: unknown };
       return typeof profile.userId === 'string' && typeof profile.index === 'number';
     });
-    if (saved?.userId === userId && profiles.some((profile) => profile.profile_index === saved.index)) return saved.index;
-    return profiles[0]?.profile_index ?? 1;
+    if (saved?.userId === userId && Number.isSafeInteger(saved.index) && saved.index > 0
+      && (!profiles || profiles.some((profile) => profile.profile_index === saved.index))) return saved.index;
+    return profiles?.[0]?.profile_index ?? 1;
   }
 
   async function restorePlugins() {
@@ -1990,37 +2050,59 @@
     } catch (error) { pluginError = message(error); }
   }
 
-  async function runSearch() {
-    const query = search.trim();
+  function resetSubmittedSearch() {
+    window.clearTimeout(searchHistoryTimer);
+    if (!submittedSearch) return;
+    submittedSearch = '';
+    if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
+      replaceRoute({ ...currentRoute, query: undefined });
+    }
+  }
+
+  function invalidateSearch() {
+    searchInteractionHeight = 0;
+    search = '';
+    searchSession.invalidate();
+    resetSubmittedSearch();
+  }
+
+  function searchTargets(addons: InstalledAddon[], query: string): SearchTarget[] {
+    return catalogs(addons).flatMap(({ addon, catalog }) => {
+      if (!(catalog.extra || []).some((extra) => extra.name === 'search')) return [];
+      const extras = requiredCatalogExtras(catalog, query);
+      return extras ? [(signal: AbortSignal) => fetchCatalog(addon, catalog, extras, signal)] : [];
+    });
+  }
+
+  function syncSearchConfiguration(identity: string, configuration: string, eligibleAddons: InstalledAddon[]) {
+    if (searchSession.configure(identity, configuration, query => searchTargets(eligibleAddons, query)) === 'identity') {
+      searchInteractionHeight = 0;
+      resetSubmittedSearch();
+    }
+  }
+
+  function runSearch() { submitSearch(search.trim()); }
+
+  function submitSearch(query: string) {
+    query = query.trim();
+    // Explicit submission flushes a pending source debounce against the latest targets.
+    const eligibleAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
+    syncSearchConfiguration(JSON.stringify([account?.user._id ?? null,
+      nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]),
+      searchSources(eligibleAddons), eligibleAddons);
     submittedSearch = query;
     selectTab('search');
     if (currentRoute.kind === 'tab' && currentRoute.tab === 'search') {
       replaceRoute({ ...currentRoute, query: query || undefined });
     }
-    const request = ++searchRequest;
-    searchResults = [];
     window.clearTimeout(searchHistoryTimer);
-    if (!query) { searching = false; return; }
+    if (!query) { searchSession.clear(); return; }
     searchHistoryTimer = window.setTimeout(() => {
       if (submittedSearch !== query) return;
       searchHistory = [query, ...searchHistory.filter((item) => item.toLocaleLowerCase() !== query.toLocaleLowerCase())].slice(0, 8);
       saveSearchHistory();
     }, SEARCH_HISTORY_DELAY_MS);
-    searching = true;
-    const targets = catalogs(addons).flatMap(({ addon, catalog }) => {
-      if (!(catalog.extra || []).some((extra) => extra.name === 'search')) return [];
-      const extras = requiredCatalogExtras(catalog, query);
-      return extras ? [{ addon, catalog, extras }] : [];
-    });
-    const results = await Promise.allSettled(targets.map(({ addon, catalog, extras }) => fetchCatalog(addon, catalog, extras)));
-    if (request === searchRequest) {
-      const unique = new Map<string, MetaPreview>();
-      results.forEach((result) => {
-        if (result.status === 'fulfilled') result.value.forEach((item) => unique.set(`${item.type}:${item.id}`, item));
-      });
-      searchResults = [...unique.values()];
-      searching = false;
-    }
+    searchSession.search(query);
   }
 
   function saveSearchHistory() {
@@ -2205,11 +2287,14 @@
       managing = route.panel === 'addons';
       integrationsPanel = route.panel === 'integrations';
       if (route.tab === 'search' && submittedSearch !== (route.query || '')) {
-        search = route.query || '';
-        if (!catalogs(addons).some(({ catalog }) => requiredCatalogExtras(catalog, search.trim())?.search)) await restoreReady;
-        if (request !== routeRequest) return;
+        const query = route.query || '';
+        search = query;
+        if (!catalogs(searchAddons).some(({ catalog }) => requiredCatalogExtras(catalog, query.trim())?.search)) await restoreReady;
         await tick();
-        void runSearch();
+        // A manual submit/clear/navigation during restore supersedes this URL intent.
+        if (request !== routeRequest || currentRoute.kind !== 'tab' || currentRoute.tab !== 'search'
+          || currentRoute.query !== route.query || submittedSearch === query) return;
+        submitSearch(query);
       }
     } else {
       // Use cached sources immediately; remote account refresh is background work.
@@ -2483,6 +2568,7 @@
   function selectTab(next: Tab) {
     openDiscoverDropdown = null;
     if (next === tab) return;
+    if (next !== 'search') { searchSession.protectThrough(null); searchInteractionHeight = 0; }
     const request = ++navigationRequest;
     dockRestoringScroll = true;
     tab = next;
@@ -3047,11 +3133,15 @@
         </div>
       </section>
       {#if submittedSearch}
-        <section class="search-results browse" aria-label="Search results">
-          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching ? 'Searching…' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div></div>
-          {#if searching}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}
-          {#if !searching && searchResults.length}<div class="poster-grid">{#each searchResults as item (item.type + item.id)}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{/if}
-          {#if !searching && !searchResults.length}<div class="empty-state">No results. Make sure an installed catalog supports search.</div>{/if}
+        <section class="search-results browse" aria-label="Search results" style:min-height={searchInteractionHeight ? `${searchInteractionHeight}px` : null}>
+          <div class="section-heading"><div><span class="section-type">SEARCH RESULTS</span><h2>{searching && !searchResults.length ? 'Searching…' : !searchState.total ? 'Search unavailable' : !searchResults.length && (searchState.failed || searchState.timedOut) ? 'Search incomplete' : `${searchResults.length} ${searchResults.length === 1 ? 'result' : 'results'}`}</h2></div>
+            {#if searching && searchResults.length}<span class="search-pending" role="status">Still searching…</span>{/if}
+          </div>
+          {#if searching && !searchResults.length}<div class="card-skeletons" aria-label="Searching addon catalogs"><span></span><span></span><span></span><span></span><span></span></div>{/if}
+          {#if searchResults.length}<div class="poster-grid">{#each searchResults as item (JSON.stringify([item.type, item.id]))}<MediaTile {item} onSelect={() => void openDetail(item)} />{/each}</div>{/if}
+          {#if !searching && !searchState.total}<div class="empty-state">No installed catalog supports search. Add or enable a searchable catalog in Settings.</div>
+          {:else if !searching && !searchResults.length && !searchState.failed && !searchState.timedOut}<div class="empty-state">No results.</div>{/if}
+          {#if !searching && (searchState.failed || searchState.timedOut)}<div class="search-notice" role="status">{searchState.timedOut ? 'Some catalogs timed out.' : 'Some catalogs could not be searched.'} Results may be incomplete. <button class="text-action" onclick={runSearch}>Retry search</button></div>{/if}
         </section>
       {:else}
         <section class="discover-page browse" aria-label="Discover">
