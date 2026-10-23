@@ -12,6 +12,7 @@
   import HomeContent from './lib/HomeContent.svelte';
   import FluidBackground from './lib/FluidBackground.svelte';
   import CatalogRail from './lib/CatalogRail.svelte';
+  import { clearRailPositions } from './lib/rail-positions';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
   import { fadeIn } from './lib/image-fade';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
@@ -50,7 +51,7 @@
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider, PlaybackDestination } from './lib/types';
   import { hasNativePluginsApi, fetchNativePluginsStatus, manageDevicePlugins, cancelNativeResolution, clearNativeStatusCache } from './lib/native-plugins';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
-  import { HashRouter, parseRoute, routeHash } from './lib/router';
+  import { HashRouter, parseRoute, routeHash, isRootTab } from './lib/router';
   import type { AppRoute, MediaRoute, Tab } from './lib/router';
   import moviWasmUrl from 'movi-player/movi.wasm?url';
   import { syncNuvioProgress, syncNuvioWatched, watchedKey } from './lib/nuvio-sync';
@@ -211,7 +212,10 @@
   let streamSelection = savedStreamSelection();
   let pendingAutoAction: { type: MediaType; id: string; videoId?: string; destinationId?: string } | null = null;
   let streamActionRequest = 0;
-  const routePositions = new Map<string, { window: number; panel: number; episodes: number }>();
+  type HomeAnchor = { index: number; top: number };
+  const routePositions = new Map<string, { window: number; panel: number; episodes: number; anchor?: HomeAnchor }>();
+  let homeScrollTarget = 0;
+  let homeScrollAnchor: HomeAnchor | undefined;
   let navigationRequest = 0;
   let dockElement: HTMLElement | null = null;
   let dockIndicatorX = 0;
@@ -2141,6 +2145,7 @@
   }
 
   function invalidateSearch() {
+    forgetPositions();
     searchInteractionHeight = 0;
     search = '';
     searchSession.invalidate();
@@ -2310,7 +2315,7 @@
     // Remember browsing positions for returns from content, alongside content panel positions.
     routePositions.set(routeHash(currentRoute), { window: window.scrollY,
       panel: routePanel()?.scrollTop || 0,
-      episodes: episodeListElement?.scrollLeft || 0 });
+      episodes: episodeListElement?.scrollLeft || 0, anchor: homeAnchor() });
   }
 
   function routePanel() {
@@ -2363,7 +2368,11 @@
     openDiscoverDropdown = null;
     searchHistoryOpen = false;
     if (route.kind === 'tab') {
-      selectTab(route.tab);
+      // applyRoute restores the tab's remembered place below; Home restores once its rows exist.
+      const homePlace = isRootTab(route) && route.tab === 'home' && tab !== 'home' ? routePositions.get(routeHash(route)) : undefined;
+      homeScrollTarget = homePlace?.window || 0;
+      homeScrollAnchor = homePlace?.anchor;
+      selectTab(route.tab, false);
       accountPanel = route.panel === 'accounts';
       managing = route.panel === 'addons';
       integrationsPanel = route.panel === 'integrations';
@@ -2454,16 +2463,15 @@
     }
     await tick();
     if (request !== routeRequest) return;
-    if (route.kind === 'tab') {
-      // Switching tabs starts fresh; closing content restores the tab beneath it.
-      if (!returningToTab) {
-        window.scrollTo(0, 0);
-        return;
-      }
-    }
     const position = routePositions.get(routeHash(currentRoute));
+    if (route.kind === 'tab' && !returningToTab) {
+      // Each tab keeps its place, restored instantly once its content is laid out.
+      if (homeScrollTarget) restoreHomeScroll();
+      else window.scrollTo({ top: position?.window ?? 0, behavior: 'instant' });
+      return;
+    }
     if (position) {
-      window.scrollTo(0, position.window);
+      window.scrollTo({ top: position.window, behavior: 'instant' });
       const panel = routePanel();
       if (panel) panel.scrollTop = position.panel;
       if (episodeListElement) episodeListElement.scrollLeft = position.episodes;
@@ -2642,11 +2650,48 @@
 
   function navigate(next: Tab) {
     const target: AppRoute = { kind: 'tab', tab: next, query: next === 'search' ? submittedSearch || undefined : undefined };
-    if (routeHash(target) === routeHash(currentRoute)) return;
-    router?.push(target);
+    // Tapping the current tab scrolls it to the top, as native bottom tabs do.
+    if (isRootTab(currentRoute) && currentRoute.tab === next) {
+      window.scrollTo({ top: 0, behavior: reducedMotion() ? 'instant' : 'smooth' });
+      return;
+    }
+    void router?.selectRootTab(target);
   }
 
-  function selectTab(next: Tab) {
+  /** The Home row at the top of the screen. Off-screen rows use estimated heights after Home
+   * remounts (content-visibility), so a raw pixel offset would drift; the row anchors it. */
+  function homeAnchor(): HomeAnchor | undefined {
+    if (tab !== 'home' || selected || catalogPage) return undefined;
+    const sections = [...document.querySelectorAll<HTMLElement>('.home-panel .catalog-section')];
+    const index = sections.findIndex((section) => section.getBoundingClientRect().bottom > 0);
+    return index < 0 ? undefined : { index, top: sections[index].getBoundingClientRect().top };
+  }
+
+  function restoreHomeScroll() {
+    if (!homeScrollTarget || tab !== 'home' || !document.querySelector('.home-panel .catalog-section')) return;
+    const anchor = homeScrollAnchor;
+    window.scrollTo({ top: homeScrollTarget, behavior: 'instant' });
+    homeScrollTarget = 0;
+    homeScrollAnchor = undefined;
+    const section = anchor && document.querySelectorAll<HTMLElement>('.home-panel .catalog-section')[anchor.index];
+    if (!section) return;
+    // Rendering the anchored row can resize its neighbours; settle over two frames.
+    const align = () => window.scrollBy({ top: section.getBoundingClientRect().top - anchor.top, behavior: 'instant' });
+    align();
+    requestAnimationFrame(() => { align(); requestAnimationFrame(align); });
+  }
+
+  function reducedMotion() {
+    return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  }
+
+  /** Per-tab places belong to one account/profile. */
+  function forgetPositions() {
+    routePositions.clear();
+    clearRailPositions();
+  }
+
+  function selectTab(next: Tab, resetScroll = true) {
     openDiscoverDropdown = null;
     if (next === tab) return;
     if (next !== 'search') { searchSession.protectThrough(null); searchInteractionHeight = 0; }
@@ -2655,7 +2700,7 @@
     tab = next;
     void tick().then(() => {
       if (request !== navigationRequest) return;
-      window.scrollTo(0, 0);
+      if (resetScroll) window.scrollTo(0, 0);
       window.requestAnimationFrame(() => {
         if (request !== navigationRequest) return;
         dockRestoringScroll = false;
@@ -3244,7 +3289,7 @@
     {/if}
     {#if tab === 'home'}
     <div class="home-panel tab-page">
-      <HomeContent>
+      <HomeContent immediate={homeScrollTarget > 0} onReady={restoreHomeScroll}>
       {#if addons.length === 0 && !localAddons.length && !accountAddons.length && !nuvioAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
@@ -3278,7 +3323,7 @@
         {#if loadingCatalogs && !visibleRows.some((row) => row.items.length)}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading catalogs…</div>{/if}
         {#each visibleRows as row (row.key)}
           <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : 'LIBRARY'} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><button class="catalog-view-all" onclick={() => openCatalogPage(row)} aria-label={`View all ${row.title} from ${row.addon.manifest.name}`} title={`View all ${row.title}`}><ArrowRight size={20} /></button></div>
-            {#if row.items.length}<CatalogRail items={row.items} title={row.title} onSelect={(item) => void openDetail(item)} onLoadMore={() => loadMoreCatalogRow(row.key)} canLoadMore={row.nextSkip != null} loadingMore={!!row.loadingMore} pageError={row.pageError || ''} active={!catalogPage && !selected} />{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
+            {#if row.items.length}<CatalogRail items={row.items} title={row.title} onSelect={(item) => void openDetail(item)} onLoadMore={() => loadMoreCatalogRow(row.key)} canLoadMore={row.nextSkip != null} loadingMore={!!row.loadingMore} pageError={row.pageError || ''} active={!catalogPage && !selected} memoryKey={row.key} />{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
             {:else if row.loading}<div class="card-skeletons" aria-label={`Loading ${row.title}`}><span></span><span></span><span></span><span></span><span></span></div>{:else if row.error}<div class="row-empty">{row.error}</div>{:else}<div class="row-empty">No titles in this catalog.</div>{/if}
           </section>
         {/each}

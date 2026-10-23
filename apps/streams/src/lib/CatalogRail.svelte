@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { ArrowRight, LoaderCircle } from 'lucide-svelte';
   import MediaTile from './MediaTile.svelte';
+  import { railPosition, saveRailPosition } from './rail-positions';
   import type { MetaPreview } from './types';
 
   export let items: MetaPreview[];
@@ -12,22 +13,42 @@
   export let loadingMore = false;
   export let pageError = '';
   export let active = true;
+  /** Keeps this rail's place when its tab unmounts and comes back. */
+  export let memoryKey = '';
 
   const batchSize = 12;
+  const remembered = memoryKey ? railPosition(memoryKey) : undefined;
   let rail: HTMLDivElement;
-  let mounted = false;
-  let limit = batchSize;
+  // A rail the user already scrolled mounts at once, so its offset can be restored.
+  let mounted = !!remembered;
+  let limit = Math.max(batchSize, remembered?.limit ?? 0);
   let requesting = false;
 
+  // Off-screen rows skip layout (content-visibility), so apply the offset once it sticks.
+  let pendingScroll = remembered?.scrollLeft ?? 0;
+  // Tracked while scrolling: the element may already be detached when the tab unmounts.
+  let scrollLeft = pendingScroll;
+  function applyPendingScroll() {
+    if (!pendingScroll || !rail) return;
+    rail.scrollLeft = pendingScroll;
+    if (Math.abs(rail.scrollLeft - pendingScroll) < 1) { scrollLeft = rail.scrollLeft; pendingScroll = 0; }
+  }
+
   onMount(() => {
-    if (typeof IntersectionObserver === 'undefined') { mounted = true; return; }
+    if (pendingScroll) void tick().then(() => requestAnimationFrame(applyPendingScroll));
+    const save = () => {
+      if (memoryKey && rail && mounted) saveRailPosition(memoryKey, {
+        scrollLeft: pendingScroll || scrollLeft, limit: limit > batchSize ? limit : 0 });
+    };
+    if (typeof IntersectionObserver === 'undefined') { mounted = true; return save; }
     const observer = new IntersectionObserver((entries) => {
       if (!entries.some((entry) => entry.isIntersecting)) return;
       mounted = true;
+      if (pendingScroll) { void tick().then(() => { applyPendingScroll(); requestAnimationFrame(applyPendingScroll); }); return; }
       observer.disconnect();
     }, { rootMargin: '300px 0px' });
     observer.observe(rail);
-    return () => observer.disconnect();
+    return () => { save(); observer.disconnect(); };
   });
 
   async function revealMore() {
@@ -45,6 +66,7 @@
   }
 
   function onScroll() {
+    if (!pendingScroll) scrollLeft = rail.scrollLeft;
     if (rail.scrollLeft > 0 && rail.scrollWidth - rail.clientWidth - rail.scrollLeft < 280) void revealMore();
   }
 </script>

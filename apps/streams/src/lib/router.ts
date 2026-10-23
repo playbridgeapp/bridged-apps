@@ -63,13 +63,29 @@ export function routeHash(route: AppRoute): string {
 
 type RouteState = { streamsRouter: 1; depth: number; parent?: string };
 
+const HOME_HASH = routeHash({ kind: 'tab', tab: 'home' });
+
+/** A bottom-tab destination, as opposed to a screen pushed on top of a tab. */
+export function isRootTab(route: AppRoute): route is { kind: 'tab'; tab: Tab; query?: string } {
+  return route.kind === 'tab' && !route.panel;
+}
+
 // pushState gives Gecko, Safari, and browser Back the same navigation stack.
 // Hash routes also work when the site is hosted without an SPA rewrite rule.
 export class HashRouter {
   private lastHash: string;
   private requestedBack = false;
+  private traversal: (() => void) | null = null;
   private previousScrollRestoration: ScrollRestoration;
   private onHistory = () => {
+    if (this.traversal) {
+      // An internal history.go() towards the root: settle it without showing intermediate screens.
+      this.lastHash = window.location.hash;
+      const settle = this.traversal;
+      this.traversal = null;
+      settle();
+      return;
+    }
     if (window.location.hash === this.lastHash) return; // popstate + hashchange can describe the same traversal.
     this.lastHash = window.location.hash;
     const motion = this.requestedBack ? 'back' : 'history';
@@ -83,7 +99,14 @@ export class HashRouter {
     history.scrollRestoration = 'manual';
     window.addEventListener('popstate', this.onHistory);
     window.addEventListener('hashchange', this.onHistory);
-    this.replace(parseRoute(this.lastHash));
+    const initial = parseRoute(this.lastHash);
+    this.replace(initial);
+    // A fresh link straight into Search, Library or Settings gets Home beneath it, so Back
+    // goes Home before leaving the app, as with native bottom tabs.
+    if (isRootTab(initial) && initial.tab !== 'home' && this.state().depth === 0) {
+      history.replaceState({ streamsRouter: 1, depth: 0 } satisfies RouteState, '', HOME_HASH);
+      history.pushState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', this.lastHash);
+    }
   }
 
   private state(): RouteState {
@@ -104,6 +127,47 @@ export class HashRouter {
   replace(route: AppRoute) {
     this.lastHash = routeHash(route);
     history.replaceState(this.state(), '', this.lastHash);
+  }
+
+  /**
+   * Switch bottom tabs like a native app: tab changes never stack history. The stack below
+   * a tab is at most [Home, tab], so Back from any tab returns Home and Back from Home leaves.
+   * Screens pushed above the current tab are dropped.
+   */
+  async selectRootTab(route: AppRoute) {
+    const hash = routeHash(route);
+    if (hash === window.location.hash) return;
+    const { depth } = this.state();
+    const home = hash === HOME_HASH;
+    if (depth === 0 && window.location.hash === HOME_HASH) {
+      if (!home) this.push(route);
+      return;
+    }
+    if (depth > 0) {
+      const target = home ? 0 : 1;
+      if (depth > target) await this.traverse(target - depth);
+      // Entry 1 is a root tab only when the entry below it is Home; otherwise rebuild.
+      if (!home && this.state().parent !== HOME_HASH) await this.traverse(-this.state().depth);
+    }
+    if (this.state().depth === 0) {
+      history.replaceState({ streamsRouter: 1, depth: 0 } satisfies RouteState, '', HOME_HASH);
+      this.lastHash = HOME_HASH;
+      if (!home) history.pushState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', hash);
+    } else history.replaceState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', hash);
+    this.lastHash = hash;
+    this.changed(route, home ? 'back' : 'push');
+  }
+
+  private traverse(delta: number): Promise<void> {
+    if (!delta) return Promise.resolve();
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; window.clearTimeout(timer); resolve(); } };
+      this.traversal = finish;
+      // Some engines skip popstate for a cross-document-free traversal; never hang navigation.
+      const timer = window.setTimeout(() => { if (this.traversal === finish) this.traversal = null; finish(); }, 500);
+      history.go(delta);
+    });
   }
 
   back(fallback: AppRoute) {
