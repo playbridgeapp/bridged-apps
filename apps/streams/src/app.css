@@ -671,7 +671,7 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 .catalog-row-end{display:grid;place-items:center;flex:none;width:105px;min-height:210px;color:#8fe0c5}
 .catalog-row-end button,.catalog-page-footer button,.catalog-page-message button{display:flex;align-items:center;justify-content:center;gap:7px;padding:10px 14px;border:1px solid #ffffff3d;border-radius:999px;background:#ffffff15;color:#eef5f2;font:inherit;font-size:12px;font-weight:750;cursor:pointer}
 .catalog-row-end button:hover,.catalog-page-footer button:hover,.catalog-page-message button:hover{background:#ffffff2a}
-.catalog-page-overlay{position:fixed;inset:0;z-index:30;background:#090b0f;color:#f4f5f4}
+.catalog-page-overlay{position:fixed;inset:0;z-index:29;background:#090b0f;color:#f4f5f4}
 .catalog-page-panel{height:100dvh;overflow:auto;overscroll-behavior:contain}
 .catalog-page-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:17px;min-height:104px;padding:22px clamp(20px,5vw,74px);border-bottom:1px solid #ffffff19;background:#111719ed;-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px)}
 .catalog-page-header .section-type{margin-bottom:3px;color:#8edbbe}
