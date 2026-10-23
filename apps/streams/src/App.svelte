@@ -26,11 +26,13 @@
   import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
   import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext, sortStreamsByPreference, matchesAllStreamPreferences } from './lib/stream-selection';
   import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
-  import { cachedDetailPreview, saveDetailPreview } from './lib/detail-cache';
+  import { cachedDetailPreview, clearDetailPreviews, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
   import { cachedCatalog, clearCatalogCache, saveCatalogCache, savedCatalogRefresh, saveCatalogRefresh } from './lib/catalog-cache';
   import { readPersistentSession, writePersistentSession } from './lib/persistent-session';
-  import { cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedNuvioWatched, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveNuvioWatched, saveStremioLibrary } from './lib/startup-cache';
+  import { recentNuvioStartupCache, cachedAddons, cachedNuvioLibrary, cachedNuvioPlugins, cachedNuvioProgress, cachedNuvioWatched, cachedStremioLibrary, clearStartupCache, saveAddons, saveNuvioLibrary, saveNuvioPlugins, saveNuvioProgress, saveNuvioWatched, saveStremioLibrary } from './lib/startup-cache';
+  import { nuvioStartupLeaseMs, cachedNuvioAuthorization, knownProtectedNuvioProfile, saveNuvioAuthorization, clearNuvioAuthorization, STARTUP_CACHE_MAX_AGE_MS } from './lib/nuvio-startup';
+  import { isNuvioAuthorizationError, observeNuvioAuthorizationFailure } from './lib/nuvio';
   import { appendPlaybackDiagnostic, clearPlaybackDiagnostics, readPlaybackDiagnostics, safeDiagnosticText } from './lib/playback-diagnostics';
   import type { AddonFeature, AddonSource } from './lib/addon-settings';
   import { bridgeAvailable, castMovie, lazyCastSeries, playbackBridge, stopLinkedCast } from './lib/cast';
@@ -124,6 +126,9 @@
   let nuvioProfiles: NuvioProfile[] = [];
   let nuvioProfileIndex = initialNuvioSession ? savedNuvioProfile(initialNuvioSession.user.id) : 1;
   let nuvioUnlockedProfile: number | null = null;
+  let provisionalNuvioCache = false;
+  let provisionalNuvioTimer: number | undefined;
+  let nuvioProfilesCheckedAt = 0;
   let nuvioBackend = NUVIO_CLOUD_URL;
   let nuvioKey = NUVIO_CLOUD_PUBLISHABLE_KEY;
   let nuvioEmail = '';
@@ -549,12 +554,13 @@
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
-  $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
+  $: nuvioDisplayReady = nuvioProfileReady || provisionalNuvioCache;
+  $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : []), ...localAddons]);
   $: currentSearchIdentity = JSON.stringify([account?.user._id ?? null,
     nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]);
   $: currentSearchSources = searchSources(searchAddons);
   $: syncSearchConfiguration(currentSearchIdentity, currentSearchSources, searchAddons);
-  $: nextDismissalScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
+  $: nextDismissalScope = nuvioSession && nuvioDisplayReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
   $: if (nextDismissalScope !== dismissalScope) { dismissalScope = nextDismissalScope; dismissedWatching = watchingDismissals(dismissalScope); }
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
   $: nuvioMetadataProviders = addons.filter((addon) => supports(addon, 'meta', 'movie') || supports(addon, 'meta', 'series'));
@@ -753,6 +759,7 @@
     const handlePluginsReady = () => { clearNativeStatusCache(); void refreshDevicePlugins(); };
     const handleVisibilityReturn = () => {
       if (!document.hidden) {
+        if (provisionalNuvioCache && nuvioSession && !cachedNuvioAuthorization(nuvioSession, nuvioProfileIndex)) revokeNuvioCachedContent();
         void refreshPlaybackDestination();
         clearNativeStatusCache();
         void refreshDevicePlugins().then(() => {
@@ -843,7 +850,25 @@
     autoRefreshCatalogs = refreshSettings.auto;
     catalogRefreshInterval = refreshSettings.intervalMinutes;
     const detector = window.setInterval(() => { if (!playing) void refreshPlaybackDestination(); }, 2000);
-    if (addons.length) void loadCatalogs();
+    const stopAuthorizationObserver = observeNuvioAuthorizationFailure(session => {
+      if (nuvioSession?.backendUrl === session.backendUrl && nuvioSession.user.id === session.user.id) {
+        disconnectNuvio();
+        nuvioError = 'Your Nuvio session is no longer authorized. Sign in again.';
+      }
+    });
+    if (initialNuvioSession && cachedNuvioAuthorization(initialNuvioSession, nuvioProfileIndex)
+      && recentNuvioStartupCache(nuvioCacheScope(initialNuvioSession, nuvioProfileIndex), STARTUP_CACHE_MAX_AGE_MS)) {
+      provisionalNuvioCache = true;
+      provisionalNuvioTimer = window.setTimeout(() => {
+        if (provisionalNuvioCache) revokeNuvioCachedContent();
+      }, nuvioStartupLeaseMs(initialNuvioSession, nuvioProfileIndex));
+      hydrateNuvioCache(initialNuvioSession, nuvioProfileIndex);
+      void loadCatalogs();
+    } else {
+      // Title previews from a PIN-protected profile must not survive a reload before unlock.
+      if (initialNuvioSession && knownProtectedNuvioProfile(initialNuvioSession, nuvioProfileIndex)) clearDetailPreviews();
+      if (addons.length) void loadCatalogs();
+    }
     restoreReady = Promise.allSettled([restoreAddons(), restoreAccount(), restoreNuvio(), restorePlugins()])
       .then(() => { startupLoading = false; restorationComplete = true; });
     void applyRoute(currentRoute);
@@ -852,8 +877,16 @@
     const watchingTimer = window.setInterval(() => {
       if (!document.hidden) { void refreshNuvioWatching(); void flushPlaybackWrites(); }
     }, 30_000);
-    const retryWatching = () => { if (!document.hidden) { void refreshNuvioWatching(true); if (account) void syncAccount(); void flushPlaybackWrites(); } };
-    const flushOnHide = (event: Event) => { if ((document.hidden || event.type === 'pagehide') && playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'paused'); else retryWatching(); };
+    const retryWatching = () => { void restoreReady.then(() => {
+      if (!document.hidden) {
+        if (nuvioSession && nuvioProfilesLoadFailed && !nuvioProfilesLoading) void retryNuvioProfiles();
+        void refreshNuvioWatching(true); if (account) void syncAccount(); void flushPlaybackWrites(); }
+    }); }
+    const flushOnHide = (event: Event) => {
+      if (document.hidden || event.type === 'pagehide') {
+        if (playerElement) reportBrowserPosition(playerElement as HTMLMediaElement, 'paused');
+      } else retryWatching();
+    };
     window.addEventListener('online', retryWatching);
     window.addEventListener('pagehide', flushOnHide);
     document.addEventListener('visibilitychange', flushOnHide);
@@ -867,7 +900,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); detailLookup?.abort(); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
+    return () => { window.clearTimeout(provisionalNuvioTimer); stopAuthorizationObserver(); window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); detailLookup?.abort(); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
   });
 
   async function restoreAddons() {
@@ -990,15 +1023,20 @@
     try {
       const current = await freshNuvioSession(stored);
       if (generation !== nuvioGeneration) return;
+      if (current.backendUrl !== stored.backendUrl || current.user.id !== stored.user.id) revokeNuvioCachedContent();
       nuvioSession = current;
       nuvioBackend = current.backendUrl;
       nuvioKey = current.publishableKey;
       await loadNuvioProfiles(current, generation);
     } catch (error) {
       if (generation === nuvioGeneration) {
-        nuvioProfilesLoading = false;
-        nuvioProfilesLoadFailed = true;
-        nuvioError = `${message(error)} Your saved sign-in was kept. Retry profiles when the service is available.`;
+        if (isNuvioAuthorizationError(error)) { disconnectNuvio(); nuvioError = 'Sign in to Nuvio again.'; }
+        else {
+          if (provisionalNuvioCache && navigator.onLine) revokeNuvioCachedContent();
+          nuvioProfilesLoading = false;
+          nuvioProfilesLoadFailed = true;
+          nuvioError = `${message(error)} Your saved sign-in was kept. Retry profiles when the service is available.`;
+        }
       }
     } finally {
       nuvioRestoring = false;
@@ -1028,18 +1066,29 @@
     try {
       const profiles = create ? await createNuvioPrimaryProfile(current) : await fetchNuvioProfiles(current);
       if (generation !== nuvioGeneration || nuvioSession !== current) return;
-      const previousProfile = nuvioProfiles.find(profile => profile.profile_index === nuvioProfileIndex);
-      const nextIndex = savedNuvioProfile(current.user.id, profiles);
-      if (previousProfile && !previousProfile.pin_enabled
-        && profiles.find(profile => profile.profile_index === nextIndex)?.pin_enabled
-        && nuvioUnlockedProfile !== nextIndex) invalidateSearch();
+      nuvioProfilesCheckedAt = Date.now();
+      const previousIndex = nuvioProfileIndex;
+      const returnedProfile = profiles.find(profile => profile.profile_index === previousIndex);
+      // Unknown/changed authorization must revoke every cached surface before assigning profiles.
+      const revoked = !returnedProfile || (returnedProfile.pin_enabled && nuvioUnlockedProfile !== previousIndex);
+      if (revoked) revokeNuvioCachedContent();
+      provisionalNuvioCache = false;
+      window.clearTimeout(provisionalNuvioTimer);
+      if (returnedProfile) saveNuvioAuthorization(current, returnedProfile);
+      else clearNuvioAuthorization();
       nuvioProfiles = profiles;
       if (!profiles.length) {
         if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
         nuvioMessage = 'This Nuvio account has no profiles yet. Create one here or in Nuvio Mobile.';
         return;
       }
-      nuvioProfileIndex = savedNuvioProfile(current.user.id, profiles);
+      // A deleted profile requires an explicit choice; never fall through to another cache.
+      if (!returnedProfile) {
+        nuvioProfileIndex = 0;
+        nuvioMessage = 'Choose a Nuvio profile. The previous profile is no longer available.';
+        return;
+      }
+      nuvioProfileIndex = previousIndex;
       if (profiles.find((profile) => profile.profile_index === nuvioProfileIndex)?.pin_enabled) {
         if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
       } else {
@@ -1050,8 +1099,12 @@
       }
     } catch (error) {
       if (generation === nuvioGeneration && nuvioSession === current) {
-        nuvioProfilesLoadFailed = true;
-        nuvioError = `Could not load Nuvio profiles: ${message(error)}`;
+        if (isNuvioAuthorizationError(error)) { disconnectNuvio(); nuvioError = 'Sign in to Nuvio again.'; }
+        else {
+          if (provisionalNuvioCache && navigator.onLine) revokeNuvioCachedContent();
+          nuvioProfilesLoadFailed = true;
+          nuvioError = `Could not load Nuvio profiles: ${message(error)}`;
+        }
       }
     } finally {
       if (generation === nuvioGeneration) nuvioProfilesLoading = false;
@@ -1065,7 +1118,7 @@
 
   async function chooseNuvioProfile(index: number) {
     if (!nuvioProfiles.some((profile) => profile.profile_index === index)) return;
-    invalidateSearch();
+    revokeNuvioCachedContent();
     nuvioGeneration += 1;
     pluginMutation++;
     pluginSaving = '';
@@ -1073,6 +1126,7 @@
     nuvioSyncRequest += 1;
     addonWorking = '';
     nuvioProfileIndex = index;
+    if (nuvioSession) saveNuvioAuthorization(nuvioSession, nuvioProfiles.find(profile => profile.profile_index === index)!, nuvioProfilesCheckedAt);
     if (nuvioSession) writePersistentSession(NUVIO_PROFILE_KEY, { userId: nuvioSession.user.id, index });
     if (nuvioProfiles.find((profile) => profile.profile_index === index)?.pin_enabled) {
       if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
@@ -1184,7 +1238,7 @@
   }
 
   function disconnectNuvio() {
-    invalidateSearch();
+    revokeNuvioCachedContent();
     if (nuvioSession) {
       try { clearAccountPlaybackWrites(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`); } catch { /* storage error */ }
       clearAccountDeltaSnapshots(`${nuvioSession.backendUrl}:${nuvioSession.user.id}:`);
@@ -1221,6 +1275,28 @@
     saveNuvioSession(null);
     writePersistentSession(NUVIO_PROFILE_KEY, null);
     clearStartupCache(['nuvio-addons', 'nuvio-plugins', 'nuvio-library', 'nuvio-progress', 'nuvio-watched']);
+    void loadCatalogs();
+  }
+
+  function revokeNuvioCachedContent() {
+    window.clearTimeout(provisionalNuvioTimer);
+    provisionalNuvioCache = false;
+    clearNuvioAuthorization();
+    invalidateSearch();
+    // Also erase shared display caches: their titles can originate in a private catalog.
+    clearCatalogCache(); clearDetailPreviews();
+    detailMemory.clear(); previewMemory.clear();
+    clearStartupCache(['nuvio-addons', 'nuvio-plugins', 'nuvio-library', 'nuvio-progress', 'nuvio-watched']);
+    nuvioAddons = []; nuvioPlugins = []; nuvioLibrary = [];
+    nuvioProgress = []; nuvioWatched = []; nuvioCloudProgress = []; nuvioCloudWatched = [];
+    nuvioProgressMetadata = new Map(); nuvioMetadataController?.abort();
+    nuvioWatchingReady = false; nuvioHistoryReady = false;
+    nuvioSyncRequest++; nuvioWatchingRequest++;
+    nuvioWatchingSyncing = false; nuvioSyncing = false;
+    resetPlayer(); resetDetail(); resetCatalogPage();
+    ++routeRequest;
+    if (currentRoute.kind !== 'tab') replaceRoute({ kind: 'tab', tab });
+    rows = [];
     void loadCatalogs();
   }
 
@@ -1266,6 +1342,11 @@
     if (restored.some((result) => result.status === 'rejected')) pluginError = 'Some saved plugin repositories could not be reached.';
   }
 
+  function catalogCacheKey(key: string): string {
+    // A manifest URL alone is not a profile authorization boundary.
+    return nuvioSession ? JSON.stringify([account?.user._id ?? null, nuvioCacheScope(nuvioSession, nuvioProfileIndex), key]) : key;
+  }
+
   async function loadCatalogs() {
     const request = ++catalogRequest;
     loadingCatalogs = true;
@@ -1279,7 +1360,7 @@
     rows = definitions.map(({ addon, catalog }) => ({
       key: `${addon.manifestUrl}:${catalog.type}:${catalog.id}`,
       title: catalog.name, addon, catalog, items: previousRows.get(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`)
-        || cachedCatalog(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`), loading: true
+        || cachedCatalog(catalogCacheKey(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`), provisionalNuvioCache ? STARTUP_CACHE_MAX_AGE_MS : Infinity), loading: true
     }));
     if (currentAddons.length) startupLoading = false;
     const patches = new Map<string, (row: CatalogRow) => CatalogRow>();
@@ -1309,7 +1390,7 @@
           if (request === catalogRequest) {
             const items = uniqueCatalogItems(page.items);
             queue(key, (row) => ({ ...row, items, loading: false, nextSkip: catalogNextSkip(catalog, page.rawItemCount, 0, 0), duplicatePages: 0 }));
-            saveCatalogCache(key, items);
+            saveCatalogCache(catalogCacheKey(key), items);
           }
         } catch (error) {
           queue(key, (row) => ({ ...row, loading: false, error: message(error) }));
@@ -1348,7 +1429,7 @@
       const duplicatePages = items.length === current.items.length ? (current.duplicatePages || 0) + 1 : 0;
       rows = rows.map((item) => item.key === key ? { ...item, items, loadingMore: false, duplicatePages,
         nextSkip: catalogNextSkip(item.catalog, page.rawItemCount, skip, duplicatePages) } : item);
-      saveCatalogCache(key, items);
+      saveCatalogCache(catalogCacheKey(key), items);
     } catch (error) {
       if (request === catalogRequest) rows = rows.map((item) => item.key === key
         ? { ...item, loadingMore: false, pageError: message(error) } : item);
@@ -2086,7 +2167,7 @@
   function submitSearch(query: string) {
     query = query.trim();
     // Explicit submission flushes a pending source debounce against the latest targets.
-    const eligibleAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioProfileReady ? nuvioAddons : []), ...localAddons]);
+    const eligibleAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : []), ...localAddons]);
     syncSearchConfiguration(JSON.stringify([account?.user._id ?? null,
       nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]),
       searchSources(eligibleAddons), eligibleAddons);
@@ -2303,7 +2384,7 @@
         selected = detailMemory.get(key) || previewMemory.get(key) || cachedDetailPreview(route.type, route.id)
           || initialAccountLibrary.find((item) => item.type === route.type && item.id === route.id)
           || catalogs([...initialAccountAddons, ...initialLocalAddons]).flatMap(({ addon, catalog }) =>
-            cachedCatalog(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`))
+            cachedCatalog(catalogCacheKey(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`), provisionalNuvioCache ? STARTUP_CACHE_MAX_AGE_MS : Infinity))
             .find((item) => item.type === route.type && item.id === route.id)
           || { type: route.type, id: route.id, name: route.id };
         detailArtwork = selected.background || selected.poster || '';
@@ -3190,7 +3271,7 @@
         </section>
       {/if}
       <section class="browse">
-        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<div class="watching-card"><MediaTile {item} progress={item.progress} subtitle={watchingCaption(item)} onSelect={() => void openDetail(item, true)} /><button class="watching-options" aria-label={`Watching options for ${item.name}`} onclick={() => openWatchingOptions(item, null, true)}>•••</button></div>{/each}</div></section>{/if}
+        {#if continueWatching.length}<section class="catalog-section"><div class="section-heading"><div><span class="section-type">ACCOUNT SYNC</span><h2>Continue Watching</h2></div><button class="text-action" onclick={() => navigate('library')}>View library <ArrowRight size={17} /></button></div><div class="media-row">{#each continueWatching.slice(0, 16) as item (item.type + item.id)}<div class="watching-card"><MediaTile {item} progress={item.progress} subtitle={watchingCaption(item)} onSelect={() => void openDetail(item, true)} /><button class="watching-options" disabled={!!nuvioSession && !nuvioProfileReady} aria-label={`Watching options for ${item.name}`} onclick={() => openWatchingOptions(item, null, true)}>•••</button></div>{/each}</div></section>{/if}
         {#if browsableAddons.length}
           <section class="provider-section" aria-label="Browse by addon"><div class="section-heading"><div><h2>Browse by Addon</h2><p>Explore catalogs from your connected sources</p></div></div><div class="provider-rail"><button class:active={!effectiveAddonFilter} class="provider-tile" aria-pressed={!effectiveAddonFilter} onclick={() => activeAddonFilter = ''}><span class="provider-mark all-mark"><Clapperboard size={27} /></span><strong>All sources</strong></button>{#each browsableAddons as addon (addon.manifestUrl)}<button class:active={effectiveAddonFilter === addon.manifestUrl} class="provider-tile" aria-pressed={effectiveAddonFilter === addon.manifestUrl} onclick={() => activeAddonFilter = addon.manifestUrl}><span class="provider-mark">{#if addon.manifest.logo}<img src={addon.manifest.logo} alt="" loading="lazy" />{:else}{addon.manifest.name.slice(0, 2).toUpperCase()}{/if}</span><strong>{addon.manifest.name}</strong></button>{/each}</div></section>
         {/if}
@@ -3278,7 +3359,7 @@
       {#if nuvioSession}
         <div class="signed-in-card"><div class="account-avatar"><UserRound size={24} /></div><div><strong>{nuvioSession.user.email}</strong><small>{nuvioRestoring ? 'Restoring Nuvio session…' : `Connected to Nuvio · ${nuvioSession.backendUrl}`}</small></div></div>
         {#if nuvioProfiles.length}
-          <label class="profile-select">Profile<select value={nuvioProfileIndex} onchange={(event) => void chooseNuvioProfile(Number(event.currentTarget.value))}>{#each nuvioProfiles as profile (profile.profile_index)}<option value={profile.profile_index}>{profile.name || `Profile ${profile.profile_index}`}{profile.pin_enabled ? ' · PIN' : ''}</option>{/each}</select></label>
+          <label class="profile-select">Profile<select value={nuvioProfileIndex} onchange={(event) => void chooseNuvioProfile(Number(event.currentTarget.value))}>{#if nuvioProfileIndex === 0}<option value={0} disabled>Choose a profile</option>{/if}{#each nuvioProfiles as profile (profile.profile_index)}<option value={profile.profile_index}>{profile.name || `Profile ${profile.profile_index}`}{profile.pin_enabled ? ' · PIN' : ''}</option>{/each}</select></label>
         {:else if nuvioProfilesLoading}
           <p class="panel-copy" role="status">Loading Nuvio profiles…</p>
         {:else if nuvioProfilesLoadFailed}

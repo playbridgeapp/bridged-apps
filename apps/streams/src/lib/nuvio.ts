@@ -87,12 +87,22 @@ function errorMessage(data: unknown, status: number): string {
 
 async function responseJson<T>(response: Response): Promise<T> {
   const data: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw new NuvioApiError(errorMessage(data, response.status), response.status, objectValue(data).code);
+  if (!response.ok) throw new NuvioApiError(errorMessage(data, response.status), response.status, objectValue(data).code ?? objectValue(data).error_code);
   return data as T;
 }
 
 export class NuvioApiError extends Error {
   constructor(message: string, readonly status: number, readonly code: unknown) { super(message); }
+}
+
+export function isNuvioAuthorizationError(error: unknown): boolean {
+  return error instanceof NuvioApiError && (error.status === 401 || error.status === 403
+    || ['refresh_token_not_found', 'refresh_token_already_used', 'session_not_found', 'bad_jwt'].includes(String(error.code)));
+}
+const authorizationListeners = new Set<(session: NuvioSession) => void>();
+export function observeNuvioAuthorizationFailure(listener: (session: NuvioSession) => void): () => void {
+  authorizationListeners.add(listener);
+  return () => { authorizationListeners.delete(listener); };
 }
 
 // Nuvio Mobile keeps scraper controls locally. Our own platform blob lets Bridged
@@ -228,6 +238,12 @@ async function request<T>(session: NuvioSession, path: string, body?: Record<str
         accept: 'application/json', ...(body ? { 'content-type': 'application/json' } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {})
     });
+    if (response.status === 401 || response.status === 403) {
+      // Reject obsolete-token errors after a newer sign-in/refresh has taken over.
+      const saved = savedNuvioSession();
+      if (saved?.backendUrl === current.backendUrl && saved.user.id === current.user.id
+        && saved.accessToken === current.accessToken) authorizationListeners.forEach(listener => listener(current));
+    }
     return await responseJson<T>(response);
   } catch (error) {
     if (controller.signal.aborted) throw new Error('Nuvio request timed out. Please retry.');

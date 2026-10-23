@@ -4,7 +4,7 @@ import type { InstalledAddon, PluginRepository } from './types';
 
 type CacheName = 'local-addons' | 'stremio-addons' | 'stremio-library'
   | 'nuvio-addons' | 'nuvio-plugins' | 'nuvio-library' | 'nuvio-progress' | 'nuvio-watched';
-type CacheEntry = { scope: string; value: unknown };
+type CacheEntry = { scope: string; value: unknown; savedAt?: number };
 const key = (name: CacheName) => `bridged-streams.startup-cache.v1.${name}`;
 
 function readArray<T>(name: CacheName, scope: string, valid: (item: unknown) => item is T): T[] | null {
@@ -15,7 +15,7 @@ function readArray<T>(name: CacheName, scope: string, valid: (item: unknown) => 
 }
 
 function writeArray<T>(name: CacheName, scope: string, value: T[]): void {
-  try { localStorage.setItem(key(name), JSON.stringify({ scope, value })); }
+  try { localStorage.setItem(key(name), JSON.stringify({ scope, value, savedAt: Date.now() })); }
   catch { /* A full or unavailable cache must never interrupt browsing. */ }
 }
 
@@ -102,4 +102,18 @@ export function cachedNuvioWatched(scope: string): NuvioWatchedItem[] | null {
 
 export function saveNuvioWatched(scope: string, watched: NuvioWatchedItem[]): void {
   writeArray('nuvio-watched', scope, watched);
+}
+
+/** Older unversioned timestamps are usable after validation, never for optimistic display. */
+export function recentNuvioStartupCache(scope: string, maxAge: number, now = Date.now()): boolean {
+  const names: CacheName[] = ['nuvio-addons', 'nuvio-plugins', 'nuvio-library', 'nuvio-progress', 'nuvio-watched'];
+  try {
+    return names.every(name => {
+      const raw = localStorage.getItem(key(name));
+      if (!raw) return name !== 'nuvio-addons';
+      const entry = JSON.parse(raw) as CacheEntry;
+      return entry.scope === scope && Array.isArray(entry.value) && Number.isFinite(entry.savedAt)
+        && entry.savedAt! <= now && now - entry.savedAt! < maxAge;
+    });
+  } catch { return false; }
 }
