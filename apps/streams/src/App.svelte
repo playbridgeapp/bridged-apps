@@ -467,6 +467,9 @@
   let pageScrolled = false;
   let catalogRequest = 0;
   let detailRequest = 0;
+  let detailLookup: AbortController | null = null;
+  let detailArtwork = '';
+  let detailArtworkUpgraded = false;
   let streamRequest = 0;
   let searchRequest = 0;
 
@@ -537,8 +540,14 @@
   $: detailIdentityReady = !!selected && selected.name !== selected.id;
   // Catalog artwork and addon artwork can both be replaced during detail loading.
   // Publish the chosen backdrop once, while text and playback stay independent.
-  $: detailBackdrop = loadingDetail || (enrichmentBusy && tmdbSettings.artwork)
-    ? '' : selected?.background || selected?.poster || '';
+  $: if (selected && !loadingDetail && !(enrichmentBusy && tmdbSettings.artwork)) {
+    const artwork = selected.background || selected.poster;
+    if (artwork && artwork !== detailArtwork && !detailArtworkUpgraded) {
+      detailArtwork = artwork;
+      detailArtworkUpgraded = true;
+    }
+  }
+  $: detailBackdrop = detailArtwork;
   $: selectedInNuvioLibrary = selected ? nuvioLibrary.some((item) => item.id === selected?.id && item.type === selected?.type) : false;
   $: activeNuvioProfile = nuvioProfiles.find((profile) => profile.profile_index === nuvioProfileIndex);
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
@@ -813,7 +822,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
+    return () => { window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); detailLookup?.abort(); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
   });
 
   async function restoreAddons() {
@@ -2217,6 +2226,7 @@
             cachedCatalog(`${addon.manifestUrl}:${catalog.type}:${catalog.id}`))
             .find((item) => item.type === route.type && item.id === route.id)
           || { type: route.type, id: route.id, name: route.id };
+        detailArtwork = selected.background || selected.poster || '';
         loadingDetail = true;
         streamScreen = route.kind !== 'detail';
       }
@@ -2311,6 +2321,11 @@
   async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, onStreamsUpdate?: () => void) {
     const fromContinue = route.kind !== 'detail';
     const request = ++detailRequest;
+    detailLookup?.abort();
+    const lookup = new AbortController();
+    detailLookup = lookup;
+    detailArtwork = preview.background || preview.poster || '';
+    detailArtworkUpgraded = false;
     selected = preview;
     failedPlayback = null;
     streamScreen = fromContinue;
@@ -2326,7 +2341,12 @@
     loadingDetail = true;
     try {
       const remembered = detailMemory.get(`${preview.type}:${preview.id}`) || cached;
-      let meta = remembered || await fetchMeta(addons, preview);
+      let meta = remembered || await fetchMeta(addons, preview, lookup.signal, (upgrade) => {
+        if (lookup.signal.aborted || request !== detailRequest || selected?.id !== upgrade.id || selected.type !== upgrade.type) return;
+        detailMemory.set(`${upgrade.type}:${upgrade.id}`, upgrade);
+        // Optional enrichment owns presentation once it has started.
+        if (!tmdbMetadata && !enrichmentBusy) selected = { ...selected, ...upgrade };
+      });
       let initialTmdb: TmdbMetadata | null = null;
       if (!remembered && /^tmdb:\d+$/.test(preview.id) && tmdbSettings.enabled && tmdbKey.trim()) {
         initialTmdb = await fetchTmdbMetadata(preview, tmdbKey, { ...tmdbSettings, collections: false });
@@ -2334,12 +2354,15 @@
         if (initialTmdb) {
           const imdbId = initialTmdb.data.imdb_id || initialTmdb.data.external_ids?.imdb_id;
           const lookup = { ...preview, id: /^tt\d+$/.test(imdbId || '') ? imdbId! : preview.id };
-          meta = await fetchMeta(addons, lookup);
+          meta = await fetchMeta(addons, lookup, detailLookup?.signal);
           if (meta.name === meta.id) meta = { ...meta, name: initialTmdb.data.title || initialTmdb.data.name || meta.name };
         }
       }
       if (request !== detailRequest) return;
       selected = meta;
+      // A deep link or a text-only catalog may have no preview image. Fill that
+      // empty slot now; optional artwork can still make the single later upgrade.
+      if (!detailArtwork) detailArtwork = meta.background || meta.poster || '';
       if (!remembered) saveDetailPreview(meta);
       if (meta.name === meta.id) detailError = 'Could not load this title. Check that its metadata addon is enabled and reachable.';
       if (!initialTmdb && !addons.some((addon) => supports(addon, 'meta', meta.type, meta.id)) && !meta.videos?.length) {
@@ -2435,6 +2458,9 @@
   }
 
   function resetDetail() {
+    detailLookup?.abort();
+    detailLookup = null;
+    detailArtwork = '';
     enrichmentGeneration += 1;
     enrichmentSeasonRequest += 1;
     tmdbMetadata = null;

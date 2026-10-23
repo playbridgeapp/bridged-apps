@@ -1,3 +1,4 @@
+import { lookupMetadata } from './metadata-lookup.ts';
 import type { AddonCatalog, AddonManifest, AddonResource, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, NativePluginsBridge, NativePluginsStatus } from './types';
 import { browserCompatible, fetchPluginStreams, platformCompatible } from './plugins.ts';
 import { cachedStreamLookup } from './stream-cache.ts';
@@ -110,28 +111,16 @@ export async function fetchCatalog(addon: InstalledAddon, catalog: AddonCatalog,
   return (await fetchCatalogPage(addon, catalog, extras, signal)).items;
 }
 
-export async function fetchMeta(addons: InstalledAddon[], preview: MetaPreview, signal?: AbortSignal): Promise<Meta> {
+export async function fetchMeta(addons: InstalledAddon[], preview: MetaPreview, signal?: AbortSignal, onUpgrade?: (meta: Meta) => void): Promise<Meta> {
   const candidates = addons.filter((addon) => supports(addon, 'meta', preview.type, preview.id));
-  // Ask every candidate at once, but keep addon priority: take the first one in order that answers,
-  // so a slow or failing first addon no longer delays the others.
-  const controller = new AbortController();
-  const abortAll = () => controller.abort();
-  signal?.addEventListener('abort', abortAll, { once: true });
-  const requests = candidates.map((addon) => getJson<{ meta?: Meta }>(resourceUrl(addon, 'meta', preview.type, preview.id), controller.signal)
-    .then((data) => data.meta || null, () => null));
-  try {
-    for (const request of requests) {
-      const meta = await request;
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      if (meta) return { ...preview, ...meta, videos: (meta.videos || []).map((video) => ({
-        ...video, title: video.title || video.name, description: video.description || video.overview
-      })) };
-    }
-    return { ...preview, videos: [] };
-  } finally {
-    signal?.removeEventListener('abort', abortAll);
-    controller.abort();
-  }
+  const normalize = (meta: Meta): Meta => ({ ...preview, ...meta, videos: (meta.videos || []).map((video) => ({
+    ...video, title: video.title || video.name, description: video.description || video.overview
+  })) });
+  const meta = await lookupMetadata(candidates.map((addon) => async (requestSignal) => {
+    const data = await getJson<{ meta?: Meta }>(resourceUrl(addon, 'meta', preview.type, preview.id), requestSignal);
+    return data.meta?.id && data.meta.type === preview.type ? normalize(data.meta) : null;
+  }), signal, onUpgrade);
+  return meta || { ...preview, videos: [] };
 }
 
 export async function fetchStreams(

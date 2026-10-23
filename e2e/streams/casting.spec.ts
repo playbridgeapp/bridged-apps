@@ -269,7 +269,7 @@ for (const healthyThumbnail of [true, false]) {
   });
 }
 
-test('waits for addon metadata before showing the detail backdrop', async ({ page }) => {
+test('keeps preview artwork visible while addon metadata loads', async ({ page }) => {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   await page.route('https://art.test/**', (route) => route.fulfill({ status: 404, body: '' }));
@@ -285,7 +285,7 @@ test('waits for addon metadata before showing the detail backdrop', async ({ pag
     await page.goto('/#/movie/tt100');
     await expect(page.locator('.detail-hero')).toBeVisible();
     await expect(page.locator('.detail-play')).toBeDisabled();
-    await detailBackdrop(page).toBe('none');
+    await detailBackdrop(page).toMatch(/art\.test\/catalog\.jpg/);
   } finally { release(); }
   await expect(page.locator('.detail-play')).toBeEnabled();
   await detailBackdrop(page).toMatch(/art\.test\/detail\.jpg/);
@@ -360,8 +360,7 @@ for (const artwork of [true, false]) {
       await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
       await requestStarted;
       await expect(page.locator('.detail-play')).toBeEnabled();
-      if (artwork) await detailBackdrop(page).toBe('none');
-      else await detailBackdrop(page).toMatch(/art\.test\/addon\.jpg/);
+      await detailBackdrop(page).toMatch(/art\.test\/addon\.jpg/);
     } finally { release(); }
     await expect(page.getByRole('heading', { name: 'Enriched Film', exact: true })).toBeVisible();
     const expected = artwork ? /image\.tmdb\.org\/t\/p\/w1280\/backdrop\.jpg/ : /art\.test\/addon\.jpg/;
