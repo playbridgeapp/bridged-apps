@@ -48,8 +48,7 @@ export function routeHash(route: AppRoute): string {
   const params = new URLSearchParams();
   let path: string;
   if (route.kind === 'tab') {
-    path = route.tab === 'home' ? '/' : `/${route.tab}${route.panel ? `/${route.panel}` : ''}`;
-    if (route.tab === 'search' && route.query) params.set('q', route.query);
+    path = route.panel ? `/settings/${route.panel}` : '/';
   } else if (route.kind === 'catalog') {
     path = `/catalog/${[route.addonId, route.type, route.id].map(encodeURIComponent).join('/')}`;
   } else {
@@ -61,12 +60,14 @@ export function routeHash(route: AppRoute): string {
   return `#${path}${params.size ? `?${params}` : ''}`;
 }
 
+type RootTabRoute = { kind: 'tab'; tab: Tab; query?: string };
+
 type RouteState = { streamsRouter: 1; depth: number; parent?: string };
 
-const HOME_HASH = routeHash({ kind: 'tab', tab: 'home' });
+const BASE_HASH = routeHash({ kind: 'tab', tab: 'home' });
 
 /** A bottom-tab destination, as opposed to a screen pushed on top of a tab. */
-export function isRootTab(route: AppRoute): route is { kind: 'tab'; tab: Tab; query?: string } {
+export function isRootTab(route: AppRoute): route is RootTabRoute {
   return route.kind === 'tab' && !route.panel;
 }
 
@@ -74,7 +75,10 @@ export function isRootTab(route: AppRoute): route is { kind: 'tab'; tab: Tab; qu
 // Hash routes also work when the site is hosted without an SPA rewrite rule.
 export class HashRouter {
   private lastHash: string;
+  private changed: (route: AppRoute, motion: NavigationMotion) => void;
   private requestedBack = false;
+  private rootTab: RootTabRoute = { kind: 'tab', tab: 'home' };
+  private tabSelection: Promise<void> | null = null;
   private traversal: (() => void) | null = null;
   private previousScrollRestoration: ScrollRestoration;
   private onHistory = () => {
@@ -90,23 +94,34 @@ export class HashRouter {
     this.lastHash = window.location.hash;
     const motion = this.requestedBack ? 'back' : 'history';
     this.requestedBack = false;
-    this.changed(parseRoute(this.lastHash), motion);
+    const route = parseRoute(this.lastHash);
+    if (isRootTab(route) && this.lastHash === BASE_HASH) this.changed(this.rootTab, motion);
+    else {
+      this.rememberTab(route);
+      this.replace(route);
+      this.changed(route, motion);
+    }
   };
 
-  constructor(private changed: (route: AppRoute, motion: NavigationMotion) => void) {
+  constructor(changed: (route: AppRoute, motion: NavigationMotion) => void) {
+    this.changed = changed;
     this.lastHash = window.location.hash;
     this.previousScrollRestoration = history.scrollRestoration;
     history.scrollRestoration = 'manual';
     window.addEventListener('popstate', this.onHistory);
     window.addEventListener('hashchange', this.onHistory);
     const initial = parseRoute(this.lastHash);
-    this.replace(initial);
-    // A fresh link straight into Search, Library or Settings gets Home beneath it, so Back
-    // goes Home before leaving the app, as with native bottom tabs.
-    if (isRootTab(initial) && initial.tab !== 'home' && this.state().depth === 0) {
-      history.replaceState({ streamsRouter: 1, depth: 0 } satisfies RouteState, '', HOME_HASH);
-      history.pushState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', this.lastHash);
+    this.rememberTab(initial);
+    if (initial.kind === 'tab' && initial.panel && this.state().depth === 0) {
+      // A cold Settings panel link still has the Settings tab beneath it.
+      history.replaceState({ streamsRouter: 1, depth: 0 } satisfies RouteState, '', BASE_HASH);
+      history.pushState({ streamsRouter: 1, depth: 1, parent: BASE_HASH } satisfies RouteState, '', routeHash(initial));
     }
+    this.replace(initial);
+  }
+
+  private rememberTab(route: AppRoute) {
+    if (route.kind === 'tab') this.rootTab = { kind: 'tab', tab: route.tab, query: route.query };
   }
 
   private state(): RouteState {
@@ -116,6 +131,8 @@ export class HashRouter {
   }
 
   push(route: AppRoute) {
+    if (isRootTab(route)) { void this.selectRootTab(route); return; }
+    this.rememberTab(route);
     const hash = routeHash(route);
     if (hash === window.location.hash) return;
     const state: RouteState = { streamsRouter: 1, depth: this.state().depth + 1, parent: window.location.hash };
@@ -125,47 +142,41 @@ export class HashRouter {
   }
 
   replace(route: AppRoute) {
+    this.rememberTab(route);
     this.lastHash = routeHash(route);
     history.replaceState(this.state(), '', this.lastHash);
   }
 
-  /**
-   * Switch bottom tabs like a native app: tab changes never stack history. The stack below
-   * a tab is at most [Home, tab], so Back from any tab returns Home and Back from Home leaves.
-   * Screens pushed above the current tab are dropped.
-   */
-  async selectRootTab(route: AppRoute) {
-    const hash = routeHash(route);
-    if (hash === window.location.hash) return;
+  /** Tabs share the base entry; discard any pushed screens before selecting one. */
+  async selectRootTab(route: RootTabRoute) {
+    this.rootTab = route;
+    if (this.tabSelection) return this.tabSelection;
     const { depth } = this.state();
-    const home = hash === HOME_HASH;
-    if (depth === 0 && window.location.hash === HOME_HASH) {
-      if (!home) this.push(route);
-      return;
-    }
     if (depth > 0) {
-      const target = home ? 0 : 1;
-      if (depth > target) await this.traverse(target - depth);
-      // Entry 1 is a root tab only when the entry below it is Home; otherwise rebuild.
-      if (!home && this.state().parent !== HOME_HASH) await this.traverse(-this.state().depth);
+      this.tabSelection = this.traverse(-depth).then(() => {
+        // replace() re-reads the actual depth; a timed-out traversal may still be on a pushed entry.
+        this.replace(this.rootTab);
+        this.changed(this.rootTab, 'history');
+      }).finally(() => { this.tabSelection = null; });
+      return this.tabSelection;
     }
-    if (this.state().depth === 0) {
-      history.replaceState({ streamsRouter: 1, depth: 0 } satisfies RouteState, '', HOME_HASH);
-      this.lastHash = HOME_HASH;
-      if (!home) history.pushState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', hash);
-    } else history.replaceState({ streamsRouter: 1, depth: 1, parent: HOME_HASH } satisfies RouteState, '', hash);
-    this.lastHash = hash;
-    this.changed(route, home ? 'back' : 'push');
+    this.replace(route);
+    this.changed(route, 'history');
   }
 
   private traverse(delta: number): Promise<void> {
-    if (!delta) return Promise.resolve();
     return new Promise((resolve) => {
       let done = false;
-      const finish = () => { if (!done) { done = true; window.clearTimeout(timer); resolve(); } };
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (this.traversal === finish) this.traversal = null;
+        resolve();
+      };
       this.traversal = finish;
-      // Some engines skip popstate for a cross-document-free traversal; never hang navigation.
-      const timer = window.setTimeout(() => { if (this.traversal === finish) this.traversal = null; finish(); }, 500);
+      // Some engines omit history events; always let tab selection finish.
+      const timer = setTimeout(finish, 500);
       history.go(delta);
     });
   }

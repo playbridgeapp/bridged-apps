@@ -103,6 +103,7 @@ test.beforeEach(async ({ page }) => {
   const manager = page.getByRole('dialog', { name: 'Manage addons' });
   await expect(manager.locator('.addon-management-card').getByText('Test Catalog', { exact: true })).toBeVisible();
   await manager.getByRole('button', { name: 'Close' }).click();
+  await goTab(page, 'Home');
 });
 
 test('opens cached catalogs, title details, and URL search while an addon manifest is still restoring', async ({ page }) => {
@@ -902,12 +903,12 @@ test('searches only on submit and preserves focus and URL while typing', async (
     await input.fill(partial);
     await page.clock.runFor(1000);
     await expect(input).toBeFocused();
-    await expect(page).toHaveURL(/#\/search$/);
+    await expect(page).toHaveURL(/#\/$/);
     await expect(page.getByRole('region', { name: 'Search results' })).toHaveCount(0);
     expect(requests).toEqual([]);
   }
   await page.locator('.search-submit').click();
-  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  await expect(page).toHaveURL(/#\/$/);
   const results = page.getByRole('region', { name: 'Search results' });
   await expect(results.getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
   expect(requests.length).toBeGreaterThan(0);
@@ -915,28 +916,26 @@ test('searches only on submit and preserves focus and URL while typing', async (
   await input.fill('Other');
   await page.clock.runFor(1000);
   await expect(input).toBeFocused();
-  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  await expect(page).toHaveURL(/#\/$/);
   await expect(results.getByRole('button', { name: 'View details for Sample Film' })).toBeVisible();
   expect(requests).toHaveLength(completedRequests);
   await input.press('Enter');
-  await expect(page).toHaveURL(/#\/search\?q=Other$/);
+  await expect(page).toHaveURL(/#\/$/);
   await expect.poll(() => requests.length).toBeGreaterThan(completedRequests);
   await page.getByRole('button', { name: 'Clear search', exact: true }).click();
   await expect(input).toHaveValue('');
-  await expect(page).toHaveURL(/#\/search$/);
+  await expect(page).toHaveURL(/#\/$/);
   await expect(results).toHaveCount(0);
 });
 
-test('restores a search query from its URL without creating a history entry per keystroke', async ({ page }) => {
+test('keeps search in memory across detail Back, then reload opens Home', async ({ page }) => {
   await goTab(page, 'Search');
   const input = page.getByRole('textbox', { name: 'Search movies, TV shows, and sports' });
   const initialLength = await page.evaluate(() => history.length);
   await input.fill('Sample');
   await page.locator('.search-submit').click();
-  await expect(page).toHaveURL(/#\/search\?q=Sample$/);
+  await expect(page).toHaveURL(/#\/$/);
   expect(await page.evaluate(() => history.length)).toBe(initialLength);
-  await page.reload();
-  await expect(input).toHaveValue('Sample');
   const result = page.getByRole('region', { name: 'Search results' }).getByRole('button', { name: 'View details for Sample Film' });
   await expect(result).toBeVisible();
   await result.click();
@@ -944,6 +943,10 @@ test('restores a search query from its URL without creating a history entry per 
   await page.goBack();
   await expect(input).toHaveValue('Sample');
   await expect(result).toBeVisible();
+  await page.reload();
+  await expect(page.locator('.home-panel')).toBeVisible();
+  await goTab(page, 'Search');
+  await expect(input).toHaveValue('');
 });
 
 test('plays a selected movie as one tracked item', async ({ page }) => {

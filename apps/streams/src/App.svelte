@@ -781,7 +781,7 @@
     router = new HashRouter((route, motion) => {
       navigationMotion = motion;
       cancelNativeResolution();
-      const returningToTab = currentRoute.kind !== 'tab' && route.kind === 'tab' && route.tab === tab;
+      const returningToTab = !isRootTab(currentRoute) && isRootTab(route) && route.tab === tab;
       rememberRoutePosition();
       currentRoute = route;
       void applyRoute(route, returningToTab);
@@ -2311,9 +2311,13 @@
     return { destroy: () => observer.disconnect() };
   }
 
+  function routePositionKey(route: AppRoute) {
+    return isRootTab(route) ? `tab:${route.tab}` : routeHash(route);
+  }
+
   function rememberRoutePosition() {
     // Remember browsing positions for returns from content, alongside content panel positions.
-    routePositions.set(routeHash(currentRoute), { window: window.scrollY,
+    routePositions.set(routePositionKey(currentRoute), { window: window.scrollY,
       panel: routePanel()?.scrollTop || 0,
       episodes: episodeListElement?.scrollLeft || 0, anchor: homeAnchor() });
   }
@@ -2324,10 +2328,10 @@
   }
 
   function replaceRoute(route: AppRoute) {
-    const oldPosition = routePositions.get(routeHash(currentRoute));
+    const oldPosition = routePositions.get(routePositionKey(currentRoute));
     currentRoute = route;
     router?.replace(route);
-    if (oldPosition) routePositions.set(routeHash(route), oldPosition);
+    if (oldPosition) routePositions.set(routePositionKey(route), oldPosition);
   }
 
   function mediaRoute(kind: MediaRoute['kind'], video = episode): MediaRoute {
@@ -2369,14 +2373,14 @@
     searchHistoryOpen = false;
     if (route.kind === 'tab') {
       // applyRoute restores the tab's remembered place below; Home restores once its rows exist.
-      const homePlace = isRootTab(route) && route.tab === 'home' && tab !== 'home' ? routePositions.get(routeHash(route)) : undefined;
+      const homePlace = isRootTab(route) && route.tab === 'home' && tab !== 'home' ? routePositions.get(routePositionKey(route)) : undefined;
       homeScrollTarget = homePlace?.window || 0;
       homeScrollAnchor = homePlace?.anchor;
       selectTab(route.tab, false);
       accountPanel = route.panel === 'accounts';
       managing = route.panel === 'addons';
       integrationsPanel = route.panel === 'integrations';
-      if (route.tab === 'search' && submittedSearch !== (route.query || '')) {
+      if (route.tab === 'search' && route.query !== undefined && submittedSearch !== route.query) {
         const query = route.query || '';
         search = query;
         if (!catalogs(searchAddons).some(({ catalog }) => requiredCatalogExtras(catalog, query.trim())?.search)) await restoreReady;
@@ -2463,7 +2467,7 @@
     }
     await tick();
     if (request !== routeRequest) return;
-    const position = routePositions.get(routeHash(currentRoute));
+    const position = routePositions.get(routePositionKey(currentRoute));
     if (route.kind === 'tab' && !returningToTab) {
       // Each tab keeps its place, restored instantly once its content is laid out.
       if (homeScrollTarget) restoreHomeScroll();
@@ -2649,7 +2653,7 @@
   }
 
   function navigate(next: Tab) {
-    const target: AppRoute = { kind: 'tab', tab: next, query: next === 'search' ? submittedSearch || undefined : undefined };
+    const target: AppRoute = { kind: 'tab', tab: next };
     // Tapping the current tab scrolls it to the top, as native bottom tabs do.
     if (isRootTab(currentRoute) && currentRoute.tab === next) {
       window.scrollTo({ top: 0, behavior: reducedMotion() ? 'instant' : 'smooth' });
