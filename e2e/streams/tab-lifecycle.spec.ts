@@ -33,6 +33,37 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 1280, height: 800 
     });
 
 
+    test('app reopen resets Home scroll and its remembered place', async ({ page }) => {
+      await page.addInitScript((url) => {
+        localStorage.setItem('bridged-streams.addons.v1', JSON.stringify([`${url}/manifest.json`]));
+      }, addon);
+      await page.route(`${addon}/**`, (route) => route.fulfill({ json: new URL(route.request().url()).pathname === '/manifest.json'
+        ? { id: 'tab-lifecycle', name: 'Tab Lifecycle', version: '1.0.0', types: ['movie'], resources: ['catalog'], catalogs }
+        : { metas: Array.from({ length: 24 }, (_, index) => ({ id: `tt${index}`, type: 'movie', name: `Film ${index}`, poster })) } }));
+      await page.goto('/');
+      await expect(page.locator('.home-panel .catalog-section')).toHaveCount(8);
+      const length = await page.evaluate(() => history.length);
+      await page.locator('.home-panel .media-row').first().evaluate((row) => { row.scrollLeft = 350; });
+      await page.evaluate(() => window.scrollTo(0, 700));
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(700);
+      await goTab(page, 'Library');
+      await page.evaluate(() => window.dispatchEvent(new Event('PlayBridgeAppReopened')));
+      await expect(page.locator('.home-panel')).toBeVisible();
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await expect.poll(() => page.locator('.home-panel .media-row').first().evaluate((row) => row.scrollLeft)).toBe(0);
+      await goTab(page, 'Library');
+      await goTab(page, 'Home');
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await page.evaluate(() => {
+        window.scrollTo(0, 700);
+        window.dispatchEvent(new Event('PlayBridgeAppReopened'));
+      });
+      await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await page.evaluate(() => window.scrollY)).toBe(0);
+      expect(await page.evaluate(() => history.length)).toBe(length);
+    });
+
     test('returns from titles, catalogs and tab switches to the browsing position', async ({ page }) => {
       const browsingCatalogs = catalogs.map((catalog, index) => ({ ...catalog, type: index % 2 ? 'series' : 'movie' }));
       const items = browsingCatalogs.map((catalog, row) => Array.from({ length: 24 }, (_, index) => ({

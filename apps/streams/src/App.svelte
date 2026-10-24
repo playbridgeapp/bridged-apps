@@ -217,6 +217,7 @@
   let homeScrollTarget = 0;
   let homeScrollAnchor: HomeAnchor | undefined;
   let navigationRequest = 0;
+  let reopenRequest = 0;
   let dockElement: HTMLElement | null = null;
   let dockIndicatorX = 0;
   let dockIndicatorWidth = 0;
@@ -786,6 +787,7 @@
       currentRoute = route;
       void applyRoute(route, returningToTab);
     });
+    window.addEventListener('PlayBridgeAppReopened', handleAppReopened);
     bridge = bridgeAvailable();
     void refreshPlaybackDestination();
     void refreshDevicePlugins();
@@ -904,7 +906,7 @@
         featureIndex = (featureIndex + 1) % featureCandidates.length;
       }
     }, 8000);
-    return () => { window.clearTimeout(provisionalNuvioTimer); stopAuthorizationObserver(); window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); detailLookup?.abort(); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
+    return () => { window.clearTimeout(provisionalNuvioTimer); stopAuthorizationObserver(); window.clearTimeout(statusTimer); window.clearTimeout(dockCompactTimer); detailLookup?.abort(); router?.destroy(); dockObserver?.disconnect(); window.removeEventListener('resize', handleViewportResize); window.removeEventListener('scroll', updateScroll); window.removeEventListener('touchmove', markScrollGesture); window.removeEventListener('wheel', markScrollGesture); window.removeEventListener('keydown', closeSeasonOnEscape); document.removeEventListener('pointerdown', closeMenusOnOutsidePointer); window.clearTimeout(seasonWheelTimer); window.clearTimeout(searchHistoryTimer); window.clearInterval(detector); window.clearInterval(syncTimer); window.clearInterval(nuvioTimer); window.clearInterval(catalogTimer); window.clearInterval(featureTimer); window.clearInterval(watchingTimer); window.removeEventListener('online', retryWatching); window.removeEventListener('pagehide', flushOnHide); document.removeEventListener('visibilitychange', flushOnHide); window.removeEventListener('pagehide', handleNativePageHide); window.removeEventListener('PlayBridgePluginsReady', handlePluginsReady); window.removeEventListener('PlayBridgeAppReopened', handleAppReopened); window.removeEventListener('pageshow', handleVisibilityReturn); document.removeEventListener('visibilitychange', handleVisibilityReturn); };
   });
 
   async function restoreAddons() {
@@ -2652,6 +2654,29 @@
     loadingDetail = false;
   }
 
+  async function handleAppReopened() {
+    const request = ++reopenRequest;
+    navigationRequest += 1;
+    dockRestoringScroll = false;
+    homeScrollTarget = 0;
+    homeScrollAnchor = undefined;
+    showStatus('');
+    // Let the host's already-issued history traversal settle before requesting our own.
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    if (request !== reopenRequest || !router) return;
+    const home: AppRoute = { kind: 'tab', tab: 'home' };
+    routePositions.delete(routePositionKey(home));
+    clearRailPositions();
+    window.scrollTo({ top: 0, behavior: 'instant' });
+    await router.selectRootTab(home);
+    if (request !== reopenRequest) return;
+    await tick();
+    routePositions.delete(routePositionKey(home));
+    clearRailPositions();
+    document.querySelectorAll<HTMLElement>('.home-panel .media-row').forEach((row) => { row.scrollLeft = 0; });
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }
+
   function navigate(next: Tab) {
     const target: AppRoute = { kind: 'tab', tab: next };
     // Tapping the current tab scrolls it to the top, as native bottom tabs do.
@@ -2680,7 +2705,10 @@
     const section = anchor && document.querySelectorAll<HTMLElement>('.home-panel .catalog-section')[anchor.index];
     if (!section) return;
     // Rendering the anchored row can resize its neighbours; settle over two frames.
-    const align = () => window.scrollBy({ top: section.getBoundingClientRect().top - anchor.top, behavior: 'instant' });
+    const request = navigationRequest;
+    const align = () => {
+      if (request === navigationRequest && tab === 'home') window.scrollBy({ top: section.getBoundingClientRect().top - anchor.top, behavior: 'instant' });
+    };
     align();
     requestAnimationFrame(() => { align(); requestAnimationFrame(align); });
   }

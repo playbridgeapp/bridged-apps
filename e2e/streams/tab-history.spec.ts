@@ -65,7 +65,7 @@ test('a direct Settings panel link goes Back to Settings', async ({ page }) => {
   await expect(page).toHaveURL('about:blank');
 });
 
-async function libraryFixture(page: Page) {
+async function libraryFixture(page: Page, openDetail = true) {
   const addon = 'https://tab-history.test';
   const movie = { id: 'tt-tab', type: 'movie', name: 'Saved Film' };
   await page.addInitScript(({ addon, movie }) => {
@@ -91,8 +91,10 @@ async function libraryFixture(page: Page) {
   });
   await page.goto('/');
   await goTab(page, 'Library');
-  await page.getByRole('button', { name: 'View details for Saved Film', exact: true }).click();
-  await expect(page.locator('.detail-play')).toBeEnabled();
+  if (openDetail) {
+    await page.getByRole('button', { name: 'View details for Saved Film', exact: true }).click();
+    await expect(page.locator('.detail-play')).toBeEnabled();
+  }
 }
 
 test('Back through streams and detail returns to the originating Library tab', async ({ page }) => {
@@ -126,6 +128,75 @@ test('selecting a tab above a pushed stack drops every Back step', async ({ page
   await expect(current(page)).toHaveAttribute('aria-label', 'Settings');
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.locator('.detail-overlay, .stream-overlay')).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL('about:blank');
+});
+
+for (const screen of ['Library', 'detail', 'streams', 'player', 'catalog'] as const) {
+  test(`app reopen from ${screen} returns Home without adding history`, async ({ page }) => {
+    await libraryFixture(page, false);
+    if (screen === 'catalog') {
+      await goTab(page, 'Home');
+      await page.getByRole('button', { name: 'View all Films from Tab History' }).click();
+      await expect(page.locator('.catalog-page-overlay')).toBeVisible();
+    } else if (screen !== 'Library') {
+      await page.getByRole('button', { name: 'View details for Saved Film', exact: true }).click();
+      await expect(page.locator('.detail-play')).toBeEnabled();
+    }
+    if (screen === 'streams' || screen === 'player') {
+      await page.route('https://tab-history.test/stream/**', route => route.fulfill({ json: { streams: [
+        { name: 'Synthetic source', url: 'https://tab-history-media.test/fixture.mp4' }
+      ] } }));
+      await page.route('https://tab-history-media.test/**', route => route.abort());
+      await page.locator('.detail-play').click();
+      await expect(page.locator('.stream-overlay')).toBeVisible();
+    }
+    if (screen === 'player') {
+      await page.route('**/*element*slim*.js*', route => route.abort());
+      await page.locator('.stream-result .watch-button').click();
+      await expect(page.getByRole('dialog', { name: 'Now playing Saved Film' })).toBeVisible();
+    }
+    const length = await page.evaluate(() => history.length);
+    await page.evaluate(() => window.dispatchEvent(new Event('PlayBridgeAppReopened')));
+    await expect(current(page)).toHaveAttribute('aria-label', 'Home');
+    await expect(page).toHaveURL(/#\/$/);
+    await expect(page.locator('.detail-overlay, .stream-overlay, .player-overlay, .catalog-page-overlay')).toHaveCount(0);
+    expect(await page.evaluate(() => history.length)).toBe(length);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+    await page.goBack();
+    await expect(page).toHaveURL('about:blank');
+  });
+}
+
+test('app reopen closes Settings panels and coalesces duplicate events', async ({ page }) => {
+  await page.goto('/');
+  await goTab(page, 'Settings');
+  await page.getByRole('button', { name: /Addons and playback/ }).click();
+  await expect(page.getByRole('dialog', { name: 'Manage addons' })).toBeVisible();
+  const length = await page.evaluate(() => history.length);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('PlayBridgeAppReopened'));
+    window.dispatchEvent(new Event('PlayBridgeAppReopened'));
+  });
+  await expect(current(page)).toHaveAttribute('aria-label', 'Home');
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  expect(await page.evaluate(() => history.length)).toBe(length);
+  await page.goBack();
+  await expect(page).toHaveURL('about:blank');
+});
+
+test('app reopen cooperates with the host already traversing to the first entry', async ({ page }) => {
+  await libraryFixture(page);
+  await page.locator('.detail-play').click();
+  await expect(page).toHaveURL(/\/streams$/);
+  const length = await page.evaluate(() => history.length);
+  await page.evaluate(() => {
+    history.go(-history.state.depth);
+    window.dispatchEvent(new Event('PlayBridgeAppReopened'));
+  });
+  await expect(current(page)).toHaveAttribute('aria-label', 'Home');
+  await expect(page).toHaveURL(/#\/$/);
+  expect(await page.evaluate(() => history.length)).toBe(length);
   await page.goBack();
   await expect(page).toHaveURL('about:blank');
 });
