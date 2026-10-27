@@ -46,7 +46,7 @@
   <div class="manage-panel plugin-settings-panel" role="dialog" aria-modal="true" aria-label={`${scraper.name} settings`}>
   <form onsubmit={(event) => { event.preventDefault(); void save(); }}>
     <div class="panel-header"><div><div class="eyebrow">SCRAPER SETTINGS</div><h2>{scraper.name}</h2></div><button bind:this={closeButton} type="button" class="icon-button" aria-label="Close scraper settings" onclick={onClose} disabled={saving}><X size={20} /></button></div>
-    <p class="panel-copy">{synced ? 'Saved to this Nuvio profile and synced between Bridged Streams devices.' : 'Saved in this browser.'}</p>
+    <p class="panel-copy">{synced ? 'Saved to this Nuvio profile and synced to your other browsers.' : 'Saved in this browser.'}</p>
     {#if loading}<p class="loading-layout"><LoaderCircle size={18} class="spin" /> Loading settings…</p>{:else}
       {#each layout as field}
         {#if field.type === 'header'}<h3>{field.label}</h3>

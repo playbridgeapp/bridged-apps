@@ -160,9 +160,9 @@ test('a browser that still has both accounts asks which one to keep', async ({ p
   await seedStremio(page);
   await page.goto('/#/settings/accounts');
   const accounts = page.getByRole('dialog', { name: 'Accounts', exact: true });
-  await expect(accounts).toContainText('Streams now uses one account at a time.');
+  await expect(accounts).toContainText('Only one account can be signed in at a time.');
   await accounts.getByRole('button', { name: 'Keep Nuvio', exact: true }).click();
   await expect(accounts.getByRole('button', { name: 'Switch to Stremio', exact: true })).toBeVisible();
-  await expect(accounts).not.toContainText('Streams now uses one account at a time.');
+  await expect(accounts.getByRole('group', { name: 'Choose one account' })).toHaveCount(0);
   expect(await page.evaluate(() => localStorage.getItem('bridged-streams.stremio-session.v1'))).toBeNull();
 });

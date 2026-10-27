@@ -78,7 +78,7 @@ async function refreshShell() {
 
 function offlinePage() {
   return new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1"><title>Bridged Streams</title>
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>You're offline</title>
 <style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#090b0f;color:#f5f5f5;
 font:16px system-ui,sans-serif;text-align:center;padding:24px;box-sizing:border-box}p{color:#95a7b2}
 button{margin-top:12px;padding:10px 18px;border:0;border-radius:10px;background:#f5f5f5;color:#090b0f;font:inherit}</style>

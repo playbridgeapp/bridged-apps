@@ -6,7 +6,6 @@
   import type { PinResult } from './profile-launch';
 
   export let profile: NuvioProfile;
-  export let image: string | null = null;
   export let onSubmit: (pin: string) => Promise<PinResult>;
   export let onBack: () => void;
 
@@ -61,7 +60,7 @@
 <div class="pin-pad">
   <button class="pin-back" type="button" onclick={onBack}><ArrowLeft size={20} /> Profiles</button>
   <div class="pin-head">
-    <ProfileAvatar {profile} {image} size={92} locked />
+    <ProfileAvatar {profile} size={92} locked />
     <h2>Enter PIN for {profile.name || `Profile ${profile.profile_index}`}</h2>
     <label class="pin-dots" class:shake class:error={!!error && !checking}>
       <span class="visually-hidden">Profile PIN</span>

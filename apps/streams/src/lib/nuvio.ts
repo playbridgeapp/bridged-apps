@@ -23,8 +23,6 @@ export interface NuvioProfile {
   uses_primary_plugins?: boolean;
   pin_enabled?: boolean;
   avatar_color_hex?: string | null;
-  avatar_url?: string | null;
-  avatar_id?: string | null;
 }
 
 export interface NuvioSourceRow {
@@ -319,17 +317,6 @@ export async function verifyNuvioPin(session: NuvioSession, profileIndex: number
     throw new NuvioPinError(message, retryAfter);
   }
   return true;
-}
-
-/** Nuvio's public avatar catalog; supporter-only avatars need signed URLs and fall back to colour. */
-export async function fetchNuvioAvatarCatalog(session: NuvioSession): Promise<{ id: string; storage_path: string }[]> {
-  const raw = await rpc<unknown>(session, 'get_avatar_catalog');
-  if (!Array.isArray(raw)) return [];
-  return raw.flatMap((row) => {
-    const item = objectValue(row);
-    return typeof item.id === 'string' && typeof item.storage_path === 'string' && item.storage_path && item.is_active !== false
-      ? [{ id: item.id, storage_path: item.storage_path }] : [];
-  });
 }
 
 export function fetchNuvioSources(session: NuvioSession, kind: 'addons' | 'plugins', profileIndex: number): Promise<NuvioSourceRow[]> {
