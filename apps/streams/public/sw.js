@@ -2,6 +2,7 @@ const CACHE_NAME = 'playbridge-static-assets-v1';
 // The public app shell: index HTML plus the hashed entry assets it references, kept as one unit.
 const SHELL_CACHE = 'playbridge-shell-v1';
 const SHELL_KEY = '/';
+const NAVIGATION_TIMEOUT_MS = 1500;
 const MAX_ENTRIES = 30;
 const MAX_ASSET_BYTES = 20 * 1024 * 1024;
 const VERSIONED_ASSET = /^\/assets\/[^/?]+-[A-Za-z0-9_-]{8,}\.(?:js|css|wasm|woff2?|png|jpe?g|webp|avif|svg)$/;
@@ -55,6 +56,9 @@ async function storeShell(html, headers) {
   // Keep the server's headers (security headers included) on the cached page.
   await cache.put(SHELL_KEY, new Response(html, { headers }));
   await Promise.all(stale.map((request) => cache.delete(request)));
+  // Include the entry assets so each open page can compare against its own loaded version.
+  const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  for (const client of clients) client.postMessage({ type: 'shell-updated', assets: paths });
   return true;
 }
 
@@ -105,21 +109,28 @@ self.addEventListener('activate', (event) => {
   })());
 });
 
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'check-shell-update') event.waitUntil(refreshShell().catch(() => {}));
+});
+
 async function navigate(event) {
-  let shell = null;
-  try { shell = await cachedShell(); } catch { /* Use the network when cache storage is unavailable. */ }
-  if (shell) {
-    // Open instantly from the cached shell; a new deploy is prepared now and used next launch.
-    event.waitUntil(refreshShell().catch(() => {}));
-    return shell;
-  }
+  const network = fetch(event.request, { cache: 'no-cache' })
+    .then((page) => shellResponse(page) ? page : null).catch(() => null);
+  // A timeout only changes which page opens; the fetch still prepares the latest complete shell.
+  event.waitUntil(network.then(async (page) => {
+    if (page) await storeShell(await page.clone().text(), page.headers);
+  }).catch(() => {}));
+  let timer;
+  const page = await Promise.race([network, new Promise((resolve) => {
+    timer = setTimeout(() => resolve(null), NAVIGATION_TIMEOUT_MS);
+  })]);
+  clearTimeout(timer);
+  if (page) return page;
   try {
-    const page = await fetch(event.request);
-    if (shellResponse(page)) event.waitUntil(page.clone().text().then((html) => storeShell(html, page.headers)).catch(() => {}));
-    return page;
-  } catch {
-    return offlinePage();
-  }
+    const shell = await cachedShell();
+    if (shell) return shell;
+  } catch { /* Use the network when cache storage is unavailable. */ }
+  return await network || offlinePage();
 }
 
 self.addEventListener('fetch', (event) => {
