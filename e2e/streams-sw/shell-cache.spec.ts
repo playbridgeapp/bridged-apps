@@ -105,7 +105,7 @@ async function deployShell(context: BrowserContext, delay = 0) {
     if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
     await route.fulfill({ response: page, body: html });
   });
-  return { path, get requests() { return requests; }, useOriginal() { html = original; }, useDeploy() { html = deployed; } };
+  return { path, get requests() { return requests; }, useFastNetwork() { delay = 0; }, useOriginal() { html = original; }, useDeploy() { html = deployed; } };
 }
 
 async function checkShellUpdate(page: Page) {
@@ -126,6 +126,20 @@ async function visibility(page: Page, state: 'visible' | 'hidden') {
     Object.defineProperty(document, 'visibilityState', { configurable: true, value });
     document.dispatchEvent(new Event('visibilitychange'));
   }, state);
+}
+
+async function returnAndWaitForUpdate(page: Page, interaction?: string) {
+  await page.evaluate((type) => new Promise<void>((resolve) => {
+    const updated = (event: MessageEvent) => {
+      if (event.data?.type !== 'shell-updated') return;
+      navigator.serviceWorker.removeEventListener('message', updated);
+      resolve();
+    };
+    navigator.serviceWorker.addEventListener('message', updated);
+    Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    document.dispatchEvent(new Event('visibilitychange'));
+    if (type) document.dispatchEvent(new Event(type));
+  }), interaction);
 }
 
 test('a new deploy is shown on the first reload', async ({ page, context }) => {
@@ -218,4 +232,47 @@ test('an attempted version cannot cause a reload loop if the reload gets an olde
   await visibility(page, 'visible');
   await checkShellUpdate(page);
   expect(await page.evaluate(() => performance.timeOrigin)).toBe(document);
+});
+
+
+test('a deploy while hidden appears on the first visibility return', async ({ page, context }) => {
+  await page.goto('/#/settings/playback');
+  await shellCached(page);
+  await visibility(page, 'hidden');
+  const deploy = await deployShell(context, 200);
+  await Promise.all([page.waitForNavigation(), visibility(page, 'visible')]);
+  await expect(page.locator('meta[name="streams-test-deploy"]')).toHaveAttribute('content', 'new');
+  await expect(page.locator(`script[src="${deploy.path}"]`)).toHaveCount(1);
+  expect(new URL(page.url()).hash).toBe('#/settings/playback');
+});
+
+for (const interaction of ['pointerdown', 'keydown', 'touchstart']) {
+  test(`an update after ${interaction} waits for the next visibility return`, async ({ page, context }) => {
+    await page.goto('/');
+    await shellCached(page);
+    const originalDocument = await page.evaluate(() => performance.timeOrigin);
+    await visibility(page, 'hidden');
+    await deployShell(context, 200);
+    await returnAndWaitForUpdate(page, interaction);
+    expect(await page.evaluate(() => performance.timeOrigin)).toBe(originalDocument);
+    await expect(page.locator('meta[name="streams-test-deploy"]')).toHaveCount(0);
+    await visibility(page, 'hidden');
+    await Promise.all([page.waitForNavigation(), visibility(page, 'visible')]);
+    await expect(page.locator('meta[name="streams-test-deploy"]')).toHaveAttribute('content', 'new');
+  });
+}
+
+test('an update after the return window waits for the next visibility return', async ({ page, context }) => {
+  await page.goto('/');
+  await shellCached(page);
+  const originalDocument = await page.evaluate(() => performance.timeOrigin);
+  await visibility(page, 'hidden');
+  const deploy = await deployShell(context, 3400);
+  await returnAndWaitForUpdate(page);
+  deploy.useFastNetwork();
+  expect(await page.evaluate(() => performance.timeOrigin)).toBe(originalDocument);
+  await expect(page.locator('meta[name="streams-test-deploy"]')).toHaveCount(0);
+  await visibility(page, 'hidden');
+  await Promise.all([page.waitForNavigation(), visibility(page, 'visible')]);
+  await expect(page.locator('meta[name="streams-test-deploy"]')).toHaveAttribute('content', 'new');
 });
