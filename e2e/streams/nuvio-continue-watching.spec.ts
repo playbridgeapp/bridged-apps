@@ -18,7 +18,7 @@ async function accounts(page: Page) {
 
 async function fixture(page: Page, options: { slow?: boolean; fail?: boolean; watchedShows?: number;
   position?: number; duration?: number; episode?: number; inLibrary?: boolean;
-  progress?: NuvioProgress[]; watched?: NuvioWatchedItem[]; videos?: Video[]; watchedFailure?: boolean } = {}) {
+  progress?: NuvioProgress[]; watched?: NuvioWatchedItem[]; videos?: Video[]; watchedFailure?: boolean; pin?: string } = {}) {
   let release!: () => void;
   const gate = new Promise<void>((resolve) => { release = resolve; });
   const state = { watchedRequests: [] as { p_profile_id: number; p_page: number; p_page_size: number }[], metadataRequests: 0, metadataCancelled: 0, catalogRequests: 0, pagedCatalogRequests: 0, fail: !!options.fail, release };
@@ -42,6 +42,10 @@ async function fixture(page: Page, options: { slow?: boolean; fail?: boolean; wa
     }
     const result = method === 'sync_pull_profiles'
       ? [{ profile_index: 1, name: 'Other' }, { profile_index: 2, name: 'Golu' }]
+      : method === 'sync_pull_profile_locks'
+        ? (options.pin ? [{ profile_index: 2, pin_enabled: true, pin_locked_until: null }] : [])
+      : method === 'verify_profile_pin'
+        ? [{ unlocked: body.p_profile_id === 2 && body.p_pin === options.pin, retry_after_seconds: 0 }]
       : method === 'addons' ? [{ url: `${addon}/manifest.json`, enabled: true }]
       : method === 'sync_pull_library' && body.p_profile_id === 2 && body.p_offset === 0 && options.inLibrary
         ? [{ content_id: showId, content_type: 'series', name: 'Outlander', poster }]
@@ -92,7 +96,7 @@ async function fixture(page: Page, options: { slow?: boolean; fail?: boolean; wa
     await route.fulfill({ status, json, headers: { 'access-control-allow-origin': '*' } });
   });
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Popular shows', exact: true })).toBeVisible();
+  if (!options.pin) await expect(page.getByRole('heading', { name: 'Popular shows', exact: true })).toBeVisible();
   return state;
 }
 
@@ -323,4 +327,23 @@ test('changing profiles cancels pending Next up and clears watched-history cards
     const cached = await page.evaluate(() => JSON.parse(localStorage.getItem('bridged-streams.startup-cache.v1.nuvio-watched') || 'null'));
     expect(cached.value).toEqual([]);
   } finally { state.release(); }
+});
+
+test('unlocks a PIN-protected profile from sync_pull_profile_locks and verify_profile_pin', async ({ page }) => {
+  const state = await fixture(page, { pin: '2580', inLibrary: true, position: 3000000 });
+  await expect(continueCard(page)).toHaveCount(0);
+  expect(state.watchedRequests).toEqual([]);
+
+  const dialog = await accounts(page);
+  await expect(dialog.getByLabel('Profile PIN')).toBeVisible();
+  await dialog.getByLabel('Profile PIN').fill('0000');
+  await dialog.getByRole('button', { name: 'Unlock profile' }).click();
+  await expect(dialog.getByRole('alert')).toContainText('The profile PIN was not accepted.');
+
+  await dialog.getByLabel('Profile PIN').fill('2580');
+  await dialog.getByRole('button', { name: 'Unlock profile' }).click();
+  await expect(dialog.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
+  await dialog.getByRole('button', { name: 'Close account', exact: true }).click();
+  await goTab(page, 'Home');
+  await expect(continueCard(page)).toContainText('Next up: S2E5');
 });

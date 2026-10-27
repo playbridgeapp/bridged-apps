@@ -1,6 +1,6 @@
-import type { MetaPreview } from './types';
-import { readPersistentSession, writePersistentSession } from './persistent-session';
-import { objectValue, pluginPreferences, updatePluginPreference, type PluginPreferences, type ScraperPreference } from './plugin-preferences';
+import type { MetaPreview } from './types.ts';
+import { readPersistentSession, writePersistentSession } from './persistent-session.ts';
+import { objectValue, pluginPreferences, updatePluginPreference, type PluginPreferences, type ScraperPreference } from './plugin-preferences.ts';
 
 const SESSION_KEY = 'bridged-streams.nuvio-session.v1';
 export const NUVIO_CLOUD_URL = 'https://api.nuvio.tv';
@@ -92,7 +92,13 @@ async function responseJson<T>(response: Response): Promise<T> {
 }
 
 export class NuvioApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code: unknown) { super(message); }
+  readonly status: number;
+  readonly code: unknown;
+  constructor(message: string, status: number, code: unknown) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
 }
 
 export function isNuvioAuthorizationError(error: unknown): boolean {
@@ -256,12 +262,27 @@ function rpc<T>(session: NuvioSession, name: string, body: Record<string, unknow
 }
 
 export async function fetchNuvioProfiles(session: NuvioSession): Promise<NuvioProfile[]> {
-  const profiles = await rpc<unknown>(session, 'sync_pull_profiles');
+  const [profiles, locks] = await Promise.all([
+    rpc<unknown>(session, 'sync_pull_profiles'),
+    rpc<unknown>(session, 'sync_pull_profile_locks').catch(() => [])
+  ]);
   if (!Array.isArray(profiles) || !profiles.every((profile) => profile && typeof profile === 'object'
     && Number.isInteger(profile.profile_index) && typeof profile.name === 'string')) {
     throw new Error('Nuvio returned an invalid profile list. Try again.');
   }
-  return (profiles as NuvioProfile[]).sort((a, b) => a.profile_index - b.profile_index);
+  const lockMap = new Map<number, boolean>();
+  if (Array.isArray(locks)) {
+    for (const row of locks) {
+      const lock = objectValue(row);
+      if (Number.isInteger(lock.profile_index) && typeof lock.pin_enabled === 'boolean') {
+        lockMap.set(lock.profile_index as number, lock.pin_enabled);
+      }
+    }
+  }
+  return (profiles as NuvioProfile[]).map((profile) => {
+    const pinEnabled = lockMap.get(profile.profile_index) ?? (profile.pin_enabled === true);
+    return pinEnabled || typeof profile.pin_enabled === 'boolean' ? { ...profile, pin_enabled: pinEnabled } : profile;
+  }).sort((a, b) => a.profile_index - b.profile_index);
 }
 
 export async function createNuvioPrimaryProfile(session: NuvioSession): Promise<NuvioProfile[]> {
@@ -276,8 +297,18 @@ export async function createNuvioPrimaryProfile(session: NuvioSession): Promise<
 }
 
 export async function verifyNuvioPin(session: NuvioSession, profileIndex: number, pin: string): Promise<boolean> {
-  const result = await rpc<{ unlocked?: boolean; message?: string }>(session, 'verify_profile_pin', { p_profile_id: profileIndex, p_pin: pin });
-  if (!result.unlocked) throw new Error(result.message || 'The profile PIN was not accepted.');
+  const raw = await rpc<unknown>(session, 'verify_profile_pin', { p_profile_id: profileIndex, p_pin: pin });
+  const result = objectValue(Array.isArray(raw) ? raw[0] : raw);
+  if (result.unlocked !== true) {
+    const retryAfter = typeof result.retry_after_seconds === 'number' && result.retry_after_seconds > 0
+      ? Math.ceil(result.retry_after_seconds) : 0;
+    const message = typeof result.message === 'string' && result.message.trim()
+      ? result.message.trim()
+      : retryAfter > 0
+        ? `Too many PIN attempts. Try again in ${retryAfter}s.`
+        : 'The profile PIN was not accepted.';
+    throw new Error(message);
+  }
   return true;
 }
 

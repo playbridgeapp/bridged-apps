@@ -1174,6 +1174,7 @@
       nuvioUnlockedProfile = index;
       nuvioPin = '';
       hydrateNuvioCache(current, index);
+      if (!account && addonDestination === 'local') addonDestination = 'nuvio';
       void loadCatalogs();
       await syncNuvio();
     } catch (error) { if (generation === nuvioGeneration) nuvioError = message(error); }
