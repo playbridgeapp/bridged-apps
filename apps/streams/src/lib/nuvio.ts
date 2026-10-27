@@ -22,6 +22,9 @@ export interface NuvioProfile {
   uses_primary_addons?: boolean;
   uses_primary_plugins?: boolean;
   pin_enabled?: boolean;
+  avatar_color_hex?: string | null;
+  avatar_url?: string | null;
+  avatar_id?: string | null;
 }
 
 export interface NuvioSourceRow {
@@ -296,6 +299,12 @@ export async function createNuvioPrimaryProfile(session: NuvioSession): Promise<
   return fetchNuvioProfiles(session);
 }
 
+/** A rejected PIN; `retryAfterSeconds` is set while Nuvio is rate-limiting attempts. */
+export class NuvioPinError extends Error {
+  retryAfterSeconds: number;
+  constructor(message: string, retryAfterSeconds = 0) { super(message); this.retryAfterSeconds = retryAfterSeconds; }
+}
+
 export async function verifyNuvioPin(session: NuvioSession, profileIndex: number, pin: string): Promise<boolean> {
   const raw = await rpc<unknown>(session, 'verify_profile_pin', { p_profile_id: profileIndex, p_pin: pin });
   const result = objectValue(Array.isArray(raw) ? raw[0] : raw);
@@ -307,9 +316,20 @@ export async function verifyNuvioPin(session: NuvioSession, profileIndex: number
       : retryAfter > 0
         ? `Too many PIN attempts. Try again in ${retryAfter}s.`
         : 'The profile PIN was not accepted.';
-    throw new Error(message);
+    throw new NuvioPinError(message, retryAfter);
   }
   return true;
+}
+
+/** Nuvio's public avatar catalog; supporter-only avatars need signed URLs and fall back to colour. */
+export async function fetchNuvioAvatarCatalog(session: NuvioSession): Promise<{ id: string; storage_path: string }[]> {
+  const raw = await rpc<unknown>(session, 'get_avatar_catalog');
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((row) => {
+    const item = objectValue(row);
+    return typeof item.id === 'string' && typeof item.storage_path === 'string' && item.storage_path && item.is_active !== false
+      ? [{ id: item.id, storage_path: item.storage_path }] : [];
+  });
 }
 
 export function fetchNuvioSources(session: NuvioSession, kind: 'addons' | 'plugins', profileIndex: number): Promise<NuvioSourceRow[]> {

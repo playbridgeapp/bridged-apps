@@ -43,7 +43,7 @@ for (const panel of ['accounts', 'addons', 'integrations'] as const) {
   test(`Back from Settings ${panel} returns to Settings at the base URL`, async ({ page }) => {
     await page.goto('/');
     await goTab(page, 'Settings');
-    const label = panel === 'accounts' ? /Accounts and profiles/ : panel === 'addons' ? /Addons and playback/ : /Integrations/;
+    const label = panel === 'accounts' ? /Accounts and profiles/ : panel === 'addons' ? /^Addons / : /Integrations/;
     await page.getByRole('button', { name: label }).click();
     await expect(page).toHaveURL(new RegExp(`#/settings/${panel}$`));
     await page.goBack();

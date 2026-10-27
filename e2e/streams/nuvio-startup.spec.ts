@@ -51,12 +51,10 @@ test('a protected cached profile has no content until explicit PIN unlock',async
  await setup(page,{protected:true});
  await page.route(`${backend}/**`,route=>route.fulfill({json:route.request().url().includes('sync_pull_profiles')?[{profile_index:2,name:'Protected',pin_enabled:true}]:route.request().url().includes('verify_profile_pin')?{unlocked:true}:route.request().url().includes('/addons?')?[{url:addon.manifestUrl,enabled:true}]:[],headers}));
  await page.goto('/');await expect(cards(page)).toHaveCount(0);
- await page.getByRole('navigation',{name:'Main navigation'}).getByRole('button',{name:'Settings',exact:true}).click();
- await page.getByRole('button',{name:/Accounts and profiles/}).click();
- await page.getByLabel('Profile PIN',{exact:true}).fill('0000');await page.getByRole('button',{name:'Unlock profile',exact:true}).click();
- await expect(page.getByRole('button',{name:'Unlock profile',exact:true})).toHaveCount(0);
- await page.getByRole('button',{name:'Close account',exact:true}).click();
- await page.getByRole('navigation',{name:'Main navigation'}).getByRole('button',{name:'Home',exact:true}).click();
+ const gate=page.getByRole('dialog',{name:"Who's watching?"});
+ await gate.getByRole('button',{name:/^Protected, PIN required/}).click();
+ await gate.getByLabel('Profile PIN',{exact:true}).fill('0000');
+ await expect(gate).toHaveCount(0);
  await expect(cards(page).first()).toBeVisible();
 });
 

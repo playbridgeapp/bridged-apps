@@ -17,11 +17,11 @@ async function setup(page: Page, orientationSupported = true, remote = false) {
 }
 async function settings(page: Page) {
   await tab(page, 'Settings');
-  await page.getByRole('button', { name: /Addons and playback/ }).click();
-  return page.getByRole('dialog', { name: 'Manage addons' });
+  await page.getByRole('button', { name: /^Playback / }).click();
+  return page.getByRole('dialog', { name: 'Playback settings' });
 }
 async function closeSettings(page: Page) {
-  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await tab(page, 'Home');
 }
 async function play(page: Page) {

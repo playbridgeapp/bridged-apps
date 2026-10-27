@@ -33,14 +33,14 @@ test('season actions survive failed writes and a reload, without leaking into an
   await expect.poll(async () => (await outbox(page)).length).toBe(6);
   let dialog = await accounts(page);
   await expect(dialog).toContainText('6 watching changes waiting to sync');
-  await dialog.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('1');
+  await dialog.getByRole('radio', { name: 'Other', exact: true }).click();
   await expect(dialog.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
   state.failWrites = false;
   await dialog.getByRole('button', { name: 'Close account' }).click(); await tab(page, 'Home');
   await expect(page.getByRole('button', { name: 'Watching options for Test Series', exact: true })).toHaveCount(0);
   expect(state.writes.filter((w) => w.body.p_profile_id === 1)).toHaveLength(0);
   dialog = await accounts(page);
-  await dialog.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('2');
+  await dialog.getByRole('radio', { name: 'Golu', exact: true }).click();
   await expect.poll(async () => (await outbox(page)).length).toBe(0);
   expect(state.watched).toHaveLength(6);
   await dialog.getByRole('button', { name: 'Close account' }).click(); await tab(page, 'Home');

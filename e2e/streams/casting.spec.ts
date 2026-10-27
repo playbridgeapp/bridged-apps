@@ -21,16 +21,21 @@ async function openAccounts(page: Page) {
 
 async function openAddons(page: Page) {
   await goTab(page, 'Settings');
-  await page.getByRole('button', { name: /Addons and playback/ }).click();
+  await page.getByRole('button', { name: /^Addons / }).click();
+}
+
+async function openPlayback(page: Page) {
+  await goTab(page, 'Settings');
+  await page.getByRole('button', { name: /^Playback / }).click();
 }
 
 async function enableStreamSelection(page: Page) {
-  await openAddons(page);
+  await openPlayback(page);
   await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).not.toBeChecked();
   await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
   await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
   await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
-  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await goTab(page, 'Home');
 }
 
@@ -597,7 +602,7 @@ test('automatically plays a matching release, saves preferences, and leaves Back
   await expect(page.locator('movi-player')).toHaveCount(0);
   await page.locator('.stream-result').filter({ hasText: '720p WEB-DL' }).getByRole('button', { name: 'Play', exact: true }).click();
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/low.mp4');
-  await page.goto('/#/settings/addons');
+  await page.goto('/#/settings/playback');
   await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).toBeChecked();
   await expect(page.getByLabel('Preferred resolution', { exact: true })).toHaveValue('1080p');
   await expect(page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -636,12 +641,15 @@ test('waits for the preferred provider instead of starting a faster matching pro
   await openAddons(page);
   await page.getByLabel('Addon manifest URL').fill('https://preferred.test/manifest.json');
   await page.getByRole('button', { name: 'Install', exact: true }).first().click();
+  await expect(page.locator('.addon-management-card').getByText('Preferred Provider', { exact: true })).toBeVisible();
+  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await openPlayback(page);
   await expect(page.getByLabel('Preferred provider', { exact: true }).locator('option', { hasText: 'Preferred Provider' })).toHaveCount(1);
   await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
   await page.getByLabel('Preferred provider', { exact: true }).selectOption('https://preferred.test/manifest.json');
   await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
   await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
-  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await goTab(page, 'Home');
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await page.locator('.detail-play').click();
@@ -676,8 +684,10 @@ test('automatically starts a ready preferred source without waiting for unrelate
   await page.getByLabel('Addon manifest URL').fill('https://slow.test/manifest.json');
   await page.getByRole('button', { name: 'Install', exact: true }).first().click();
   await expect(page.locator('.addon-management-card').getByText('Slow Provider', { exact: true })).toBeVisible();
-  await page.getByLabel('Preferred provider', { exact: true }).selectOption(`${addon}/manifest.json`);
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await openPlayback(page);
+  await page.getByLabel('Preferred provider', { exact: true }).selectOption(`${addon}/manifest.json`);
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await goTab(page, 'Home');
   try {
     await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
@@ -988,9 +998,9 @@ test('opens a movie in MoviPlayer without starting a cast', async ({ page }) => 
 });
 
 test('keeps a copyable report when the MoviPlayer module fails to load', async ({ page }) => {
-  await openAddons(page);
+  await openPlayback(page);
   await page.getByRole('switch', { name: 'Native player fallback' }).uncheck();
-  await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close' }).click();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close' }).click();
   await goTab(page, 'Home');
   await page.route('**/*element*slim*.js*', (route) => route.abort());
   await page.getByRole('button', { name: 'View details for Sample Film' }).click();
@@ -1007,9 +1017,9 @@ test('keeps a copyable report when the MoviPlayer module fails to load', async (
   await expect(player.getByRole('status')).toContainText('Player engine check passed');
   await page.reload();
   await expect(page.getByRole('dialog', { name: 'Streams for Sample Film' })).toBeVisible();
-  await page.goto('/#/settings/addons');
-  await page.getByRole('dialog', { name: 'Manage addons' }).locator('details.playback-diagnostics summary').click();
-  const settingsReport = page.getByRole('dialog', { name: 'Manage addons' }).getByRole('textbox', { name: 'Playback diagnostic report' });
+  await page.goto('/#/settings/playback');
+  await page.getByRole('dialog', { name: 'Playback settings' }).locator('details.playback-diagnostics summary').click();
+  const settingsReport = page.getByRole('dialog', { name: 'Playback settings' }).getByRole('textbox', { name: 'Playback diagnostic report' });
   await expect(settingsReport).toHaveValue(/player import failed/);
 });
 
@@ -1228,6 +1238,7 @@ test(delayedRestore ? 'adds a Nuvio scraper restored after its stream page opens
     `, contentType: 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
   });
   await openAddons(page);
+  await page.getByRole('tab', { name: /^Plugins/ }).click();
   await page.getByLabel('Nuvio plugin repository URL').fill('https://plugins.test/manifest.json');
   await page.getByRole('button', { name: 'Install' }).last().click();
   await expect(page.getByText('Test Plugins', { exact: true })).toBeVisible();
@@ -1280,6 +1291,8 @@ async function mockNuvioPluginSync(page: Page, options: { guardedMissing?: boole
       { profile_index: 3, name: 'Shared', uses_primary_plugins: true },
     ];
     else if (method === 'plugins') result = [{ url: repoUrl, name: 'Configured Repo', enabled: true }];
+    // Signed in, Home uses only the profile's addons, so the profile carries the shared test catalog.
+    else if (method === 'addons') result = [{ url: `${addon}/manifest.json`, name: 'Test Catalog', enabled: true }];
     else if (method === 'sync_pull_profile_settings_blob') {
       expect(body.p_platform).toBe('bridged-streams');
       state.settingsReads.push(body.p_profile_id);
@@ -1321,9 +1334,11 @@ async function mockNuvioPluginSync(page: Page, options: { guardedMissing?: boole
   await page.addInitScript(() => {
     localStorage.setItem('bridged-streams.nuvio-session.v1', JSON.stringify({ backendUrl: 'https://nuvio.test', publishableKey: 'test-key', accessToken: 'test-access', refreshToken: 'test-refresh', expiresAt: Date.now() + 3600000, user: { id: 'test-user', email: 'viewer@example.com' } }));
     localStorage.setItem('bridged-streams.tmdb-key.v1', 'test-key');
+    localStorage.setItem('bridged-streams.profile-launch.v1', 'remember');
   });
   await page.reload();
   await openAddons(page);
+  await page.getByRole('tab', { name: /^Plugins/ }).click();
   await expect(page.getByRole('button', { name: 'Configured Scraper enabled' })).toBeEnabled();
   return state;
 }
@@ -1375,7 +1390,7 @@ test('isolates Nuvio scraper controls by profile and protects shared plugins', a
   expect(state.writes[0].p_profile_id).toBe(1);
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
   await openAccounts(page);
-  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('2');
+  await page.getByRole('radio', { name: 'Kids', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
   await page.getByRole('button', { name: 'Close account' }).click();
   await openAddons(page);
@@ -1384,7 +1399,7 @@ test('isolates Nuvio scraper controls by profile and protects shared plugins', a
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
   await openAccounts(page);
-  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('3');
+  await page.getByRole('radio', { name: 'Shared', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
   await page.getByRole('button', { name: 'Close account' }).click();
   await openAddons(page);
@@ -1446,9 +1461,12 @@ test('imports Stremio account addons, library, and progress without removing loc
     await route.fulfill({ json: { metas: [{ id: 'tt300', type: 'movie', name: 'Saved Movie' }] }, headers: { 'access-control-allow-origin': '*' } });
   });
   await openAccounts(page);
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in to Stremio', exact: true }).click();
+  const signIn = page.getByRole('dialog', { name: 'Sign in to Stremio' });
+  await signIn.getByLabel('Email', { exact: true }).fill('viewer@example.com');
+  await signIn.getByLabel('Password', { exact: true }).fill('test-password');
+  await signIn.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(signIn).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Synced 1 addons and 1 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Sync now' }).click();
   await expect.poll(() => syncCount).toBe(2);
@@ -1471,8 +1489,14 @@ test('writes account addon changes, library membership, and linked TV progress t
     id: 'account-addon', name: 'Account Catalog', version: '1.0.0', types: ['movie'],
     resources: ['catalog', 'meta', 'stream'], catalogs: [{ id: 'saved', type: 'movie', name: 'Saved Picks' }]
   };
-  let remoteAddons: Array<{ transportUrl: string; manifest: typeof accountManifest }> = [
-    { transportUrl: 'https://account-addon.test/manifest.json', manifest: accountManifest }
+  // Signed in, Streams uses only the account's addons, so the account also carries the shared test catalog.
+  const testManifest = {
+    id: 'test', name: 'Test Catalog', version: '1.0.0', types: ['movie', 'series'], resources: ['catalog', 'meta', 'stream'],
+    catalogs: [{ type: 'movie', id: 'top', name: 'Films', extra: [{ name: 'search' }] }, { type: 'series', id: 'top', name: 'Shows', extra: [{ name: 'search' }] }]
+  };
+  let remoteAddons: Array<{ transportUrl: string; manifest: unknown }> = [
+    { transportUrl: 'https://account-addon.test/manifest.json', manifest: accountManifest },
+    { transportUrl: `${addon}/manifest.json`, manifest: testManifest }
   ];
   const remoteLibrary = new Map<string, any>();
   const addonWrites: typeof remoteAddons[] = [];
@@ -1505,21 +1529,24 @@ test('writes account addon changes, library membership, and linked TV progress t
   });
 
   await openAccounts(page);
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByRole('status').getByText('Synced 1 addons and 0 library titles.')).toBeVisible();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in to Stremio', exact: true }).click();
+  const signIn = page.getByRole('dialog', { name: 'Sign in to Stremio' });
+  await signIn.getByLabel('Email', { exact: true }).fill('viewer@example.com');
+  await signIn.getByLabel('Password', { exact: true }).fill('test-password');
+  await signIn.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(signIn).toHaveCount(0);
+  await expect(page.getByRole('status').getByText('Synced 2 addons and 0 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Close account' }).click();
 
   await openAddons(page);
   await page.getByRole('button', { name: 'Remove Account Catalog' }).click();
   await page.getByRole('dialog', { name: 'Remove addon' }).getByRole('button', { name: 'Remove' }).click();
   await expect.poll(() => addonWrites.length).toBe(1);
-  expect(addonWrites[0]).toEqual([]);
+  expect(addonWrites[0].map((item) => item.transportUrl)).toEqual([`${addon}/manifest.json`]);
   await page.getByLabel('Addon manifest URL').fill('https://account-addon.test/manifest.json');
   await page.getByRole('button', { name: 'Install' }).first().click();
   await expect.poll(() => addonWrites.length).toBe(2);
-  expect(addonWrites[1].map((addon) => addon.transportUrl)).toEqual(['https://account-addon.test/manifest.json']);
+  expect(addonWrites[1].map((item) => item.transportUrl)).toEqual([`${addon}/manifest.json`, 'https://account-addon.test/manifest.json']);
   await page.getByRole('button', { name: 'Close' }).click();
 
   await goTab(page, 'Home');

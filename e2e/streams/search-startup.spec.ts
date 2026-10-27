@@ -9,16 +9,17 @@ async function answer(route:Route,id:string,fresh:boolean){try{await route.fulfi
 test('search submitted during Nuvio profile hydration survives cached-source then refreshed-manifest bursts',async({page})=>{
   const a=addon('a'),b=addon('b'),profiles=gate(),manifest=gate();let manifestRequests=0,searches=0,fresh=false;
   await page.addInitScript(({a,b})=>{
-    localStorage.setItem('bridged-streams.addons.v1',JSON.stringify([a.manifestUrl]));
-    localStorage.setItem('bridged-streams.startup-cache.v1.local-addons',JSON.stringify({scope:'browser',value:[a]}));
+    // Signed in, only the profile's sources are used: its recently validated cache supplies a before validation.
+    localStorage.setItem('bridged-streams.profile-launch.v1','remember');
+    localStorage.setItem('bridged-streams.nuvio-startup-authorization.v1',JSON.stringify({backend:'https://cloud.startup.test',user:'synthetic-user',profile:2,protected:false,checkedAt:Date.now()}));
     localStorage.setItem('bridged-streams.nuvio-session.v1',JSON.stringify({backendUrl:'https://cloud.startup.test',publishableKey:'synthetic-public',accessToken:'synthetic-access',refreshToken:'synthetic-refresh',expiresAt:Date.now()+3600000,user:{id:'synthetic-user',email:'synthetic@example.invalid'}}));
     localStorage.setItem('bridged-streams.nuvio-profile.v1',JSON.stringify({userId:'synthetic-user',index:2}));
-    localStorage.setItem('bridged-streams.startup-cache.v1.nuvio-addons',JSON.stringify({scope:'https://cloud.startup.test:synthetic-user:2',value:[b]}));
+    localStorage.setItem('bridged-streams.startup-cache.v1.nuvio-addons',JSON.stringify({scope:'https://cloud.startup.test:synthetic-user:2',value:[a],savedAt:Date.now()}));
   },{a,b});
   await page.route('https://cloud.startup.test/**',async route=>{
     const url=route.request().url();
     if(url.includes('sync_pull_profiles')){await profiles.promise;await route.fulfill({json:[{profile_index:1,name:'Main'},{profile_index:2,name:'Saved profile'}],headers});}
-    else await route.fulfill({json:url.includes('/addons?')?[{url:b.manifestUrl,enabled:true}]:[],headers});
+    else await route.fulfill({json:url.includes('/addons?')?[{url:a.manifestUrl,enabled:true},{url:b.manifestUrl,enabled:true}]:[],headers});
   });
   await page.route(a.manifestUrl,route=>route.fulfill({json:a.manifest,headers}));
   await page.route(b.manifestUrl,async route=>{manifestRequests++;await manifest.promise;await route.fulfill({json:addon('b','2.0.0').manifest,headers});});
@@ -47,15 +48,13 @@ test('search submitted during Nuvio profile hydration survives cached-source the
 test('cached deep-link search survives a Stremio background add-on collection refresh',async({page})=>{
   const a=addon('a'),b=addon('b'),collection=gate();let fresh=false,searches=0,collections=0;
   await page.addInitScript(({a,b})=>{
-    localStorage.setItem('bridged-streams.addons.v1',JSON.stringify([a.manifestUrl]));
-    localStorage.setItem('bridged-streams.startup-cache.v1.local-addons',JSON.stringify({scope:'browser',value:[a]}));
     localStorage.setItem('bridged-streams.stremio-session.v1',JSON.stringify({authKey:'synthetic-not-a-real-key',user:{_id:'synthetic-user',email:'synthetic@example.invalid'}}));
-    localStorage.setItem('bridged-streams.startup-cache.v1.stremio-addons',JSON.stringify({scope:'synthetic-user',value:[b]}));
+    localStorage.setItem('bridged-streams.startup-cache.v1.stremio-addons',JSON.stringify({scope:'synthetic-user',value:[a,b]}));
   },{a,b});
   await page.route('https://api.strem.io/api/**',async route=>{
     const method=route.request().url().split('/').pop();let result:unknown=[];
     if(method==='getUser')result={_id:'synthetic-user',email:'synthetic@example.invalid'};
-    if(method==='addonCollectionGet'){collections++;await collection.promise;result={addons:[{transportUrl:b.manifestUrl,manifest:addon('b','2.0.0').manifest}]};}
+    if(method==='addonCollectionGet'){collections++;await collection.promise;result={addons:[{transportUrl:a.manifestUrl,manifest:a.manifest},{transportUrl:b.manifestUrl,manifest:addon('b','2.0.0').manifest}]};}
     await route.fulfill({json:{result},headers});
   });
   await page.route(a.manifestUrl,route=>route.fulfill({json:a.manifest,headers}));

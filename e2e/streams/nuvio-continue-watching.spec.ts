@@ -32,6 +32,7 @@ async function fixture(page: Page, options: { slow?: boolean; fail?: boolean; wa
       user: { id: 'test-user', email: 'viewer@example.com' }
     }));
     localStorage.setItem('bridged-streams.nuvio-profile.v1', JSON.stringify({ userId: 'test-user', index: 2 }));
+    localStorage.setItem('bridged-streams.profile-launch.v1', 'remember');
   });
   await page.route('https://nuvio.test/**', (route) => {
     const method = new URL(route.request().url()).pathname.split('/').pop();
@@ -165,7 +166,7 @@ test('does not publish a pending show after changing Nuvio profiles', async ({ p
   try {
     await expect.poll(() => state.metadataRequests).toBe(1);
     const dialog = await accounts(page);
-    await dialog.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('1');
+    await dialog.getByRole('radio', { name: 'Other', exact: true }).click();
     await expect.poll(() => state.metadataCancelled).toBe(1);
     await expect(dialog.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
     state.release();
@@ -317,7 +318,7 @@ test('changing profiles cancels pending Next up and clears watched-history cards
   try {
     await expect.poll(() => state.metadataRequests).toBe(1);
     const dialog = await accounts(page);
-    await dialog.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('1');
+    await dialog.getByRole('radio', { name: 'Other', exact: true }).click();
     await expect.poll(() => state.metadataCancelled).toBe(1);
     await expect(dialog.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
     state.release();
@@ -334,16 +335,14 @@ test('unlocks a PIN-protected profile from sync_pull_profile_locks and verify_pr
   await expect(continueCard(page)).toHaveCount(0);
   expect(state.watchedRequests).toEqual([]);
 
-  const dialog = await accounts(page);
-  await expect(dialog.getByLabel('Profile PIN')).toBeVisible();
-  await dialog.getByLabel('Profile PIN').fill('0000');
-  await dialog.getByRole('button', { name: 'Unlock profile' }).click();
-  await expect(dialog.getByRole('alert')).toContainText('The profile PIN was not accepted.');
+  // Remembering the last profile never skips its PIN.
+  const gate = page.getByRole('dialog', { name: "Who's watching?" });
+  await gate.getByRole('button', { name: 'Golu, PIN required, last used', exact: true }).click();
+  await gate.getByLabel('Profile PIN').fill('0000');
+  await expect(gate.getByRole('status')).toContainText('The profile PIN was not accepted.');
+  expect(state.watchedRequests).toEqual([]);
 
-  await dialog.getByLabel('Profile PIN').fill('2580');
-  await dialog.getByRole('button', { name: 'Unlock profile' }).click();
-  await expect(dialog.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
-  await dialog.getByRole('button', { name: 'Close account', exact: true }).click();
-  await goTab(page, 'Home');
+  await gate.getByLabel('Profile PIN').fill('2580');
+  await expect(gate).toHaveCount(0);
   await expect(continueCard(page)).toContainText('Next up: S2E5');
 });

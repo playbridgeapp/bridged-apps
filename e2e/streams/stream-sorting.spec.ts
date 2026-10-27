@@ -44,18 +44,21 @@ test('sorts manual streams across arriving providers, respects provider tabs, an
     await manager.getByRole('button', { name: 'Install', exact: true }).first().click();
     await expect(manager.locator('.addon-management-card').getByText(provider === catalog ? 'Sorting Catalog' : 'Sorting Preferred', { exact: true })).toBeVisible();
   }
+  await manager.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.goto('/#/settings/playback');
+  const playback = page.getByRole('dialog', { name: 'Playback settings' });
   const sortSwitch = page.getByRole('switch', { name: 'Sort streams by preference', exact: true });
   const autoSwitch = page.getByRole('switch', { name: 'Auto-select stream', exact: true });
   await expect(sortSwitch).not.toBeChecked();
   await expect(autoSwitch).not.toBeChecked();
-  await manager.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
-  await manager.getByLabel('Preferred provider', { exact: true }).selectOption(`${preferred}/manifest.json`);
-  await manager.getByRole('button', { name: 'WEB-DL', exact: true }).click();
+  await playback.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
+  await playback.getByLabel('Preferred provider', { exact: true }).selectOption(`${preferred}/manifest.json`);
+  await playback.getByRole('button', { name: 'WEB-DL', exact: true }).click();
   await sortSwitch.check();
   await page.reload();
   await expect(sortSwitch).toBeChecked();
   await expect(autoSwitch).not.toBeChecked();
-  await manager.getByRole('button', { name: 'Close', exact: true }).click();
+  await playback.getByRole('button', { name: 'Close', exact: true }).click();
   await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('button', { name: 'Home', exact: true }).click();
   await page.getByRole('button', { name: 'View details for Sorting Film', exact: true }).first().click();
   await page.locator('.detail-play').click();
@@ -73,7 +76,7 @@ test('sorts manual streams across arriving providers, respects provider tabs, an
     await expect(headings).toHaveCount(6);
     expect(streamRequests).toBe(2);
     const streamUrl = page.url();
-    await page.goto('/#/settings/addons');
+    await page.goto('/#/settings/playback');
     await sortSwitch.uncheck();
     await expect(autoSwitch).not.toBeChecked();
     await page.goto(streamUrl);

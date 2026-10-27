@@ -16,6 +16,8 @@ export async function fixture(page: Page, options: { watched?: NuvioWatchedItem[
   await page.addInitScript(() => {
     localStorage.setItem('bridged-streams.nuvio-session.v1', JSON.stringify({ backendUrl: 'https://watching-cloud.test', publishableKey: 'test-key', accessToken: 'access', refreshToken: 'refresh', expiresAt: Date.now() + 3600000, user: { id: 'viewer', email: 'viewer@example.com' } }));
     if (!localStorage.getItem('bridged-streams.nuvio-profile.v1')) localStorage.setItem('bridged-streams.nuvio-profile.v1', JSON.stringify({ userId: 'viewer', index: 2 }));
+    // These specs cover watching data; profile-gate.spec.ts covers "Who's watching?".
+    localStorage.setItem('bridged-streams.profile-launch.v1', 'remember');
   });
   await page.route('https://watching-cloud.test/**', async (route) => {
     const method = new URL(route.request().url()).pathname.split('/').pop()!;

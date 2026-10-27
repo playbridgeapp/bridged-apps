@@ -11,7 +11,7 @@ export type MediaRoute = {
   episode?: number;
 };
 export type AppRoute = MediaRoute
-  | { kind: 'tab'; tab: Tab; query?: string; panel?: 'accounts' | 'addons' | 'integrations' }
+  | { kind: 'tab'; tab: Tab; query?: string; panel?: 'accounts' | 'addons' | 'playback' | 'integrations' }
   | { kind: 'catalog'; addonId: string; type: string; id: string };
 
 const tabs = new Set(['home', 'search', 'library', 'settings']);
@@ -36,9 +36,9 @@ export function parseRoute(hash: string): AppRoute {
         season: coordinate(url.searchParams.get('season')), episode: coordinate(url.searchParams.get('episode')) };
     }
     if (tabs.has(parts[0]) && (parts.length === 1 || (parts[0] === 'settings' && parts.length === 2
-      && ['accounts', 'addons', 'integrations'].includes(parts[1])))) {
+      && ['accounts', 'addons', 'playback', 'integrations'].includes(parts[1])))) {
       return { kind: 'tab', tab: parts[0] as Tab, query: parts[0] === 'search' ? url.searchParams.get('q') || undefined : undefined,
-        panel: parts[1] as 'accounts' | 'addons' | 'integrations' | undefined };
+        panel: parts[1] as 'accounts' | 'addons' | 'playback' | 'integrations' | undefined };
     }
   } catch { /* Malformed links return to Home. */ }
   return { kind: 'tab', tab: 'home' };
