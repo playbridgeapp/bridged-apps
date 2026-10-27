@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { nuvioSeriesAction, nuvioTimestamp, nuvioWatchingItems, nuvioWatchingTargets } from '../src/lib/nuvio-watching.ts';
+import { fetchNuvioProfiles, verifyNuvioPin } from '../src/lib/nuvio.ts';
 
 const meta = { id: 'show', type: 'series', name: 'Show', videos: [
   { id: 'addon:1:4', season: 1, episode: 4 },
@@ -108,4 +109,47 @@ test('invalid timestamps, empty positions and unsupported content types do not b
   assert.deepEqual(nuvioWatchingTargets([progress(4, 0), progress(4, NaN), progress(4, 60000, 0)], [
     watched(4, 0), { ...watched(4), content_type: 'channel' }
   ]), []);
+});
+
+test('fetchNuvioProfiles merges sync_pull_profile_locks pin_enabled and verifyNuvioPin handles PostgREST arrays', async () => {
+  const session = {
+    backendUrl: 'https://nuvio.test', publishableKey: 'test-key',
+    accessToken: 'test-access', refreshToken: 'test-refresh',
+    expiresAt: Date.now() + 3600000, user: { id: 'test-user', email: 'viewer@example.com' }
+  };
+  const fetchBefore = globalThis.fetch;
+  try {
+    let pinResponse = [{ unlocked: true, retry_after_seconds: 0 }];
+    globalThis.fetch = async (url, init) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith('/sync_pull_profiles')) {
+        return Response.json([{ profile_index: 2, name: 'Kids' }, { profile_index: 1, name: 'Main' }]);
+      }
+      if (path.endsWith('/sync_pull_profile_locks')) {
+        return Response.json([{ profile_index: 2, pin_enabled: true, pin_locked_until: null }]);
+      }
+      if (path.endsWith('/verify_profile_pin')) {
+        const body = JSON.parse(init.body);
+        assert.deepEqual(body, { p_profile_id: 2, p_pin: '1234' });
+        return Response.json(pinResponse);
+      }
+      return new Response('not found', { status: 404 });
+    };
+
+    const profiles = await fetchNuvioProfiles(session);
+    assert.deepEqual(profiles, [
+      { profile_index: 1, name: 'Main' },
+      { profile_index: 2, name: 'Kids', pin_enabled: true }
+    ]);
+
+    assert.equal(await verifyNuvioPin(session, 2, '1234'), true);
+
+    pinResponse = [{ unlocked: false, retry_after_seconds: 30 }];
+    await assert.rejects(verifyNuvioPin(session, 2, '1234'), /Try again in 30s/);
+
+    pinResponse = [{ unlocked: false, retry_after_seconds: 0 }];
+    await assert.rejects(verifyNuvioPin(session, 2, '1234'), /The profile PIN was not accepted/);
+  } finally {
+    globalThis.fetch = fetchBefore;
+  }
 });
