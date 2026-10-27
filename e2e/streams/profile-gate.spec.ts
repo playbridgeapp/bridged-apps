@@ -11,7 +11,7 @@ const family: Profile[] = [
 ];
 const picker = (page: Page) => page.getByRole('dialog', { name: "Who's watching?" });
 
-async function mockCloud(page: Page, options: { retryAfter?: number } = {}) {
+async function mockCloud(page: Page, options: { retryAfter?: number; holdProfileAddons?: { profile: number; until: Promise<void> } } = {}) {
   const state = { pinAttempts: [] as string[] };
   await page.route(`${backend}/**`, async (route) => {
     const url = new URL(route.request().url());
@@ -24,6 +24,7 @@ async function mockCloud(page: Page, options: { retryAfter?: number } = {}) {
       state.pinAttempts.push(body.p_pin);
       return route.fulfill({ json: [body.p_pin === '2468' ? { unlocked: true } : { unlocked: false, retry_after_seconds: options.retryAfter ?? 0 }], headers });
     }
+    if (method === 'addons' && options.holdProfileAddons && url.searchParams.get('profile_id') === `eq.${options.holdProfileAddons.profile}`) await options.holdProfileAddons.until;
     const json = method === 'sync_pull_profiles' ? family : method === 'addons' ? [{ url: `${addon}/manifest.json`, enabled: true }] : [];
     return route.fulfill({ json, headers });
   });
@@ -81,6 +82,21 @@ test('asks who is watching on a new visit, keeps the choice on reload, and asks 
   await mockCloud(second);
   await second.goto('/');
   await expect(picker(second).getByRole('button', { name: 'Kids, last used', exact: true })).toBeVisible();
+});
+
+test('choosing a profile other than the last one loads its addons without flashing the empty welcome', async ({ page }) => {
+  let release!: () => void;
+  const until = new Promise<void>((resolve) => { release = resolve; });
+  await mockCloud(page, { holdProfileAddons: { profile: 3, until } });
+  await signedIn(page, 1);
+  await page.goto('/');
+  await picker(page).getByRole('button', { name: 'Kids', exact: true }).click();
+  await expect(picker(page)).toHaveCount(0);
+  await expect(page.getByRole('status').filter({ hasText: 'Loading addons for Kids…' })).toBeVisible();
+  await expect(page.getByText('Add a source to watch.')).toHaveCount(0);
+  release();
+  await expect(page.getByRole('heading', { name: 'Gate picks' })).toBeVisible();
+  await expect(page.getByText('Add a source to watch.')).toHaveCount(0);
 });
 
 test('a reload on a title link asks for the locked profile PIN, then returns to the title', async ({ page }) => {

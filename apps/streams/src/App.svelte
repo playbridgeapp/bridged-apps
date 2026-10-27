@@ -156,6 +156,9 @@
   let profileGateBusy: number | null = null;
   let profileGateMessage = '';
   let pendingProfileRoute: AppRoute | null = null;
+  // The account whose sources were last fetched; until then an empty list means "loading", not "no addons".
+  let nuvioSourcesScope = '';
+  let stremioSourcesUser = '';
   let signInProvider: 'nuvio' | 'stremio' | null = null;
   let nuvioBusy = false;
   let nuvioProfilesLoading = !!initialNuvioSession;
@@ -508,6 +511,8 @@
   $: addonDestination = nuvioSession ? 'nuvio' : account ? 'stremio' : 'local';
   $: installedAddons = account || nuvioSession ? [...accountAddons, ...nuvioAddons] : localAddons;
   $: addons = uniqueEnabledAddons(installedAddons);
+  $: sourcesPending = nuvioSession ? nuvioProfileReady && nuvioSourcesScope !== nuvioCacheScope(nuvioSession, nuvioProfileIndex)
+    : !!account && stremioSourcesUser !== account.user._id;
   $: browsableAddons = addons.filter((addon) => catalogs([addon])
     .some(({ catalog }) => requiredCatalogExtras(catalog) !== null));
   $: effectiveAddonFilter = browsableAddons.some((addon) => addon.manifestUrl === activeAddonFilter)
@@ -984,6 +989,7 @@
       await syncAccount();
     } catch (error) {
       if (generation === accountGeneration) {
+        stremioSourcesUser = stored.user._id;
         accountError = `${message(error)} Your saved sign-in was kept. Try syncing again when the service is available.`;
       }
     } finally {
@@ -1040,6 +1046,7 @@
     }
     accountError = [addonsResult, libraryResult].filter((result) => result.status === 'rejected')
       .map((result) => result.status === 'rejected' ? message(result.reason) : '').join(' ');
+    stremioSourcesUser = current.user._id;
     accountMessage = accountError ? '' : `Synced ${accountAddons.length} addons and ${accountLibrary.filter((item) => !item.removed && !item.temp).length} library titles.`;
     accountSyncing = false;
     void flushPlaybackWrites();
@@ -1052,6 +1059,7 @@
     accountGeneration += 1;
     addonWorking = '';
     account = null;
+    stremioSourcesUser = '';
     accountAddons = [];
     accountLibrary = [];
     progressLastWrite.clear();
@@ -1364,6 +1372,7 @@
       if (previous !== catalogConfigurationSignature(nuvioAddons)) void loadCatalogs();
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
     } else failures.push(`Addons: ${message(addonsResult.reason)}`);
+    nuvioSourcesScope = nuvioCacheScope(current, index);
     if (pluginsResult.status === 'fulfilled') {
       const previousPreferences = nuvioPlugins.map((repo) => ({ url: repo.manifestUrl,
         scrapers: repo.scrapers.map((scraper) => ({ id: scraper.id, enabled: scraper.enabled, settings: scraper.settings })) }));
@@ -1414,6 +1423,7 @@
     profileGateDismissed = false;
     profileGateMessage = '';
     pendingProfileRoute = null;
+    nuvioSourcesScope = '';
     nuvioProfiles = [];
     nuvioProfilesLoading = false;
     nuvioProfilesLoadFailed = false;
@@ -3393,6 +3403,13 @@
   }
 </script>
 
+{#snippet loadingSpace(note: string)}
+  <section class="startup-screen" role="status" aria-live="polite">
+    <div class="startup-copy"><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> {note}</p></div>
+    <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
+  </section>
+{/snippet}
+
 {#snippet destinationRow()}
   <div class="playback-destination">
     {#if bridge}
@@ -3420,10 +3437,7 @@
   <main aria-busy={startupLoading}>
     {#if !startupLoading && (tab === 'search' || tab === 'library' || tab === 'settings')}<FluidBackground paused={!!selected || !!playing} />{/if}
     {#if startupLoading}
-      <section class="startup-screen" role="status" aria-live="polite">
-        <div class="startup-copy"><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> Restoring your accounts and addons…</p></div>
-        <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
-      </section>
+      {@render loadingSpace('Restoring your accounts and addons…')}
     {:else}
     {#if tab === 'library'}
       <section class="library-panel browse tab-page">
@@ -3504,7 +3518,9 @@
     {#if tab === 'home'}
     <div class="home-panel tab-page">
       <HomeContent immediate={homeScrollTarget > 0} onReady={restoreHomeScroll}>
-      {#if addons.length === 0 && !installedAddons.length}
+      {#if addons.length === 0 && !installedAddons.length && sourcesPending}
+      {@render loadingSpace(nuvioSession ? `Loading addons for ${activeProfileName}…` : 'Loading your Stremio addons…')}
+      {:else if addons.length === 0 && !installedAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
           <div class="eyebrow">ACCOUNT CONNECTED</div><h1>Your space is ready.<br /><em>Add a source to watch.</em></h1><p>Your account is connected. Add a catalog addon to browse movies, shows, and sports here.</p>
