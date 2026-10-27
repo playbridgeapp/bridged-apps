@@ -1,5 +1,5 @@
 import type { InstalledAddon } from './types';
-import { resourceUrl, supports } from './addons';
+import { resourceUrl, supports } from './addons.ts';
 
 export type AddonSubtitle = { id: string; url: string; language: string; label: string; headers?: Record<string, string> };
 export { parseSubtitles, subtitlesVtt, loadSubtitleCues, subtitleRenderer } from './subtitle-cues.ts';

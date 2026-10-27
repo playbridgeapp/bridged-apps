@@ -985,6 +985,55 @@ test('plays a selected movie as one tracked item', async ({ page }) => {
   await expect(notice).toHaveCount(0);
 });
 
+test('casts a movie with a long add-on id through the native playback bridge', async ({ page }) => {
+  const id = `sample-long-movie-${'a'.repeat(430)}`;
+  await page.route(`${addon}/meta/movie/**`, (route) => route.fulfill({ json: { meta: { ...movie, id } } }));
+  await page.goto(`/#/movie/${encodeURIComponent(id)}`);
+  await enableNativePlayback(page);
+  await expect(page.locator('.detail-play')).toBeEnabled();
+  await page.locator('.detail-play').click();
+  await expect(page.getByText('Film Source')).toBeVisible();
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.some((call: any) => call.method === 'play'))).toBe(true);
+  const payload = await page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'play').payload);
+  expect(payload.items[0].id.length).toBeLessThanOrEqual(128);
+  expect(payload.items[0].id).not.toBe(id);
+  expect(JSON.stringify(payload)).not.toContain(id);
+});
+
+test('supplies a series queue mixing short and long add-on ids without duplicates', async ({ page }) => {
+  const firstId = `sample-first-episode-${'a'.repeat(430)}`;
+  const thirdId = `sample-third-episode-${'b'.repeat(430)}`;
+  await page.route(`${addon}/meta/series/tt200.json`, (route) => route.fulfill({ json: { meta: { ...series, videos: [
+    { id: firstId, season: 1, episode: 1, title: 'Pilot' },
+    { id: 'tt200:1:2', season: 1, episode: 2, title: 'Next Episode' },
+    { id: thirdId, season: 1, episode: 3, title: 'Third Episode' }
+  ] } } }));
+  for (const [id, episode] of [[firstId, 1], [thirdId, 3]] as const) {
+    await page.route(`${addon}/stream/series/${encodeURIComponent(id)}.json`, (route) => route.fulfill({
+      json: { streams: [{ name: 'Episode Source', url: `https://media.test/ep${episode}.mp4` }] }
+    }));
+  }
+  await enableNativePlayback(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
+  await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', {
+    detail: { requestId: 'long-id-demand', count: 2 }
+  })));
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
+  const calls = await page.evaluate(() => (window as any).__streamTest.calls);
+  const items = [calls[0].payload.items[0], ...calls[1].payload.items];
+  expect(items.map((item: any) => item.url)).toEqual(['https://media.test/ep1.mp4', 'https://media.test/ep2.mp4', 'https://media.test/ep3.mp4']);
+  expect(items.every((item: any) => item.id.length <= 128)).toBe(true);
+  expect(new Set(items.map((item: any) => item.id)).size).toBe(3);
+  expect(items[1].id).toBe('tt200:1:2');
+  expect(calls[1].payload.endOfList).toBe(true);
+  expect(JSON.stringify(calls)).not.toContain(firstId);
+  expect(JSON.stringify(calls)).not.toContain(thirdId);
+});
+
 test('opens a movie in MoviPlayer without starting a cast', async ({ page }) => {
   await page.getByRole('button', { name: 'View details for Sample Film' }).click();
   await page.locator('.detail-play').click();
@@ -1961,11 +2010,11 @@ test('detail push and explicit Back use the same short directional screen transi
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   const overlay = page.locator('.detail-overlay');
-  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(220);
+  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(280);
   await expect(page.locator('.detail-play')).toBeEnabled();
   await expect.poll(() => overlay.evaluate(node => node.getAnimations().filter(animation => animation.playState === 'running').length)).toBe(0);
   await page.getByRole('button', { name: 'Back to browsing' }).click();
-  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(220);
+  await expect.poll(() => overlay.evaluate(node => node.getAnimations().map(animation => animation.effect?.getTiming().duration))).toContain(280);
   await expect(overlay).toHaveCount(0);
 });
 
