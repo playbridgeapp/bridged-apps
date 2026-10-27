@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cachedNuvioProfiles, chosenInThisTab, profileAvatarImage, profileColor, profileGateRequired, profileInkColor, rememberChosenInThisTab, saveNuvioProfilesForDisplay, savedProfileLaunchMode, saveProfileLaunchMode } from '../src/lib/profile-launch.ts';
+import { cachedNuvioProfiles, chosenInThisTab, profileColor, profileGateRequired, profileInkColor, rememberChosenInThisTab, saveNuvioProfilesForDisplay, savedProfileLaunchMode, saveProfileLaunchMode } from '../src/lib/profile-launch.ts';
 
 const storage = () => { const store = new Map(); return { getItem: (k) => store.get(k) ?? null, setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) }; };
 globalThis.localStorage = storage();
@@ -45,18 +45,14 @@ test('launch mode defaults to asking, and the tab choice is scoped to the accoun
 });
 
 test('the display cache keeps names, colours and locks only, for the same account', () => {
-  saveNuvioProfilesForDisplay(session, [{ ...locked, avatar_color_hex: '#FB8C00', uses_primary_addons: true, secret: 'x' }]);
+  saveNuvioProfilesForDisplay(session, [{ ...locked, avatar_color_hex: '#FB8C00', avatar_url: 'https://img.test/a.png', uses_primary_addons: true, secret: 'x' }]);
   assert.deepEqual(cachedNuvioProfiles(session), [{ profile_index: 3, name: 'Locked', pin_enabled: true, avatar_color_hex: '#FB8C00' }]);
   assert.deepEqual(cachedNuvioProfiles({ ...session, backendUrl: 'https://other.test' }), []);
   saveNuvioProfilesForDisplay(null);
   assert.deepEqual(cachedNuvioProfiles(session), []);
 });
 
-test('avatars use the custom URL, then the public catalog image, then colour and initial', () => {
-  const catalog = [{ id: 'fox', storage_path: 'animals/fox one.png' }];
-  assert.equal(profileAvatarImage({ ...open, avatar_url: ' https://img.test/a.png ', avatar_id: 'fox' }, catalog, 'https://cloud.test/'), 'https://img.test/a.png');
-  assert.equal(profileAvatarImage({ ...open, avatar_id: 'fox' }, catalog, 'https://cloud.test/'), 'https://cloud.test/storage/v1/object/public/avatars/animals/fox%20one.png');
-  assert.equal(profileAvatarImage({ ...open, avatar_url: 'javascript:alert(1)', avatar_id: 'missing' }, catalog, 'https://cloud.test'), null);
+test('avatars use the profile colour with readable initial ink', () => {
   assert.equal(profileColor({ avatar_color_hex: 'red' }), '#1E88E5');
   assert.equal(profileInkColor('#FB8C00'), '#0b0d10');
   assert.equal(profileInkColor('#8E24AA'), '#ffffff');

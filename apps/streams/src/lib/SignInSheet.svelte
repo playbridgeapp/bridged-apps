@@ -10,7 +10,7 @@
   export let message = '';
   export let onSubmit: () => void;
   export let onClose: () => void;
-  /** The provider this sign-in replaces; Streams uses one account at a time. */
+  /** The provider this sign-in replaces; only one account is signed in at a time. */
   export let replacing = '';
   // Stremio
   export let loginMode: 'password' | 'key' = 'password';

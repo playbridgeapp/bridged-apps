@@ -7,7 +7,6 @@
   import type { PinResult } from './profile-launch';
 
   export let profiles: NuvioProfile[];
-  export let imageFor: (profile: NuvioProfile) => string | null;
   /** The profile ringed as "Last used" (or "Current" when opened from the switcher). */
   export let highlightIndex = 0;
   export let highlightLabel = 'Last used';
@@ -35,13 +34,13 @@
 
 <div class="profile-gate" role="dialog" aria-modal="true" aria-label="Who's watching?" tabindex="-1" bind:this={dialog}>
   <header class="gate-header">
-    <span class="gate-brand"><span class="gate-mark"><Clapperboard size={22} strokeWidth={2.4} /></span><span><strong>BRIDGED</strong><small>STREAMS</small></span></span>
+    <span class="gate-brand"><span class="gate-mark"><Clapperboard size={22} strokeWidth={2.4} /></span></span>
     {#if closable && !pinProfile}<button class="gate-close" type="button" onclick={onClose} aria-label="Close profile picker"><X size={22} /></button>{/if}
   </header>
 
   <div class="gate-body">
     {#if pinProfile}
-      <PinPad profile={pinProfile} image={imageFor(pinProfile)} onSubmit={onSubmitPin} onBack={onCancelPin} />
+      <PinPad profile={pinProfile} onSubmit={onSubmitPin} onBack={onCancelPin} />
     {:else}
       <h1>Who's watching?</h1>
       {#if returnLabel}<p class="gate-return"><ArrowLeft size={15} /> Returns to <strong>{returnLabel}</strong></p>{/if}
@@ -50,7 +49,7 @@
         {#each profiles as profile (profile.profile_index)}
           <button class="gate-profile" type="button" disabled={validating || busyIndex !== null} onclick={() => onPick(profile.profile_index)}
             aria-label={`${profile.name || `Profile ${profile.profile_index}`}${profile.pin_enabled ? ', PIN required' : ''}${profile.profile_index === highlightIndex ? `, ${highlightLabel.toLowerCase()}` : ''}`}>
-            <ProfileAvatar {profile} image={imageFor(profile)} size={128} locked={profile.pin_enabled === true} ring={profile.profile_index === highlightIndex} />
+            <ProfileAvatar {profile} size={128} locked={profile.pin_enabled === true} ring={profile.profile_index === highlightIndex} />
             <span class="gate-name">{profile.name || `Profile ${profile.profile_index}`}</span>
             <small class="gate-caption">{#if busyIndex === profile.profile_index}<LoaderCircle size={14} class="spin" /> Opening…{:else if profile.profile_index === highlightIndex}{highlightLabel.toUpperCase()}{/if}</small>
           </button>
@@ -75,8 +74,6 @@
   .gate-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .gate-brand { display: flex; align-items: center; gap: 11px; }
   .gate-mark { display: grid; place-items: center; width: 37px; height: 37px; border-radius: 11px; background: #f4f5f4; color: #101114; }
-  .gate-brand strong { display: block; font-size: 15px; line-height: 1.1; letter-spacing: .13em; }
-  .gate-brand small { display: block; margin-top: 2px; color: #dedede; font-size: 11px; font-weight: 800; letter-spacing: .31em; }
   .gate-close { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 50%; background: #ffffff12; color: #eceeef; }
   .gate-close:hover { background: #ffffff2a; color: #fff; }
   .gate-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 0; }

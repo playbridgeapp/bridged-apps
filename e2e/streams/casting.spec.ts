@@ -497,7 +497,7 @@ test('slow TMDB enrichment does not block details, stream selection, or browser 
     await page.locator('.stream-result .watch-button').click();
     await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
   } finally { release(); }
-  await expect(page).toHaveTitle('Enriched Film · Bridged Streams');
+  await expect(page).toHaveTitle('Enriched Film');
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/movie.mp4');
 });
 
@@ -788,7 +788,7 @@ test('shows a skeleton for an uncached deep link instead of exposing its media I
     await expect(page.locator('.detail-intro .title-skeleton')).toBeVisible();
     await expect(page.locator('.detail-intro')).not.toContainText('ttCold');
     await expect(page.locator('.detail-play')).toHaveCount(0);
-    await expect(page).toHaveTitle('Loading title · Bridged Streams');
+    await expect(page).toHaveTitle('Loading title');
   } finally { release(); }
   await expect(page.getByRole('heading', { name: 'Cold Series', exact: true })).toBeVisible();
   await expect(page.locator('.detail-intro .title-skeleton')).toHaveCount(0);
@@ -832,7 +832,7 @@ test('routes movie details and streams through browser Back and Forward', async 
   await expect(page).toHaveURL(/#\/$/);
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
   await page.goForward();
-  await expect(page).toHaveTitle('Sample Film · Bridged Streams');
+  await expect(page).toHaveTitle('Sample Film');
   await page.goForward();
   await expect(page.getByText('Film Source')).toBeVisible();
 });
@@ -878,7 +878,7 @@ test('routes catalogs and settings panels and restores them with browser Back', 
   await openAccounts(page);
   await expect(page).toHaveURL(/#\/settings\/accounts$/);
   await page.goBack();
-  await expect(page.getByRole('dialog', { name: 'Connected accounts' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Accounts', exact: true })).toHaveCount(0);
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
 });
 
@@ -1605,16 +1605,16 @@ test('loads more titles in a catalog row and its dedicated page', async ({ page 
   const catalog = page.getByRole('dialog', { name: 'Paged Movies catalog' });
   await expect(catalog.getByRole('button', { name: 'View details for Paged Film 1', exact: true })).toBeVisible();
   await expect(catalog.getByRole('button', { name: 'View details for Sample Film', exact: true })).toHaveCount(0);
-  await expect(page).toHaveTitle('Paged Movies · Bridged Streams');
+  await expect(page).toHaveTitle('Paged Movies');
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeHidden();
   await catalog.getByRole('button', { name: 'View details for Paged Film 1', exact: true }).click();
-  await expect(page).toHaveTitle('Paged Film 1 · Bridged Streams');
+  await expect(page).toHaveTitle('Paged Film 1');
   await page.getByRole('button', { name: 'Back to browsing' }).click();
-  await expect(page).toHaveTitle('Paged Movies · Bridged Streams');
+  await expect(page).toHaveTitle('Paged Movies');
   await catalog.evaluate((element) => element.scrollTo(0, element.scrollHeight));
   await expect(catalog.getByRole('button', { name: 'View details for Paged Film 27', exact: true })).toBeVisible();
   await catalog.getByRole('button', { name: 'Back to home' }).click();
-  await expect(page).toHaveTitle('Bridged Streams · PlayBridge');
+  await expect(page).toHaveTitle('Home');
   await expect(page.getByRole('navigation', { name: 'Main navigation' })).toBeVisible();
 
   const row = page.locator('.catalog-section').filter({ has: page.getByRole('heading', { name: 'Paged Movies' }) });
@@ -1754,7 +1754,7 @@ for (const code of ['not_allowed', 'user_gesture_required']) {
     await expect(page.locator('.stream-panel').getByRole('button', { name: 'Choose where to play', exact: true })).toBeVisible();
     await page.locator('.stream-result .watch-button').click();
     await expect(page.getByRole('alert')).toContainText(code === 'not_allowed'
-      ? 'Allow Streams to use your PlayBridge devices to play here.' : 'Choose a device and try again.');
+      ? 'Allow this site to use your PlayBridge devices to play here.' : 'Choose a device and try again.');
     expect(await page.evaluate(() => (window as any).__streamTest.calls.map((call: any) => call.method))).toEqual(['choose']);
     await page.getByRole('button', { name: 'Play on this device', exact: true }).click();
     await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(3);

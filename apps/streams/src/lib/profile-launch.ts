@@ -56,7 +56,7 @@ export function profileGateRequired({ profiles, activeIndex, unlockedIndex, mode
   return mode === 'ask' && !chosenInThisTab;
 }
 
-type DisplayProfile = Pick<NuvioProfile, 'profile_index' | 'name' | 'pin_enabled' | 'avatar_color_hex' | 'avatar_url' | 'avatar_id'>;
+type DisplayProfile = Pick<NuvioProfile, 'profile_index' | 'name' | 'pin_enabled' | 'avatar_color_hex'>;
 type CachedProfiles = { backend: string; user: string; profiles: DisplayProfile[] };
 
 /** Names, colours and lock state only, so the picker can paint before profiles are validated. */
@@ -73,7 +73,7 @@ export function saveNuvioProfilesForDisplay(session: NuvioSession | null, profil
     if (!session) { localStorage.removeItem(PROFILES_KEY); return; }
     const value: CachedProfiles = { backend: session.backendUrl, user: session.user.id, profiles: profiles.map((profile) => ({
       profile_index: profile.profile_index, name: profile.name, pin_enabled: profile.pin_enabled === true,
-      avatar_color_hex: profile.avatar_color_hex, avatar_url: profile.avatar_url, avatar_id: profile.avatar_id
+      avatar_color_hex: profile.avatar_color_hex
     })) };
     localStorage.setItem(PROFILES_KEY, JSON.stringify(value));
   } catch { /* storage unavailable */ }
@@ -92,22 +92,4 @@ export function profileInkColor(background: string): string {
   };
   const luminance = 0.2126 * channel(1) + 0.7152 * channel(3) + 0.0722 * channel(5);
   return (luminance + 0.05) / 0.05 >= 1.05 / (luminance + 0.05) ? '#0b0d10' : '#ffffff';
-}
-
-export type AvatarCatalogItem = { id: string; storage_path: string };
-
-function validImageUrl(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const url = value.trim();
-  return url.length <= 2048 && !/\s/.test(url) && /^https?:\/\//i.test(url) ? url : null;
-}
-
-/** Same order as Nuvio: a custom avatar URL, then a public catalog avatar, else colour and initial. */
-export function profileAvatarImage(profile: NuvioProfile, catalog: AvatarCatalogItem[], backendUrl: string): string | null {
-  const custom = validImageUrl(profile.avatar_url);
-  if (custom) return custom;
-  const item = profile.avatar_id ? catalog.find((avatar) => avatar.id === profile.avatar_id) : undefined;
-  if (!item?.storage_path) return null;
-  return validImageUrl(item.storage_path)
-    ?? `${backendUrl.replace(/\/+$/, '')}/storage/v1/object/public/avatars/${item.storage_path.split('/').map(encodeURIComponent).join('/')}`;
 }

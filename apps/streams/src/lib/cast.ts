@@ -68,7 +68,7 @@ function castItem(meta: Meta, stream: Stream & { url: string }, video?: Video, s
 
 export function directCast(meta: Meta, stream: Stream, startPositionMs = 0): void {
   if (!playableStream(stream)) throw new Error('This stream needs a native resolver or proxy before it can be cast.');
-  if (!bridgeAvailable()) throw new Error('Open Bridged Streams in PlayBridge to cast.');
+  if (!bridgeAvailable()) throw new Error('Open this site in PlayBridge to cast.');
   playbackBridge()!.cast(castItem(meta, stream, undefined, startPositionMs));
 }
 

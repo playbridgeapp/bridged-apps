@@ -842,3 +842,48 @@ img.fade-img.is-loaded{opacity:1}
 .catalog-cache-controls button{display:inline-flex;align-items:center;gap:5px}
 .playback-section-title{margin:26px 0 12px;color:#9aa1a9;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
 .playback-panel .playback-fallback-control,.playback-panel .this-device-playback-settings{border-color:#ffffff1a;border-radius:12px;background:#ffffff06}
+
+/* Side panels and controls follow the neutral cinema look of the sign-in and profile screens */
+.manage-panel{background:#0f1216;border-left:1px solid #ffffff1a}
+.manage-panel .panel-header h2{font-family:Georgia,serif;font-size:32px;font-weight:700;letter-spacing:0}
+.manage-panel .panel-copy{color:#b3b9c0}
+.manage-panel .installed-label{color:#9aa1a9}
+.account-section-title{color:#eef0f2}
+.signed-in-card{border-color:#ffffff1a;border-radius:16px;background:#12161b}
+.signed-in-card small{color:#a3aab2}
+.sync-button{border:1px solid #ffffff38;border-radius:999px;background:#ffffff0d;color:#f2f2f2}
+.sync-button:hover{border-color:#ffffff80;background:#ffffff1f}
+.sync-summary{border-color:#ffffff14}
+.sync-summary span{color:#a3aab2}
+.sync-message{color:#c9cdd2}
+.profile-strip button[aria-checked="true"]{color:#fff}
+.launch-choice,.watching-as{background:#12161b}
+.playback-fallback-control,.catalog-cache-controls,.addon-management-card{border-color:#ffffff1a;background:#12161b;color:#eef0f2}
+.playback-fallback-control small{color:#a3aab2}
+.addon-management-actions button,.addon-management-actions a{color:#c9cdd2}
+.addon-logo{background:#1b2229;color:#d8dde2}
+input[type="checkbox"][role="switch"],.addon-master input[type="checkbox"]{appearance:none;position:relative;flex:none;width:44px;height:26px;margin:0;border:0;border-radius:999px;background:#39414b;cursor:pointer;transition:background .15s}
+input[type="checkbox"][role="switch"]::after,.addon-master input[type="checkbox"]::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0006;transition:transform .15s}
+input[type="checkbox"][role="switch"]:checked,.addon-master input[type="checkbox"]:checked{background:#6ce4be}
+input[type="checkbox"][role="switch"]:checked::after,.addon-master input[type="checkbox"]:checked::after{transform:translateX(18px)}
+input[type="checkbox"][role="switch"]:disabled,.addon-master input[type="checkbox"]:disabled{opacity:.45;cursor:not-allowed}
+@media(prefers-reduced-motion:reduce){input[type="checkbox"][role="switch"],input[type="checkbox"][role="switch"]::after,.addon-master input[type="checkbox"],.addon-master input[type="checkbox"]::after{transition:none}}
+
+/* Signed-out welcome: a quiet poster wall behind the sign-in choices */
+.welcome:has(.welcome-mosaic) .welcome-glow{display:none}
+.welcome-mosaic{position:absolute;top:-14%;right:-12%;z-index:0;width:min(900px,70vw);display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:14px;transform:rotate(-9deg);opacity:.85;pointer-events:none}
+.welcome-mosaic span{aspect-ratio:2/3;border-radius:10px;background:#1b2430;box-shadow:0 10px 30px #0006}
+.welcome-mosaic span:nth-child(9n+2){background:#2a2220}.welcome-mosaic span:nth-child(9n+3){background:#1f2a26}.welcome-mosaic span:nth-child(9n+4){background:#2b2633}
+.welcome-mosaic span:nth-child(9n+5){background:#24303b}.welcome-mosaic span:nth-child(9n+6){background:#302a22}.welcome-mosaic span:nth-child(9n+7){background:#1a1f29}
+.welcome-mosaic span:nth-child(9n+8){background:#203038}.welcome-mosaic span:nth-child(9n){background:#2c2028}
+.welcome-fade{position:absolute;inset:0;z-index:0;pointer-events:none;background:linear-gradient(90deg,#090b0f 0%,#090b0f 38%,#090b0fd9 58%,#090b0f80 100%)}
+@media(max-width:800px){
+  .welcome-mosaic{top:-40px;right:auto;left:-70px;width:540px;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px}
+  .welcome-fade{background:linear-gradient(180deg,#090b0f40 0%,#090b0fcc 30%,#090b0f 46%)}
+  .welcome:has(.welcome-mosaic){justify-content:flex-end}
+}
+.welcome:has(.welcome-mosaic){background:#090b0f}
+.sources-panel .addon-form button{background:#fff;color:#111}
+.sources-panel .addon-form button:hover:not(:disabled){background:#d8d8d8}
+.catalog-cache-controls button,.catalog-cache-controls select{border:1px solid #ffffff2e;border-radius:999px;background:transparent;color:#e4e7ea}
+.catalog-cache-controls strong{color:#eef0f2}
