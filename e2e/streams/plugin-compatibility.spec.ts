@@ -39,6 +39,7 @@ test('shows Castle-style S8E2 streams and preserves supported playback headers',
   await manager.getByLabel('Addon manifest URL').fill(`${addon}/manifest.json`);
   await manager.getByRole('button', { name: 'Install', exact: true }).first().click();
   await expect(manager.locator('.addon-management-card').getByText('Castle Catalog', { exact: true })).toBeVisible();
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
   await manager.getByLabel('Nuvio plugin repository URL').fill(`${plugin}/manifest.json`);
   await manager.getByRole('button', { name: 'Install', exact: true }).last().click();
   await expect(manager.getByText('Castle Test Repository', { exact: true })).toBeVisible();

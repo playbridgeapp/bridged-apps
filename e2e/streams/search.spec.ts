@@ -122,7 +122,7 @@ test('failed, complete-empty and unsupported searches have distinct states', asy
   for (const id of ['a','b']) await page.route(`https://search-${id}.test/catalog/**`, route => answer(route, []));
   await page.getByRole('button', { name:'Retry search' }).click();
   await expect(page.getByText('No results.', { exact:true })).toBeVisible();
-  await settings(page); await page.getByRole('button', { name:/Addons and playback/ }).click();
+  await settings(page); await page.getByRole('button', { name:/^Addons / }).click();
   await page.getByRole('checkbox', { name:'Disable Search A', exact:true }).uncheck();
   await page.getByRole('checkbox', { name:'Disable Search B', exact:true }).uncheck();
   await page.getByRole('dialog', { name:'Manage addons' }).getByRole('button', { name:'Close', exact:true }).click();
@@ -162,7 +162,7 @@ test('source changes debounce into an automatic rerun without clearing the query
   });
   try {
     await submit(page); await expect(page.locator('.search-pending')).toBeVisible();
-    await settings(page); await page.getByRole('button',{name:/Addons and playback/}).click();
+    await settings(page); await page.getByRole('button',{name:/^Addons /}).click();
     updating=true;
     await page.getByRole('checkbox',{name:'Disable Search A',exact:true}).uncheck();
     await expect.poll(()=>aborted).toBe(2);
@@ -179,11 +179,15 @@ test('source changes debounce into an automatic rerun without clearing the query
   }finally{old.release();fresh.release();}
 });
 
-test('sign-out invalidates a query cache even when its local catalog targets stay the same', async ({ page }) => {
-  await page.addInitScript(() => localStorage.setItem('bridged-streams.stremio-session.v1', JSON.stringify({authKey:'synthetic-not-a-real-key',user:{_id:'synthetic-user',email:'synthetic@example.invalid'}})));
+test('sign-out invalidates a query cache even when its catalog targets stay the same', async ({ page }) => {
+  await page.addInitScript(defs => {
+    localStorage.setItem('bridged-streams.stremio-session.v1', JSON.stringify({authKey:'synthetic-not-a-real-key',user:{_id:'synthetic-user',email:'synthetic@example.invalid'}}));
+    localStorage.setItem('bridged-streams.startup-cache.v1.stremio-addons', JSON.stringify({ scope: 'synthetic-user', value: defs }));
+  }, definitions);
   await page.route('https://api.strem.io/api/**', route => {
     const method=route.request().url().split('/').pop();
-    const result=method==='getUser'?{_id:'synthetic-user',email:'synthetic@example.invalid'}:method==='addonCollectionGet'?{addons:[]}:[];
+    // The account carries the same catalogs as this browser, so signing out leaves the targets unchanged.
+    const result=method==='getUser'?{_id:'synthetic-user',email:'synthetic@example.invalid'}:method==='addonCollectionGet'?{addons:definitions.map(def=>({transportUrl:def.manifestUrl,manifest:def.manifest}))}:[];
     return route.fulfill({json:{result},headers});
   });
   await page.reload(); await returnToSearch(page); await submit(page);
@@ -206,7 +210,7 @@ test('profile and PIN unlock invalidate cached local previews without persisting
     localStorage.setItem('bridged-streams.nuvio-profile.v1',JSON.stringify({userId:'synthetic-user',index:1}));
     localStorage.setItem('bridged-streams.profile-launch.v1','remember');
   });
-  await page.route('https://cloud.search.test/**',route=>route.fulfill({json:route.request().url().includes('sync_pull_profiles')?[{profile_index:1,name:'Main'},{profile_index:2,name:'Locked',pin_enabled:true}]:route.request().url().includes('verify_profile_pin')?{unlocked:true}:[],headers}));
+  await page.route('https://cloud.search.test/**',route=>route.fulfill({json:route.request().url().includes('sync_pull_profiles')?[{profile_index:1,name:'Main'},{profile_index:2,name:'Locked',pin_enabled:true}]:route.request().url().includes('verify_profile_pin')?{unlocked:true}:route.request().url().includes('/addons?')?definitions.map(def=>({url:def.manifestUrl,enabled:true})):[],headers}));
   await page.reload();
   await returnToSearch(page);
   await submit(page); await expect(page.locator('.search-results .media-card')).toHaveCount(2); await expect(page.locator('.search-pending')).toHaveCount(0);

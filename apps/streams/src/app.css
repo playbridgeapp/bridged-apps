@@ -814,3 +814,31 @@ img.fade-img.is-loaded{opacity:1}
 .account-choice p{margin:0 0 12px}
 .account-choice div{display:flex;flex-wrap:wrap;gap:10px}
 .account-choice .outline-button{border-radius:999px}
+
+/* Addons scoped to the active account, and device-level Playback */
+.source-owner{display:flex;align-items:center;gap:12px;margin:22px 0 16px;padding:12px 14px;border:1px solid #ffffff1f;border-radius:16px;background:#ffffff08}
+.source-owner>span:not(.owner-mark):not(.profile-avatar){flex:1;min-width:0}
+.source-owner strong,.source-owner small{display:block}
+.source-owner strong{overflow:hidden;font-size:14px;text-overflow:ellipsis;white-space:nowrap}
+.source-owner small{margin-top:2px;color:#a3aab2;font-size:12px;line-height:1.45}
+.owner-mark{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:10px;background:#23324a;color:#cfe0ff;font-family:Manrope,sans-serif;font-weight:800}
+.owner-mark.stremio{background:#2f2846;color:#ddd3ff}
+.owner-mark.local{background:#1b2229;color:#d8dde2}
+.source-tabs{display:flex;gap:4px;margin:0 0 18px;padding:4px;border:1px solid #ffffff1f;border-radius:999px;background:#ffffff08}
+.source-tabs button{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;height:40px;border:0;border-radius:999px;background:transparent;color:#b5b8bb;font-size:13px;font-weight:800}
+.source-tabs button span{padding:1px 7px;border-radius:999px;background:#ffffff14;font-size:11px}
+.source-tabs button[aria-selected="true"]{background:#f4f5f4;color:#151719}
+.source-tabs button[aria-selected="true"] span{background:#15171914}
+.local-sources-notice{margin:0 0 18px;padding:14px;border:1px solid #6b5a2c;border-radius:14px;background:#2b2615;color:#f3e2b0;font-size:13px;line-height:1.55}
+.local-sources-notice p{margin:0 0 12px}
+.local-sources-notice div{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.local-sources-notice .outline-button{height:36px;border-color:#f3e2b066;border-radius:999px;background:transparent;color:#f3e2b0}
+.local-sources-notice .text-action{color:#f3e2b0}
+.addon-form-hint{margin:8px 2px 16px;color:#9aa1a9;font-size:12px;line-height:1.55}
+.sources-panel .addon-form input{border-radius:12px;padding:13px 14px}
+.sources-panel .addon-form button{border-radius:999px;padding:0 18px}
+.sources-panel .addon-management-card{margin:8px 0;padding:12px 14px;border-color:#ffffff1a;border-radius:14px;background:#12161b}
+.sources-panel .catalog-cache-controls{margin-top:22px;border-color:#ffffff1a;border-radius:12px;background:#ffffff06}
+.catalog-cache-controls button{display:inline-flex;align-items:center;gap:5px}
+.playback-section-title{margin:26px 0 12px;color:#9aa1a9;font-size:11px;font-weight:800;letter-spacing:.16em;text-transform:uppercase}
+.playback-panel .playback-fallback-control,.playback-panel .this-device-playback-settings{border-color:#ffffff1a;border-radius:12px;background:#ffffff06}

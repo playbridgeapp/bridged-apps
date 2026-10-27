@@ -74,6 +74,10 @@
   const DISCOVER_CATALOG_KEY = 'bridged-streams.discover-catalog.v1';
   const SEARCH_HISTORY_KEY = 'bridged-streams.search-history.v1';
   const NATIVE_PLAYER_FALLBACK_KEY = 'bridged-streams.native-player-fallback.v1';
+  const LOCAL_SOURCES_KEPT_KEY = 'bridged-streams.local-sources-kept.v1';
+  function savedLocalSourcesKept(): boolean {
+    try { return localStorage.getItem(LOCAL_SOURCES_KEPT_KEY) === '1'; } catch { return false; }
+  }
   const SEARCH_HISTORY_DELAY_MS = 2500;
   function savedNativePlayerFallback(): boolean {
     try { return localStorage.getItem(NATIVE_PLAYER_FALLBACK_KEY) !== 'false'; } catch { return true; }
@@ -166,11 +170,15 @@
   const nuvioProgressLastWrite = new Map<string, number>();
   let account: StremioSession | null = initialStremioSession;
   let startupLoading = !!(initialStremioSession || initialNuvioSession || initialLocalUrls.length)
-    && !initialLocalAddons.length && !initialAccountAddons.length;
+    && !(initialStremioSession || initialNuvioSession ? 0 : initialLocalAddons.length) && !initialAccountAddons.length;
   let stremioRestoring = !!initialStremioSession;
   let nuvioRestoring = !!initialNuvioSession;
   let accountPanel = false;
   let integrationsPanel = false;
+  let playbackPanel = false;
+  let sourcesTab: 'addons' | 'plugins' = 'addons';
+  let localSourcesKept = savedLocalSourcesKept();
+  let movingLocalSources = false;
   let loginMode: 'password' | 'key' = 'password';
   let email = '';
   let password = '';
@@ -180,8 +188,7 @@
   let accountError = '';
   let accountMessage = '';
   let accountGeneration = 0;
-  let addonDestination: 'local' | 'stremio' | 'nuvio' = 'local';
-  let syncNewPlugin = false;
+  let addonDestination: 'local' | 'stremio' | 'nuvio';
   let libraryBusy = false;
   const progressLastWrite = new Map<string, number>();
   type WatchProgress = { videoId: string; positionMs: number; durationMs: number; state: string };
@@ -498,12 +505,24 @@
   let detailArtworkUpgraded = false;
   let streamRequest = 0;
 
-  $: addons = uniqueEnabledAddons([...accountAddons, ...nuvioAddons, ...localAddons]);
+  // One account at a time: signed in, only that account's sources are used; signed out, this browser's.
+  $: addonDestination = nuvioSession ? 'nuvio' : account ? 'stremio' : 'local';
+  $: installedAddons = account || nuvioSession ? [...accountAddons, ...nuvioAddons] : localAddons;
+  $: addons = uniqueEnabledAddons(installedAddons);
   $: browsableAddons = addons.filter((addon) => catalogs([addon])
     .some(({ catalog }) => requiredCatalogExtras(catalog) !== null));
   $: effectiveAddonFilter = browsableAddons.some((addon) => addon.manifestUrl === activeAddonFilter)
     ? activeAddonFilter : '';
-  $: plugins = [...new Map([...localPlugins, ...nuvioPlugins].map((repo) => [repo.manifestUrl, repo])).values()];
+  $: plugins = nuvioSession ? nuvioPlugins : account ? [] : localPlugins;
+  $: unusedLocalAddons = account || nuvioSession ? localAddons : [];
+  $: unusedLocalPlugins = account || nuvioSession ? localPlugins : [];
+  $: localSourcesNotice = !localSourcesKept && !(account && nuvioSession) && unusedLocalAddons.length + unusedLocalPlugins.length > 0;
+  $: showPluginsTab = !account || !!nuvioSession || nativePluginsSupported;
+  $: activeSourcesTab = showPluginsTab ? sourcesTab : 'addons';
+  $: addonsReadOnly = !!nuvioSession && activeNuvioProfile?.uses_primary_addons === true && nuvioProfileIndex !== 1;
+  $: pluginsReadOnly = !!nuvioSession && activeNuvioProfile?.uses_primary_plugins === true && nuvioProfileIndex !== 1;
+  $: activeProfileName = activeNuvioProfile?.name || (activeNuvioProfile ? `Profile ${activeNuvioProfile.profile_index}` : 'Nuvio');
+  $: sourceOwnerLabel = nuvioSession ? (activeNuvioProfile ? `${activeProfileName}'s Nuvio profile` : 'Nuvio') : account ? 'Stremio account' : 'This browser';
   $: selectionProviders = [...new Map([
     ...addons.filter((addon) => !addon.disabledFeatures?.includes('stream') && addon.manifest.resources.some((resource) =>
       (typeof resource === 'string' ? resource : resource.name) === 'stream'))
@@ -588,7 +607,7 @@
     : profileReturnRoute.kind === 'catalog' ? 'the catalog you were viewing'
     : selected && selected.id === profileReturnRoute.id && selected.name ? selected.name : 'the title you were viewing';
   $: profileImage = (profile: NuvioProfile) => nuvioSession ? profileAvatarImage(profile, avatarCatalog, nuvioSession.backendUrl) : null;
-  $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : []), ...localAddons]);
+  $: searchAddons = uniqueEnabledAddons(account || nuvioSession ? [...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : [])] : localAddons);
   $: currentSearchIdentity = JSON.stringify([account?.user._id ?? null,
     nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]);
   $: currentSearchSources = searchSources(searchAddons);
@@ -867,7 +886,7 @@
       else if (searchHistoryOpen) searchHistoryOpen = false;
       else if (playing) closePlayer();
       else if (pluginSettingsTarget) pluginSettingsTarget = null;
-      else if (accountPanel || managing || integrationsPanel) closeSettingsPanel();
+      else if (accountPanel || managing || playbackPanel || integrationsPanel) closeSettingsPanel();
       else if (selected && streamScreen) closeStreamScreen();
       else if (selected) closeDetail();
       else if (catalogPage) closeCatalogPage();
@@ -933,7 +952,7 @@
       if (autoRefreshCatalogs && addons.length && !loadingCatalogs && Date.now() - lastCatalogRefresh >= catalogRefreshInterval * 60_000) void loadCatalogs();
     }, 60_000);
     const featureTimer = window.setInterval(() => {
-      if (tab === 'home' && !selected && !managing && !accountPanel && !document.hidden && featureCandidates.length > 1
+      if (tab === 'home' && !selected && !managing && !playbackPanel && !accountPanel && !document.hidden && featureCandidates.length > 1
         && Date.now() - featureLastInteraction > 8000
         && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
         featureIndex = (featureIndex + 1) % featureCandidates.length;
@@ -963,7 +982,6 @@
       const refreshed = await refreshUser(stored);
       if (generation !== accountGeneration) return;
       account = refreshed;
-      if (addonDestination === 'local') addonDestination = 'stremio';
       saveSession(refreshed);
       await syncAccount();
     } catch (error) {
@@ -987,8 +1005,8 @@
       if (nuvioSession) await replaceAccount('nuvio');
       if (generation !== accountGeneration) return;
       account = signedIn;
-      if (addonDestination === 'local') addonDestination = 'stremio';
       saveSession(signedIn);
+      void loadCatalogs();
       password = '';
       authKeyInput = '';
       if (signInProvider === 'stremio') signInProvider = null;
@@ -1036,7 +1054,6 @@
     accountGeneration += 1;
     addonWorking = '';
     account = null;
-    if (addonDestination === 'stremio') addonDestination = nuvioSession ? 'nuvio' : 'local';
     accountAddons = [];
     accountLibrary = [];
     progressLastWrite.clear();
@@ -1108,6 +1125,7 @@
       if (generation !== nuvioGeneration) return;
       nuvioSession = signedIn;
       saveNuvioSession(signedIn);
+      void loadCatalogs();
       nuvioPassword = '';
       // Like the Nuvio app, a fresh sign-in always asks which profile is watching.
       forceProfileChoice = true;
@@ -1145,7 +1163,6 @@
       else clearNuvioAuthorization();
       nuvioProfiles = profiles;
       if (!profiles.length) {
-        if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
         nuvioMessage = 'This Nuvio account has no profiles yet. Create one here or in Nuvio Mobile.';
         return;
       }
@@ -1162,11 +1179,8 @@
         profileGateMessage = `${returnedProfile.name || 'This profile'} now has a PIN. Enter it to continue.`;
         profileGateDismissed = false;
       }
-      if (profiles.find((profile) => profile.profile_index === nuvioProfileIndex)?.pin_enabled) {
-        if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
-      } else {
+      if (!profiles.find((profile) => profile.profile_index === nuvioProfileIndex)?.pin_enabled) {
         hydrateNuvioCache(current, nuvioProfileIndex);
-        if (!account && addonDestination === 'local') addonDestination = 'nuvio';
         void loadCatalogs();
         await syncNuvio();
       }
@@ -1203,10 +1217,6 @@
     nuvioProfileIndex = index;
     if (nuvioSession) saveNuvioAuthorization(nuvioSession, nuvioProfiles.find(profile => profile.profile_index === index)!, nuvioProfilesCheckedAt);
     if (nuvioSession) writePersistentSession(NUVIO_PROFILE_KEY, { userId: nuvioSession.user.id, index });
-    if (locked) {
-      if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
-      syncNewPlugin = false;
-    } else if (!account && addonDestination === 'local') addonDestination = 'nuvio';
     nuvioUnlockedProfile = unlocked ? index : null;
     nuvioAddons = [];
     nuvioPlugins = [];
@@ -1263,7 +1273,6 @@
     nuvioUnlockedProfile = index;
     nuvioError = '';
     hydrateNuvioCache(current, index);
-    if (!account && addonDestination === 'local') addonDestination = 'nuvio';
     void loadCatalogs();
     await syncNuvio();
   }
@@ -1407,7 +1416,6 @@
     nuvioSyncRequest += 1;
     addonWorking = '';
     nuvioSession = null;
-    if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
     saveNuvioProfilesForDisplay(null);
     rememberChosenInThisTab(null, null);
     nuvioChosenThisTab = false;
@@ -1522,7 +1530,7 @@
     loadingCatalogs = true;
     lastCatalogRefresh = Date.now();
     const previousRows = new Map(rows.map((row) => [row.key, row.items]));
-    const currentAddons = uniqueEnabledAddons([...accountAddons, ...nuvioAddons, ...localAddons]);
+    const currentAddons = uniqueEnabledAddons(account || nuvioSession ? [...accountAddons, ...nuvioAddons] : localAddons);
     const definitions = catalogs(currentAddons).flatMap(({ addon, catalog }) => {
       const extras = requiredCatalogExtras(catalog);
       return extras ? [{ addon, catalog, extras }] : [];
@@ -1755,7 +1763,7 @@
     try {
       const addon = await installAddon(addonInput);
       const destinationAddons = addonDestination === 'stremio' ? accountAddons : addonDestination === 'nuvio' ? nuvioAddons : localAddons;
-      if (destinationAddons.some((existing) => existing.manifestUrl === addon.manifestUrl)) throw new Error('This addon is already installed in the selected destination.');
+      if (destinationAddons.some((existing) => existing.manifestUrl === addon.manifestUrl)) throw new Error(`This addon is already installed in ${account || nuvioSession ? sourceOwnerLabel : 'this browser'}.`);
       if (addonDestination === 'stremio' && account) {
         await addAccountAddon(account.authKey, addon);
         await syncAccount();
@@ -2235,9 +2243,10 @@
     pluginError = '';
     try {
       const repo = await installPlugin(pluginInput);
-      const destinationPlugins = nuvioSession && syncNewPlugin ? nuvioPlugins : localPlugins;
-      if (destinationPlugins.some((existing) => existing.manifestUrl === repo.manifestUrl)) throw new Error('This plugin repository is already installed in the selected destination.');
-      if (nuvioSession && syncNewPlugin) {
+      if (account && !nuvioSession) throw new Error('Plugin repositories come with Nuvio profiles.');
+      const destinationPlugins = nuvioSession ? nuvioPlugins : localPlugins;
+      if (destinationPlugins.some((existing) => existing.manifestUrl === repo.manifestUrl)) throw new Error('This plugin repository is already installed.');
+      if (nuvioSession) {
         if (!nuvioProfileReady) throw new Error('Choose and unlock a Nuvio profile before adding a plugin.');
         if (activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1) throw new Error('Select the primary profile to change shared plugins.');
         await changeNuvioSource(nuvioSession, 'plugins', nuvioProfileIndex, { url: repo.manifestUrl, name: repo.name }, 'add');
@@ -2254,6 +2263,50 @@
   function removePlugin(url: string) {
     localPlugins = localPlugins.filter((repo) => repo.manifestUrl !== url);
     savePluginUrls(localPlugins);
+  }
+
+  /** Moves addons (and, for Nuvio, plugin repositories) saved in this browser into the signed-in account. */
+  async function moveLocalSources() {
+    const movingAddons = unusedLocalAddons;
+    const movingPlugins = nuvioSession ? unusedLocalPlugins : [];
+    addonError = '';
+    movingLocalSources = true;
+    try {
+      if (nuvioSession) {
+        const current = nuvioSession;
+        if (!nuvioProfileReady) throw new Error('Choose and unlock a Nuvio profile first.');
+        if (movingAddons.length && addonsReadOnly) throw new Error("This profile uses the primary profile's addons. Switch to the primary profile to add them.");
+        if (movingPlugins.length && pluginsReadOnly) throw new Error("This profile uses the primary profile's plugins. Switch to the primary profile to add them.");
+        for (const addon of movingAddons) {
+          if (!nuvioAddons.some((item) => item.manifestUrl === addon.manifestUrl)) await changeNuvioSource(current, 'addons', nuvioProfileIndex, { url: addon.manifestUrl, name: addon.manifest.name }, 'add');
+        }
+        for (const repo of movingPlugins) {
+          if (!nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl)) await changeNuvioSource(current, 'plugins', nuvioProfileIndex, { url: repo.manifestUrl, name: repo.name }, 'add');
+        }
+        forgetLocalSources(movingAddons, movingPlugins);
+        await syncNuvio();
+      } else if (account) {
+        for (const addon of movingAddons) await addAccountAddon(account.authKey, addon);
+        forgetLocalSources(movingAddons, []);
+        await syncAccount();
+      }
+    } catch (error) { addonError = message(error); }
+    finally { movingLocalSources = false; }
+  }
+
+  function forgetLocalSources(removedAddons: InstalledAddon[], removedPlugins: PluginRepository[]) {
+    const addonUrls = new Set(removedAddons.map((addon) => addon.manifestUrl));
+    const pluginUrls = new Set(removedPlugins.map((repo) => repo.manifestUrl));
+    localAddons = localAddons.filter((addon) => !addonUrls.has(addon.manifestUrl));
+    saveAddonUrls(localAddons);
+    saveAddons('local-addons', 'browser', localAddons);
+    localPlugins = localPlugins.filter((repo) => !pluginUrls.has(repo.manifestUrl));
+    savePluginUrls(localPlugins);
+  }
+
+  function keepLocalSources() {
+    localSourcesKept = true;
+    try { localStorage.setItem(LOCAL_SOURCES_KEPT_KEY, '1'); } catch { /* storage unavailable */ }
   }
 
   async function updatePluginScraper(url: string, scraperId: string, patch: Omit<ScraperPreference, 'id'>) {
@@ -2338,7 +2391,7 @@
   function submitSearch(query: string) {
     query = query.trim();
     // Explicit submission flushes a pending source debounce against the latest targets.
-    const eligibleAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : []), ...localAddons]);
+    const eligibleAddons = uniqueEnabledAddons(account || nuvioSession ? [...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : [])] : localAddons);
     syncSearchConfiguration(JSON.stringify([account?.user._id ?? null,
       nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]),
       searchSources(eligibleAddons), eligibleAddons);
@@ -2506,7 +2559,7 @@
       episode: video?.episode };
   }
 
-  function openSettingsPanel(panel: 'accounts' | 'addons' | 'integrations') {
+  function openSettingsPanel(panel: 'accounts' | 'addons' | 'playback' | 'integrations') {
     router?.push({ kind: 'tab', tab: 'settings', panel });
   }
 
@@ -2533,6 +2586,7 @@
       || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
     accountPanel = false;
     managing = false;
+    playbackPanel = false;
     pluginSettingsTarget = null;
     integrationsPanel = false;
     openDiscoverDropdown = null;
@@ -2545,6 +2599,7 @@
       selectTab(route.tab, false);
       accountPanel = route.panel === 'accounts';
       managing = route.panel === 'addons';
+      playbackPanel = route.panel === 'playback';
       integrationsPanel = route.panel === 'integrations';
       if (route.tab === 'search' && route.query !== undefined && submittedSearch !== route.query) {
         const query = route.query || '';
@@ -3369,7 +3424,7 @@
   <title>{selected ? detailIdentityReady ? `${selected.name} · Bridged Streams` : 'Loading title · Bridged Streams' : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
 </svelte:head>
 
-<div class:detail-open={!!selected && !accountPanel && !managing} class:content-open={!!selected || !!catalogPage} class="app-shell" inert={profileGateOpen || !!signInProvider}>
+<div class:detail-open={!!selected && !accountPanel && !managing && !playbackPanel} class:content-open={!!selected || !!catalogPage} class="app-shell" inert={profileGateOpen || !!signInProvider}>
   <header class:scrolled={pageScrolled} class="sidebar site-header">
     <button class="brand" onclick={() => navigate('home')} aria-label="Bridged Streams home">
       <span class="brand-mark"><Clapperboard size={23} strokeWidth={2.4} /></span>
@@ -3402,7 +3457,8 @@
         {/if}
         <div class="settings-grid">
           <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account && nuvioSession ? 'Choose one account to keep' : account ? 'Stremio connected' : nuvioSession ? 'Nuvio connected' : 'Sign in with Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
-          <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons</strong><small>{sourceOwnerLabel} · {installedAddons.length} {installedAddons.length === 1 ? 'addon' : 'addons'}{plugins.length ? ` · ${plugins.length} plugin ${plugins.length === 1 ? 'repo' : 'repos'}` : ''}</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('playback')}><span class="settings-card-icon"><Play size={24} /></span><span class="settings-card-copy"><strong>Playback</strong><small>Stream choice, player and diagnostics · this device</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('integrations')}><span class="settings-card-icon"><Info size={24} /></span><span class="settings-card-copy"><strong>Integrations</strong><small>TMDB enrichment · {tmdbSettings.enabled ? 'On' : 'Off'}</small></span><ArrowRight size={19} /></button>
           <a class="settings-card" href="https://github.com/playbridgeapp/bridged-apps" target="_blank" rel="noopener noreferrer" aria-label="About this project: source code on GitHub (opens in a new tab)"><span class="settings-card-icon"><Github size={24} /></span><span class="settings-card-copy"><strong>About this project</strong><small>Open source on GitHub · playbridgeapp/bridged-apps</small></span><ExternalLink size={19} /></a>
         </div>
@@ -3463,7 +3519,7 @@
     {#if tab === 'home'}
     <div class="home-panel tab-page">
       <HomeContent immediate={homeScrollTarget > 0} onReady={restoreHomeScroll}>
-      {#if addons.length === 0 && !localAddons.length && !accountAddons.length && !nuvioAddons.length}
+      {#if addons.length === 0 && !installedAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
           <div class="eyebrow">ACCOUNT CONNECTED</div><h1>Your space is ready.<br /><em>Add a source to watch.</em></h1><p>Your account is connected. Add a catalog addon to browse movies, shows, and sports here.</p>
@@ -3648,31 +3704,73 @@
 
 {#if managing}
   <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
-    <div class="manage-panel" role="dialog" aria-modal="true" aria-label="Manage addons"><div class="panel-header"><div><div class="eyebrow">YOUR SOURCES</div><h2>Manage addons</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={22} /></button></div>
-      <p class="panel-copy">Set addon priority, enable the resources each addon provides, refresh its manifest, or open its configuration page. Nuvio plugin repositories add browser-compatible stream scrapers.</p>
-      <div class="addon-toolbar"><span>{addons.length} active of {accountAddons.length + nuvioAddons.length + localAddons.length} installed</span><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={15} /> Refresh catalogs</button></div>
-      <div class="catalog-cache-controls"><strong>Catalog refresh</strong><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
-      <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} onChange={updateStreamSelection} />
-      {#if destinationSupported}
-        <div class="this-device-playback-settings">
-          <label class="playback-fallback-control"><span><strong>Use PlayBridge video player on this device</strong><small>When This device is selected, open PlayBridge’s built-in player instead of the browser player. Other destinations are unchanged.</small></span><input type="checkbox" role="switch" bind:checked={thisDevicePlayback.useNativePlayer} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} aria-label="Use PlayBridge video player on this device" /></label>
-          <label class="source-destination">Player opening orientation <select bind:value={thisDevicePlayback.initialOrientation} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} disabled={!thisDevicePlayback.useNativePlayer || !openingOrientationSupported} aria-label="Player opening orientation"><option value="landscape">Landscape</option><option value="portrait">Portrait</option><option value="auto">Automatic</option></select></label>
-          <p class="panel-copy">Applies only to the built-in player on This device. Landscape is the default; this is not a permanent rotation lock.{#if !openingOrientationSupported} Update PlayBridge to choose the opening orientation.{/if}</p>
+    <div class="manage-panel sources-panel" role="dialog" aria-modal="true" aria-label="Manage addons"><div class="panel-header"><div><div class="eyebrow">{account || nuvioSession ? 'YOUR ACCOUNT' : 'NOT SIGNED IN'}</div><h2>Addons</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={22} /></button></div>
+      <div class="source-owner">
+        {#if nuvioSession && activeNuvioProfile}<ProfileAvatar profile={activeNuvioProfile} image={profileImage(activeNuvioProfile)} size={36} locked={nuvioProfileLocked} /><span><strong>{activeProfileName}</strong><small>Nuvio profile</small></span>{#if nuvioProfiles.length > 1 || nuvioProfileLocked}<button class="text-action" onclick={openProfileGate}>{nuvioProfileLocked ? 'Enter PIN' : 'Switch profile'}</button>{/if}
+        {:else if nuvioSession}<span class="owner-mark" aria-hidden="true">N</span><span><strong>{nuvioSession.user.email}</strong><small>Nuvio</small></span>
+        {:else if account}<span class="owner-mark stremio" aria-hidden="true">S</span><span><strong>{account.user.email}</strong><small>Stremio account</small></span>
+        {:else}<span class="owner-mark local" aria-hidden="true"><Clapperboard size={18} /></span><span><strong>This browser</strong><small>Sign in to use your Nuvio or Stremio addons instead.</small></span><button class="text-action" onclick={() => openSettingsPanel('accounts')}>Sign in</button>{/if}
+      </div>
+      {#if account && nuvioSession}<p class="sync-message">Streams uses one account at a time. <button class="text-action" onclick={() => openSettingsPanel('accounts')}>Choose one in Accounts</button></p>{/if}
+      {#if showPluginsTab}
+        <div class="source-tabs" role="tablist" aria-label="Sources">
+          <button type="button" role="tab" id="sources-tab-addons" aria-controls="sources-tabpanel" aria-selected={activeSourcesTab === 'addons'} onclick={() => sourcesTab = 'addons'}>Addons <span>{installedAddons.length}</span></button>
+          <button type="button" role="tab" id="sources-tab-plugins" aria-controls="sources-tabpanel" aria-selected={activeSourcesTab === 'plugins'} onclick={() => sourcesTab = 'plugins'}>Plugins <span>{plugins.length}</span></button>
         </div>
       {/if}
-      <label class="playback-fallback-control"><span><strong>Native player fallback</strong><small>If MoviPlayer cannot play a stream, try the browser’s video player. On by default.</small></span><input type="checkbox" role="switch" bind:checked={nativePlayerFallback} onchange={saveNativePlayerFallback} aria-label="Native player fallback" /></label>
-      <details class="playback-diagnostics"><summary>Playback diagnostics <span>{playbackDiagnostics.length} events</span></summary><p>Recent player attempts remain on this device across refreshes. Reports omit stream URLs, headers, and account credentials.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button><button type="button" onclick={removePlaybackReport}>Clear history</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>
-      <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addAddon(); }}><input type="url" bind:value={addonInput} placeholder="https://addon.example/manifest.json" aria-label="Addon manifest URL" required /><button type="submit" disabled={adding}>{#if adding}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
-      {#if account || nuvioSession}<label class="source-destination">Install in <select bind:value={addonDestination}><option value="local">This browser</option>{#if account}<option value="stremio">Stremio account</option>{/if}{#if nuvioSession && nuvioProfileReady}<option value="nuvio">Nuvio profile</option>{/if}</select></label>{/if}
-      {#if addonError}<p class="error-message" role="alert">{addonError}</p>{/if}
-      <div class="installed-label">STREMIO ACCOUNT · {accountAddons.length}</div>
-      {#each accountAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="stremio" {index} total={accountAddons.length} busy={addonWorking !== ''} onToggle={(enabled) => void setAddonEnabled('stremio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('stremio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('stremio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('stremio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'stremio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
-      {#if !account}<div class="row-empty">Connect Stremio to import your account addons. <button class="text-action" onclick={() => openSettingsPanel('accounts')}>Sign in <ArrowRight size={16} /></button></div>{/if}
-      {#if nuvioSession && nuvioProfileReady}<div class="installed-label">NUVIO PROFILE ADDONS · {nuvioAddons.length}</div>
-        {#each nuvioAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="nuvio" {index} total={nuvioAddons.length} busy={addonWorking !== ''} readOnly={activeNuvioProfile?.uses_primary_addons === true && nuvioProfileIndex !== 1} onToggle={(enabled) => void setAddonEnabled('nuvio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('nuvio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('nuvio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('nuvio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'nuvio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
+      <div id="sources-tabpanel" role={showPluginsTab ? 'tabpanel' : undefined} aria-labelledby={showPluginsTab ? `sources-tab-${activeSourcesTab}` : undefined}>
+      {#if localSourcesNotice}
+        <div class="local-sources-notice" role="group" aria-label="Sources saved in this browser">
+          <p>{[unusedLocalAddons.length ? `${unusedLocalAddons.length} ${unusedLocalAddons.length === 1 ? 'addon' : 'addons'}` : '', unusedLocalPlugins.length ? `${unusedLocalPlugins.length} plugin ${unusedLocalPlugins.length === 1 ? 'repository' : 'repositories'}` : ''].filter(Boolean).join(' and ')} saved in this browser {unusedLocalAddons.length + unusedLocalPlugins.length === 1 ? "isn't" : "aren't"} used while you're signed in.{#if account && !nuvioSession && unusedLocalPlugins.length} Stremio accounts have no plugin repositories.{/if}</p>
+          <div>
+            {#if unusedLocalAddons.length || (nuvioSession && unusedLocalPlugins.length)}<button class="outline-button" disabled={movingLocalSources} onclick={() => void moveLocalSources()}>{#if movingLocalSources}<LoaderCircle size={15} class="spin" />{/if} Add {unusedLocalAddons.length + (nuvioSession ? unusedLocalPlugins.length : 0) === 1 ? 'it' : 'them'} to {nuvioSession ? activeProfileName : 'Stremio'}</button>{/if}
+            <button class="outline-button" disabled={movingLocalSources} onclick={() => forgetLocalSources(localAddons, localPlugins)}>Remove from browser</button>
+            <button class="text-action" disabled={movingLocalSources} onclick={keepLocalSources}>Keep for when I'm signed out</button>
+          </div>
+        </div>
       {/if}
-      <div class="installed-label">ADDED HERE · {localAddons.length}</div>
+      {#if activeSourcesTab === 'addons'}
+        {#if nuvioSession && !nuvioProfileReady && !account}
+          <p class="panel-copy">{nuvioProfileLocked ? `Enter ${activeProfileName}'s PIN to see and change its addons.` : 'Choose a Nuvio profile to see and change its addons.'} <button class="text-action" onclick={openProfileGate}>{nuvioProfileLocked ? 'Enter PIN' : "Who's watching?"}</button></p>
+        {:else}
+          {#if addonsReadOnly}<p class="panel-copy">This profile uses the primary profile's addons. Switch to the primary profile to change them.</p>{/if}
+          <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addAddon(); }}><input type="url" bind:value={addonInput} placeholder="Paste an addon URL" aria-label="Addon manifest URL" required /><button type="submit" disabled={adding || addonsReadOnly}>{#if adding}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
+          <p class="addon-form-hint">{nuvioSession ? `Adds to ${activeProfileName}'s profile and syncs to Nuvio.` : account ? 'Adds to your Stremio account. Order syncs to Stremio; switching an addon off only affects this browser.' : 'Saved only in this browser.'} The top of the list is tried first.</p>
+          {#if addonError}<p class="error-message" role="alert">{addonError}</p>{/if}
+          <div class="addon-toolbar"><span>{addons.length} on of {installedAddons.length} installed</span></div>
+          {#if account}{#if nuvioSession}<div class="installed-label">STREMIO ACCOUNT · {accountAddons.length}</div>{/if}
+      {#each accountAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="stremio" {index} total={accountAddons.length} busy={addonWorking !== ''} onToggle={(enabled) => void setAddonEnabled('stremio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('stremio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('stremio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('stremio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'stremio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}{/if}
+          {#if nuvioSession && nuvioProfileReady}{#if account}<div class="installed-label">NUVIO PROFILE · {nuvioAddons.length}</div>{/if}
+        {#each nuvioAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="nuvio" {index} total={nuvioAddons.length} busy={addonWorking !== ''} readOnly={activeNuvioProfile?.uses_primary_addons === true && nuvioProfileIndex !== 1} onToggle={(enabled) => void setAddonEnabled('nuvio', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('nuvio', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('nuvio', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('nuvio', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'nuvio', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
+          {/if}
+          {#if !account && !nuvioSession}
       {#each localAddons as addon, index (addon.manifestUrl)}<AddonManagementCard {addon} source="local" {index} total={localAddons.length} busy={addonWorking !== ''} onToggle={(enabled) => void setAddonEnabled('local', addon.manifestUrl, enabled)} onFeature={(feature, enabled) => void setAddonFeature('local', addon.manifestUrl, feature, enabled)} onMove={(direction) => void moveAddon('local', addon.manifestUrl, direction)} onRefresh={() => void refreshAddon('local', addon.manifestUrl)} onCopy={() => void copyAddonUrl(addon.manifestUrl)} onDelete={() => addonPendingRemoval = { source: 'local', url: addon.manifestUrl, name: addon.manifest.name }} />{/each}
+          {/if}
+          {#if !installedAddons.length}<div class="row-empty">No addons yet. Paste an addon's manifest URL above to install one.</div>{/if}
+        {/if}
+        <div class="catalog-cache-controls"><strong>Catalogs</strong><button type="button" onclick={() => void loadCatalogs()} disabled={loadingCatalogs}><RefreshCw size={14} /> Refresh now</button><label><input type="checkbox" bind:checked={autoRefreshCatalogs} onchange={updateCatalogRefresh} /> Auto refresh</label><label>Every <select bind:value={catalogRefreshInterval} onchange={updateCatalogRefresh} disabled={!autoRefreshCatalogs}><option value={15}>15 min</option><option value={30}>30 min</option><option value={60}>60 min</option></select></label><button type="button" onclick={removeCatalogCache}>Clear cache</button></div>
+      {:else}
+        {#if account && !nuvioSession}
+          <p class="panel-copy">Plugin repositories come with Nuvio profiles. Stremio accounts find streams through addons.</p>
+        {:else if nuvioSession && !nuvioProfileReady}
+          <p class="panel-copy">{nuvioProfileLocked ? `Enter ${activeProfileName}'s PIN to see its plugins.` : 'Choose a Nuvio profile to see its plugins.'} <button class="text-action" onclick={openProfileGate}>{nuvioProfileLocked ? 'Enter PIN' : "Who's watching?"}</button></p>
+        {:else}
+          {#if pluginsReadOnly}<p class="panel-copy">This profile uses the primary profile's plugins. Switch to the primary profile to change them.</p>{/if}
+          <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addPlugin(); }}><input type="url" bind:value={pluginInput} placeholder="Paste a plugin repository URL" aria-label="Nuvio plugin repository URL" required /><button type="submit" disabled={addingPlugin || pluginsReadOnly}>{#if addingPlugin}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
+          <p class="addon-form-hint">{nuvioSession ? `Adds to ${activeProfileName}'s profile. Scraper switches and settings sync for Bridged Streams.` : 'Saved only in this browser.'} Plugin repositories find streams with browser-compatible scrapers.</p>
+          {#if pluginError}<p class="error-message" role="alert">{pluginError}</p>{/if}
+      {#each plugins as repo (repo.manifestUrl)}<div class="plugin-repo"><div class="addon-row"><div class="addon-logo">N</div><div class="addon-info"><strong>{repo.name}</strong><small>{nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) ? 'Nuvio profile' : 'This browser'} · {repo.scrapers.filter(browserCompatible).length} enabled of {repo.scrapers.length} scrapers</small></div>{#if localPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<button class="icon-button" onclick={() => removePlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from this browser`}><Trash2 size={18} /></button>{:else if !activeNuvioProfile?.uses_primary_plugins || nuvioProfileIndex === 1}<button class="icon-button" onclick={() => void removeNuvioPlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from Nuvio`}><Trash2 size={18} /></button>{/if}</div>
+        {#if nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<p class="panel-copy">Scraper controls sync to this Nuvio profile for Bridged Streams. Nuvio Mobile stores these controls locally.</p>{#if activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}<p class="panel-copy">Select the primary profile to edit shared plugins.</p>{/if}{/if}
+        {#each repo.scrapers as scraper (scraper.id)}
+          {@const readOnly = nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) && activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}
+          <div class="scraper-row"><span>{scraper.name}</span>
+            {#if scraper.hasSettings && platformCompatible(scraper)}<button aria-label={`Configure ${scraper.name}`} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => pluginSettingsTarget = { repo, scraperId: scraper.id, synced: nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) }}><Settings2 size={14} /> Configure</button>{/if}
+            {#if platformCompatible(scraper)}<button class:enabled={scraper.enabled !== false} aria-label={`${scraper.name} enabled`} aria-pressed={scraper.enabled !== false} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => void togglePluginScraper(repo.manifestUrl, scraper.id, scraper.enabled === false)}>{pluginSaving === `${repo.manifestUrl}:${scraper.id}` ? 'Saving…' : scraper.enabled === false ? 'Off' : 'On'}</button>{:else}<small>Native only</small>{/if}
+          </div>
+        {/each}
+      </div>{/each}
+          {#if !plugins.length}<div class="row-empty">No plugin repositories yet.</div>{/if}
+        {/if}
       {#if nativePluginsSupported}
         <div class="installed-label">DEVICE PLUGINS · {deviceProviders.length}</div>
         {#if !devicePluginsEnabled}<p class="panel-copy">Device plugins are turned off. Enable them in device plugin settings to find streams.</p>{/if}
@@ -3702,23 +3800,32 @@
           <div class="row-empty">No device plugins installed. Choose "Manage device plugins" to install or approve plugins on this device.</div>
         {/if}
       {/if}
-      <div class="installed-label">NUVIO PLUGIN REPOSITORIES · {plugins.length}</div>
-      <form class="addon-form" onsubmit={(event) => { event.preventDefault(); void addPlugin(); }}><input type="url" bind:value={pluginInput} placeholder="https://plugins.example/manifest.json" aria-label="Nuvio plugin repository URL" required /><button type="submit" disabled={addingPlugin}>{#if addingPlugin}<LoaderCircle size={18} class="spin" />{:else}<Plus size={18} />{/if} Install</button></form>
-      {#if nuvioSession && nuvioProfileReady}<label class="sync-choice"><input type="checkbox" bind:checked={syncNewPlugin} /> Install new plugin repositories in my Nuvio profile</label>{/if}
-      {#if pluginError}<p class="error-message" role="alert">{pluginError}</p>{/if}
-      {#each plugins as repo (repo.manifestUrl)}<div class="plugin-repo"><div class="addon-row"><div class="addon-logo">N</div><div class="addon-info"><strong>{repo.name}</strong><small>{nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) ? 'Nuvio profile' : 'This browser'} · {repo.scrapers.filter(browserCompatible).length} enabled of {repo.scrapers.length} scrapers</small></div>{#if localPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<button class="icon-button" onclick={() => removePlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from this browser`}><Trash2 size={18} /></button>{:else if !activeNuvioProfile?.uses_primary_plugins || nuvioProfileIndex === 1}<button class="icon-button" onclick={() => void removeNuvioPlugin(repo.manifestUrl)} aria-label={`Remove ${repo.name} from Nuvio`}><Trash2 size={18} /></button>{/if}</div>
-        {#if nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl)}<p class="panel-copy">Scraper controls sync to this Nuvio profile for Bridged Streams. Nuvio Mobile stores these controls locally.</p>{#if activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}<p class="panel-copy">Select the primary profile to edit shared plugins.</p>{/if}{/if}
-        {#each repo.scrapers as scraper (scraper.id)}
-          {@const readOnly = nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) && activeNuvioProfile?.uses_primary_plugins && nuvioProfileIndex !== 1}
-          <div class="scraper-row"><span>{scraper.name}</span>
-            {#if scraper.hasSettings && platformCompatible(scraper)}<button aria-label={`Configure ${scraper.name}`} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => pluginSettingsTarget = { repo, scraperId: scraper.id, synced: nuvioPlugins.some((item) => item.manifestUrl === repo.manifestUrl) }}><Settings2 size={14} /> Configure</button>{/if}
-            {#if platformCompatible(scraper)}<button class:enabled={scraper.enabled !== false} aria-label={`${scraper.name} enabled`} aria-pressed={scraper.enabled !== false} disabled={!!pluginSaving || nuvioSyncing || readOnly} onclick={() => void togglePluginScraper(repo.manifestUrl, scraper.id, scraper.enabled === false)}>{pluginSaving === `${repo.manifestUrl}:${scraper.id}` ? 'Saving…' : scraper.enabled === false ? 'Off' : 'On'}</button>{:else}<small>Native only</small>{/if}
-          </div>
-        {/each}
-      </div>{/each}
       <div class="installed-label">TMDB LOOKUP KEY</div>
       <p class="panel-copy">A TMDB API key lets Nuvio scrapers use titles from IMDb-based catalogs. The key stays in this browser.</p>
       <input class="settings-input" type="password" bind:value={tmdbKey} oninput={() => saveTmdbKey(tmdbKey)} placeholder="Your TMDB API key" aria-label="TMDB API key" autocomplete="off" />
+      {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if playbackPanel}
+  <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
+    <div class="manage-panel playback-panel" role="dialog" aria-modal="true" aria-label="Playback settings"><div class="panel-header"><div><div class="eyebrow">THIS DEVICE</div><h2>Playback</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={22} /></button></div>
+      <p class="panel-copy">These settings stay on this device and apply to every account.</p>
+      <h3 class="playback-section-title">Choosing a stream</h3>
+      <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} onChange={updateStreamSelection} />
+      <h3 class="playback-section-title">Player</h3>
+      {#if destinationSupported}
+        <div class="this-device-playback-settings">
+          <label class="playback-fallback-control"><span><strong>Use PlayBridge video player on this device</strong><small>When This device is selected, open PlayBridge’s built-in player instead of the browser player. Other destinations are unchanged.</small></span><input type="checkbox" role="switch" bind:checked={thisDevicePlayback.useNativePlayer} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} aria-label="Use PlayBridge video player on this device" /></label>
+          <label class="source-destination">Player opening orientation <select bind:value={thisDevicePlayback.initialOrientation} onchange={() => saveThisDevicePlayback(thisDevicePlayback)} disabled={!thisDevicePlayback.useNativePlayer || !openingOrientationSupported} aria-label="Player opening orientation"><option value="landscape">Landscape</option><option value="portrait">Portrait</option><option value="auto">Automatic</option></select></label>
+          <p class="panel-copy">Applies only to the built-in player on This device. Landscape is the default; this is not a permanent rotation lock.{#if !openingOrientationSupported} Update PlayBridge to choose the opening orientation.{/if}</p>
+        </div>
+      {/if}
+      <label class="playback-fallback-control"><span><strong>Native player fallback</strong><small>If MoviPlayer cannot play a stream, try the browser’s video player. On by default.</small></span><input type="checkbox" role="switch" bind:checked={nativePlayerFallback} onchange={saveNativePlayerFallback} aria-label="Native player fallback" /></label>
+      <h3 class="playback-section-title">Troubleshooting</h3>
+      <details class="playback-diagnostics"><summary>Playback diagnostics <span>{playbackDiagnostics.length} events</span></summary><p>Recent player attempts remain on this device across refreshes. Reports omit stream URLs, headers, and account credentials.</p><div class="diagnostic-actions"><button type="button" onclick={() => void runPlaybackChecks()} disabled={diagnosticsChecking}>{diagnosticsChecking ? 'Checking…' : 'Check player engine'}</button><button type="button" onclick={() => void copyPlaybackReport()}>Copy report</button><button type="button" onclick={removePlaybackReport}>Clear history</button></div>{#if diagnosticsStatus}<small role="status">{diagnosticsStatus}</small>{/if}<textarea readonly aria-label="Playback diagnostic report" value={playbackReport(playbackDiagnostics)}></textarea></details>
     </div>
   </div>
 {/if}

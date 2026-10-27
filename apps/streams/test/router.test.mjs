@@ -43,7 +43,7 @@ function browser(t, hash = '#/', historyEvents = true) {
 test('tab URLs normalize to the base while legacy inbound links still parse', () => {
   for (const name of ['home', 'search', 'library', 'settings']) assert.equal(routeHash(tab(name, 'film')), '#/');
   assert.deepEqual(parseRoute('#/search?q=film'), { kind: 'tab', tab: 'search', query: 'film', panel: undefined });
-  for (const panel of ['accounts', 'addons', 'integrations']) {
+  for (const panel of ['accounts', 'addons', 'playback', 'integrations']) {
     const route = { kind: 'tab', tab: 'settings', panel };
     assert.equal(routeHash(route), `#/settings/${panel}`);
     assert.equal(isRootTab(route), false);

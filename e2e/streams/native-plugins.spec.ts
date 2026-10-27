@@ -40,6 +40,7 @@ test('device plugin management button opens native settings and lists installed 
   await page.goto('/');
   await page.getByRole('button', { name: 'Add an addon' }).click();
   const manager = page.getByRole('dialog', { name: 'Manage addons' });
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
 
   // Manage device plugins button must be visible
   const manageButton = manager.getByRole('button', { name: 'Manage device plugins' });
@@ -141,6 +142,7 @@ test('empty web plugin list uses installed device providers and preserves Castle
   await expect(manager.locator('.addon-management-card').getByText('Native Catalog', { exact: true })).toBeVisible();
 
   // Enter TMDB API key but DO NOT install any web plugins
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
   await manager.getByLabel('TMDB API key', { exact: true }).fill('test-tmdb-key');
   await manager.getByRole('button', { name: 'Close', exact: true }).click();
 
@@ -247,6 +249,7 @@ test('prefers native resolution and avoids web worker fallback on native resolut
   await manager.getByRole('button', { name: 'Install', exact: true }).first().click();
   await expect(manager.locator('.addon-management-card').getByText('Fallback Catalog', { exact: true })).toBeVisible();
 
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
   await manager.getByLabel('Nuvio plugin repository URL').fill(`${plugin}/manifest.json`);
   await manager.getByRole('button', { name: 'Install', exact: true }).last().click();
   await expect(manager.getByText('Shared Plugin Repo', { exact: true })).toBeVisible();
@@ -277,6 +280,7 @@ test('host reporting native plugins unavailable does not offer privileged native
   await page.goto('/');
   await page.getByRole('button', { name: 'Add an addon' }).click();
   const manager = page.getByRole('dialog', { name: 'Manage addons' });
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
 
   // Manage device plugins button must NOT be present
   await expect(manager.getByRole('button', { name: 'Manage device plugins' })).toHaveCount(0);
@@ -304,6 +308,7 @@ test('Play Store stub exposing plugins API with capability 0 and available false
   await page.goto('/');
   await page.getByRole('button', { name: 'Add an addon' }).click();
   const manager = page.getByRole('dialog', { name: 'Manage addons' });
+  await manager.getByRole('tab', { name: /^Plugins/ }).click();
 
   // Manage device plugins button must NOT be present
   await expect(manager.getByRole('button', { name: 'Manage device plugins' })).toHaveCount(0);
