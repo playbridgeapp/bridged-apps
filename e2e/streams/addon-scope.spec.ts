@@ -131,3 +131,28 @@ test('playback settings have their own panel for this device', async ({ page }) 
   await expect(playback.getByRole('switch', { name: 'Native player fallback' })).toBeVisible();
   await expect(page).toHaveURL(/#\/settings\/playback$/);
 });
+
+test('catalogs with addon-declared content types load, open, and keep their links', async ({ page }) => {
+  const tube = 'https://scope-tube.test';
+  const clip = { id: 'tbl:1', type: 'Tube', name: 'Custom Clip', poster: '' };
+  await page.route(`${tube}/**`, (route) => {
+    const path = decodeURIComponent(new URL(route.request().url()).pathname);
+    const json = path === '/manifest.json'
+      ? { id: 'scope-tube', name: 'Tube Catalog', version: '1.0.0', types: ['Tube'], idPrefixes: ['tbl:'], resources: ['catalog', 'meta', 'stream'],
+        catalogs: [{ id: 'recent', type: 'Tube', name: 'Tubes - Recent', extra: [{ name: 'genre', options: ['All', 'Other'] }, { name: 'skip' }] }] }
+      : path.startsWith('/catalog/Tube/') ? { metas: [clip] }
+      : path === '/meta/Tube/tbl:1.json' ? { meta: { ...clip, description: 'A custom-type title' } }
+      : { streams: [] };
+    return route.fulfill({ json, headers });
+  });
+  await page.addInitScript((url) => localStorage.setItem('bridged-streams.addons.v1', JSON.stringify([url])), `${tube}/manifest.json`);
+  await page.goto('/');
+  const row = page.locator('.catalog-section').filter({ has: page.getByRole('heading', { name: 'Tubes - Recent' }) });
+  await expect(row).toContainText('TUBE · Tube Catalog');
+  await row.getByRole('button', { name: 'View details for Custom Clip' }).click();
+  await expect(page.getByRole('dialog', { name: 'Custom Clip', exact: true })).toBeVisible();
+  await expect(page).toHaveURL(/#\/Tube\/tbl%3A1$/);
+  await page.reload();
+  await expect(page.getByRole('dialog', { name: 'Custom Clip', exact: true })).toBeVisible();
+  await expect(page.getByText('A custom-type title')).toBeVisible();
+});

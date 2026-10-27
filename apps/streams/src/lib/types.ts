@@ -1,4 +1,13 @@
-export type MediaType = 'movie' | 'series' | 'sport' | 'library';
+// Addons may declare their own content types (for example "Tube" or "Live") besides the Stremio built-ins.
+export type MediaType = 'movie' | 'series' | 'sport' | 'library' | (string & {});
+
+// First route segments the app itself uses; a content type with one of these names could not have a link.
+const RESERVED_TYPES = new Set(['catalog', 'home', 'search', 'settings']);
+
+/** A content type that can appear in a link: built-in or addon-declared, short, and without path characters. */
+export function isMediaType(value: unknown): value is MediaType {
+  return typeof value === 'string' && /^[\p{L}\p{N}][\p{L}\p{N} _.-]{0,39}$/u.test(value) && !RESERVED_TYPES.has(value.toLowerCase());
+}
 
 export interface AddonResource {
   name: string;

@@ -1,5 +1,6 @@
 import { lookupMetadata } from './metadata-lookup.ts';
 import type { AddonCatalog, AddonManifest, AddonResource, InstalledAddon, MediaType, Meta, MetaPreview, PluginRepository, Stream, NativePluginsBridge, NativePluginsStatus } from './types';
+import { isMediaType } from './types.ts';
 import { browserCompatible, fetchPluginStreams, platformCompatible } from './plugins.ts';
 import { cachedStreamLookup } from './stream-cache.ts';
 import { fetchNativePluginsStatus, hasNativePluginsApi, matchNativeProvider, getResolutionGeneration } from './native-plugins.ts';
@@ -104,7 +105,7 @@ export function requiredCatalogExtras(catalog: AddonCatalog, search?: string): R
 export async function fetchCatalogPage(addon: InstalledAddon, catalog: AddonCatalog, extras: Record<string, string> = {}, signal?: AbortSignal): Promise<{ items: MetaPreview[]; rawItemCount: number }> {
   const data = await getJson<{ metas?: MetaPreview[] }>(resourceUrl(addon, 'catalog', catalog.type, catalog.id, extras), signal);
   const metas = Array.isArray(data.metas) ? data.metas : [];
-  return { items: metas.filter((meta) => meta.id && ['movie', 'series', 'sport', 'library'].includes(meta.type)), rawItemCount: metas.length };
+  return { items: metas.filter((meta) => meta.id && isMediaType(meta.type)), rawItemCount: metas.length };
 }
 
 export async function fetchCatalog(addon: InstalledAddon, catalog: AddonCatalog, extras: Record<string, string> = {}, signal?: AbortSignal): Promise<MetaPreview[]> {
