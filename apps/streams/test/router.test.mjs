@@ -203,3 +203,13 @@ test('late history events after a timeout do not apply the tab selection twice',
   assert.equal(changes.length, count + 2);
   assert.equal(changes.at(-1).route.tab, 'settings');
 });
+
+test('addon-declared content types have links; reserved and path-like types do not', () => {
+  for (const type of ['Tube', 'JAV', 'Live', 'Porn']) {
+    const route = { kind: 'detail', type, id: 'tbl:abc 1', videoId: undefined, season: undefined, episode: undefined };
+    assert.equal(routeHash(route), `#/${type}/tbl%3Aabc%201`);
+    assert.deepEqual(parseRoute(routeHash(route)), route);
+  }
+  assert.deepEqual(parseRoute('#/Live%20TV/ch1/streams'), { kind: 'streams', type: 'Live TV', id: 'ch1', videoId: undefined, season: undefined, episode: undefined });
+  for (const hash of ['#/settings/x', '#/Search/abc', '#/../abc', '#/%2Fetc/abc']) assert.equal(parseRoute(hash).kind === 'detail', false, hash);
+});

@@ -156,6 +156,9 @@
   let profileGateBusy: number | null = null;
   let profileGateMessage = '';
   let pendingProfileRoute: AppRoute | null = null;
+  // The account whose sources were last fetched; until then an empty list means "loading", not "no addons".
+  let nuvioSourcesScope = '';
+  let stremioSourcesUser = '';
   let signInProvider: 'nuvio' | 'stremio' | null = null;
   let nuvioBusy = false;
   let nuvioProfilesLoading = !!initialNuvioSession;
@@ -508,6 +511,8 @@
   $: addonDestination = nuvioSession ? 'nuvio' : account ? 'stremio' : 'local';
   $: installedAddons = account || nuvioSession ? [...accountAddons, ...nuvioAddons] : localAddons;
   $: addons = uniqueEnabledAddons(installedAddons);
+  $: sourcesPending = nuvioSession ? nuvioProfileReady && nuvioSourcesScope !== nuvioCacheScope(nuvioSession, nuvioProfileIndex)
+    : !!account && stremioSourcesUser !== account.user._id;
   $: browsableAddons = addons.filter((addon) => catalogs([addon])
     .some(({ catalog }) => requiredCatalogExtras(catalog) !== null));
   $: effectiveAddonFilter = browsableAddons.some((addon) => addon.manifestUrl === activeAddonFilter)
@@ -984,6 +989,7 @@
       await syncAccount();
     } catch (error) {
       if (generation === accountGeneration) {
+        stremioSourcesUser = stored.user._id;
         accountError = `${message(error)} Your saved sign-in was kept. Try syncing again when the service is available.`;
       }
     } finally {
@@ -1040,6 +1046,7 @@
     }
     accountError = [addonsResult, libraryResult].filter((result) => result.status === 'rejected')
       .map((result) => result.status === 'rejected' ? message(result.reason) : '').join(' ');
+    stremioSourcesUser = current.user._id;
     accountMessage = accountError ? '' : `Synced ${accountAddons.length} addons and ${accountLibrary.filter((item) => !item.removed && !item.temp).length} library titles.`;
     accountSyncing = false;
     void flushPlaybackWrites();
@@ -1052,6 +1059,7 @@
     accountGeneration += 1;
     addonWorking = '';
     account = null;
+    stremioSourcesUser = '';
     accountAddons = [];
     accountLibrary = [];
     progressLastWrite.clear();
@@ -1364,6 +1372,7 @@
       if (previous !== catalogConfigurationSignature(nuvioAddons)) void loadCatalogs();
       if (generation !== nuvioGeneration || index !== nuvioProfileIndex || request !== nuvioSyncRequest) return;
     } else failures.push(`Addons: ${message(addonsResult.reason)}`);
+    nuvioSourcesScope = nuvioCacheScope(current, index);
     if (pluginsResult.status === 'fulfilled') {
       const previousPreferences = nuvioPlugins.map((repo) => ({ url: repo.manifestUrl,
         scrapers: repo.scrapers.map((scraper) => ({ id: scraper.id, enabled: scraper.enabled, settings: scraper.settings })) }));
@@ -1414,6 +1423,7 @@
     profileGateDismissed = false;
     profileGateMessage = '';
     pendingProfileRoute = null;
+    nuvioSourcesScope = '';
     nuvioProfiles = [];
     nuvioProfilesLoading = false;
     nuvioProfilesLoadFailed = false;
@@ -3393,6 +3403,13 @@
   }
 </script>
 
+{#snippet loadingSpace(note: string)}
+  <section class="startup-screen" role="status" aria-live="polite">
+    <div class="startup-copy"><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> {note}</p></div>
+    <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
+  </section>
+{/snippet}
+
 {#snippet destinationRow()}
   <div class="playback-destination">
     {#if bridge}
@@ -3420,10 +3437,7 @@
   <main aria-busy={startupLoading}>
     {#if !startupLoading && (tab === 'search' || tab === 'library' || tab === 'settings')}<FluidBackground paused={!!selected || !!playing} />{/if}
     {#if startupLoading}
-      <section class="startup-screen" role="status" aria-live="polite">
-        <div class="startup-copy"><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> Restoring your accounts and addons…</p></div>
-        <div class="startup-skeletons" aria-hidden="true"><div class="startup-hero-skeleton"></div><div class="card-skeletons"><span></span><span></span><span></span><span></span><span></span></div></div>
-      </section>
+      {@render loadingSpace('Restoring your accounts and addons…')}
     {:else}
     {#if tab === 'library'}
       <section class="library-panel browse tab-page">
@@ -3504,7 +3518,9 @@
     {#if tab === 'home'}
     <div class="home-panel tab-page">
       <HomeContent immediate={homeScrollTarget > 0} onReady={restoreHomeScroll}>
-      {#if addons.length === 0 && !installedAddons.length}
+      {#if addons.length === 0 && !installedAddons.length && sourcesPending}
+      {@render loadingSpace(nuvioSession ? `Loading addons for ${activeProfileName}…` : 'Loading your Stremio addons…')}
+      {:else if addons.length === 0 && !installedAddons.length}
       <section class="welcome"><div class="welcome-glow"></div>
         {#if account || nuvioSession}
           <div class="eyebrow">ACCOUNT CONNECTED</div><h1>Your space is ready.<br /><em>Add a source to watch.</em></h1><p>Your account is connected. Add a catalog addon to browse movies, shows, and sports here.</p>
@@ -3548,7 +3564,7 @@
         {/if}
         {#if loadingCatalogs && !visibleRows.some((row) => row.items.length)}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading catalogs…</div>{/if}
         {#each visibleRows as row (row.key)}
-          <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : 'LIBRARY'} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><button class="catalog-view-all" onclick={() => openCatalogPage(row)} aria-label={`View all ${row.title} from ${row.addon.manifest.name}`} title={`View all ${row.title}`}><ArrowRight size={20} /></button></div>
+          <section class="catalog-section"><div class="section-heading"><div><span class="section-type">{row.catalog.type === 'movie' ? 'MOVIES' : row.catalog.type === 'series' ? 'TV SHOWS' : row.catalog.type === 'sport' ? 'SPORTS' : row.catalog.type.toUpperCase()} · {row.addon.manifest.name}</span><h2>{row.title}</h2></div><button class="catalog-view-all" onclick={() => openCatalogPage(row)} aria-label={`View all ${row.title} from ${row.addon.manifest.name}`} title={`View all ${row.title}`}><ArrowRight size={20} /></button></div>
             {#if row.items.length}<CatalogRail items={row.items} title={row.title} onSelect={(item) => void openDetail(item)} onLoadMore={() => loadMoreCatalogRow(row.key)} canLoadMore={row.nextSkip != null} loadingMore={!!row.loadingMore} pageError={row.pageError || ''} active={!catalogPage && !selected} memoryKey={row.key} />{#if row.error}<p class="catalog-stale-message">Showing cached titles. Refresh failed: {row.error}</p>{/if}
             {:else if row.loading}<div class="card-skeletons" aria-label={`Loading ${row.title}`}><span></span><span></span><span></span><span></span><span></span></div>{:else if row.error}<div class="row-empty">{row.error}</div>{:else}<div class="row-empty">No titles in this catalog.</div>{/if}
           </section>
@@ -3897,7 +3913,7 @@
       <div class="detail-hero" style:min-height={heroMinHeight ? `${heroMinHeight}px` : null} style:--hero-pin={heroMinHeight ? `${heroPinHeight}px` : null} style:background-color={detailBackdrop ? 'transparent' : null} style:--hero-bg={detailBackdrop ? `${selected.background ? 'linear-gradient(90deg, #090b0fec 2%, #090b0f85 43%, #090b0f24 100%)' : 'linear-gradient(90deg, #090b0ff2, #090b0f99)'}, url('${detailBackdrop.replaceAll("'", '%27')}')` : ''}>
         <div class="detail-intro">
           {#if !detailIdentityReady}<TitleSkeleton loading={loadingDetail} />{:else}
-          <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : 'TITLE'} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
+          <div class="detail-type">{selected.type === 'movie' ? 'MOVIE' : selected.type === 'series' ? 'TV SERIES' : selected.type === 'sport' ? 'SPORTS' : selected.type === 'library' ? 'TITLE' : selected.type.toUpperCase()} {selected.releaseInfo ? `· ${displayReleaseInfo(selected.releaseInfo)}` : ''}</div>
           {#if selected.logo && !brokenLogos.has(selected.logo)}<img class="detail-logo" src={selected.logo} alt={selected.name} onerror={(event) => { const url = event.currentTarget.getAttribute('src'); if (url) brokenLogos = new Set([...brokenLogos, url]); }} />{:else}<h1>{selected.name}</h1>{/if}
           {#if selected.genres?.length}<div class="detail-genres">{selected.genres.slice(0, 4).join('  ·  ')}</div>{/if}
           <div class="detail-actions"><button class="detail-play" onclick={() => void detailPlay()} disabled={loadingDetail || nativePlayBusy || destinationBusy || destinationPending}>{#if loadingDetail}<LoaderCircle size={21} class="spin" />{:else}<Play size={21} fill="currentColor" />{/if} {loadingDetail ? 'Loading…' : selected.type === 'series' ? (episode && detailResumeMs > 0 ? `Resume S${episode.season ?? '?'}E${episode.episode ?? '?'}` : detailNextUp && episode ? `Next up S${episode.season}E${episode.episode}` : 'Choose episode') : detailResumeMs > 0 ? 'Resume' : 'Play'}</button>{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class="detail-action-icon" onclick={() => selected && openWatchingOptions(selected, selected.type === 'series' ? episode : null)} aria-label="Watching options" title="Watching options"><Check size={20} /></button>{/if}<button class="detail-action-icon" onclick={() => detailJump('detail-about')} aria-label="About this title" title="About this title"><Info size={21} /></button>{#if account && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInLibrary} class="detail-action-icon" onclick={() => void toggleLibrary()} disabled={libraryBusy} aria-label={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'} title={selectedInLibrary ? 'Remove from Stremio library' : 'Add to Stremio library'}>{#if libraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Bookmark size={20} fill={selectedInLibrary ? 'currentColor' : 'none'} />{/if}</button>{/if}{#if nuvioSession && nuvioProfileReady && (selected.type === 'movie' || selected.type === 'series')}<button class:added={selectedInNuvioLibrary} class="detail-action-icon" onclick={() => void toggleNuvioLibrary()} disabled={nuvioLibraryBusy} aria-label={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'} title={selectedInNuvioLibrary ? 'Remove from Nuvio library' : 'Add to Nuvio library'}>{#if nuvioLibraryBusy}<LoaderCircle size={20} class="spin" />{:else}<Library size={20} />{/if}</button>{/if}</div>

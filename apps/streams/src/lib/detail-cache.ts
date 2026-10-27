@@ -1,4 +1,5 @@
 import type { MediaType, MetaPreview } from './types';
+import { isMediaType } from './types.ts';
 
 const CACHE_KEY = 'bridged-streams.detail-preview.v1';
 const MAX_TITLES = 24;
@@ -11,7 +12,7 @@ function read(): Entry[] {
     if (!Array.isArray(entries)) return [];
     return entries.filter((entry): entry is Entry => !!entry && typeof entry.savedAt === 'number'
       && Date.now() - entry.savedAt < MAX_AGE_MS && typeof entry.preview?.id === 'string'
-      && typeof entry.preview?.name === 'string' && ['movie', 'series', 'sport', 'library'].includes(entry.preview?.type));
+      && typeof entry.preview?.name === 'string' && isMediaType(entry.preview?.type));
   } catch { return []; }
 }
 

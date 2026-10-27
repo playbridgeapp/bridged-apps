@@ -10,7 +10,7 @@
   export let subtitle: string | undefined = undefined;
 
   $: release = typeof item.releaseInfo === 'string' ? item.releaseInfo.trim().replace(/^(\d{4})\s*[-–—−]\s*$/, '$1') : '';
-  $: typeLabel = item.type === 'series' ? 'TV show' : item.type === 'movie' ? 'Movie' : item.type === 'sport' ? 'Sports' : 'Title';
+  $: typeLabel = item.type === 'series' ? 'TV show' : item.type === 'movie' ? 'Movie' : item.type === 'sport' ? 'Sports' : item.type === 'library' || !item.type ? 'Title' : item.type;
   $: detail = subtitle ?? (release || typeLabel);
 </script>
 

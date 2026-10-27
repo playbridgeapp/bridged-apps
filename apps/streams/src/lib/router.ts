@@ -1,4 +1,5 @@
 import type { MediaType } from './types';
+import { isMediaType } from './types.ts';
 import type { NavigationMotion } from './screen-transition';
 
 export type Tab = 'home' | 'search' | 'library' | 'settings';
@@ -15,7 +16,6 @@ export type AppRoute = MediaRoute
   | { kind: 'catalog'; addonId: string; type: string; id: string };
 
 const tabs = new Set(['home', 'search', 'library', 'settings']);
-const mediaTypes = new Set(['movie', 'series', 'sport', 'library']);
 
 function coordinate(value: string | null): number | undefined {
   return value !== null && /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) ? Number(value) : undefined;
@@ -29,7 +29,7 @@ export function parseRoute(hash: string): AppRoute {
     if (parts[0] === 'catalog' && parts.length === 4) {
       return { kind: 'catalog', addonId: parts[1], type: parts[2], id: parts[3] };
     }
-    if (mediaTypes.has(parts[0]) && parts.length >= 2 && parts.length <= 3
+    if (isMediaType(parts[0]) && parts.length >= 2 && parts.length <= 3
       && (!parts[2] || ['streams', 'player'].includes(parts[2]))) {
       return { kind: parts[2] === 'player' ? 'player' : parts[2] === 'streams' ? 'streams' : 'detail',
         type: parts[0] as MediaType, id: parts[1], videoId: url.searchParams.get('video') || undefined,
@@ -52,7 +52,7 @@ export function routeHash(route: AppRoute): string {
   } else if (route.kind === 'catalog') {
     path = `/catalog/${[route.addonId, route.type, route.id].map(encodeURIComponent).join('/')}`;
   } else {
-    path = `/${route.type}/${encodeURIComponent(route.id)}${route.kind === 'detail' ? '' : `/${route.kind}`}`;
+    path = `/${encodeURIComponent(route.type)}/${encodeURIComponent(route.id)}${route.kind === 'detail' ? '' : `/${route.kind}`}`;
     if (route.videoId) params.set('video', route.videoId);
     if (route.season !== undefined) params.set('season', String(route.season));
     if (route.episode !== undefined) params.set('episode', String(route.episode));

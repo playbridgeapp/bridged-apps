@@ -174,6 +174,8 @@ export async function fetchPluginStreams(
   const nativeAvailable = nativeStatus?.available === true;
   const nativeEnabled = nativeAvailable && nativeStatus?.enabled === true;
   const nativeProviders = nativeStatus?.providers || [];
+  // Nuvio scrapers look titles up on TMDB as a movie or TV show; addon-specific types have no TMDB identity.
+  if (type !== 'movie' && type !== 'series') return [];
   const mediaType: 'movie' | 'tv' = type === 'series' ? 'tv' : 'movie';
 
   const targets = repos.flatMap((repo) => repo.scrapers
