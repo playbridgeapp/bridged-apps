@@ -770,3 +770,47 @@ img.fade-img.is-loaded{opacity:1}
 :where(button,[role="button"],.media-card,.mobile-nav){-webkit-user-select:none;user-select:none}
 :where(button,[role="button"]):not(:disabled):active{opacity:.75;scale:.98}
 @media(prefers-reduced-motion:reduce){:where(button,[role="button"]):active{scale:1}}
+
+/* Sign-in welcome, Nuvio profile strip and launch preference */
+.welcome-split{position:relative;z-index:1;display:flex;flex-wrap:wrap;align-items:center;gap:48px 80px}
+.welcome-copy{flex:1 1 420px;max-width:600px}
+.welcome-split .welcome-copy h1{font-family:Georgia,serif;font-size:clamp(40px,5.4vw,72px);line-height:1;letter-spacing:.03em;text-transform:uppercase;margin:16px 0 20px}
+.welcome-split .welcome-copy p{margin:0}
+.welcome-choices{flex:0 1 420px;display:flex;flex-direction:column;gap:12px;box-sizing:border-box;padding:26px;border:1px solid #ffffff1a;border-radius:22px;background:#0f1216e6}
+.welcome-choices h2{margin:0 0 6px;font-size:20px}
+.welcome-choice{display:flex;align-items:center;gap:16px;width:100%;padding:14px 16px;border:1px solid #ffffff1f;border-radius:16px;background:#14181d;color:#f7f7f7;text-align:left}
+.welcome-choice:hover{border-color:#ffffff59;background:#1a1f25}
+.welcome-choice>span:nth-child(2){flex:1;min-width:0}
+.welcome-choice strong{display:block;font-size:15px}
+.welcome-choice small{display:block;margin-top:3px;color:#a3aab2;font-size:12px}
+.welcome-choice>svg{color:#a3aab2;flex:none}
+.choice-mark{display:grid;place-items:center;flex:none;width:44px;height:44px;border-radius:12px;background:#23324a;color:#cfe0ff;font-family:Manrope,sans-serif;font-weight:800;font-size:18px}
+.choice-mark.stremio{background:#2f2846;color:#ddd3ff}
+.welcome-or{display:flex;align-items:center;gap:12px;margin:4px 0;color:#8e959d;font-size:11px;font-weight:800;letter-spacing:.16em}
+.welcome-or:before,.welcome-or:after{content:"";flex:1;height:1px;background:#ffffff1a}
+.welcome-addon{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;border:1px solid #ffffff45;border-radius:999px;background:#ffffff14;color:#fff;font-weight:800;font-size:14px}
+.welcome-addon:hover{background:#ffffff26}
+.welcome-choices p{margin:6px 2px 0;color:#9aa1a9;font-size:12px;line-height:1.6;max-width:none}
+.profile-strip{display:flex;flex-wrap:wrap;gap:6px 10px;margin:4px 0 18px}
+.profile-strip button{display:flex;flex-direction:column;align-items:center;gap:7px;width:76px;padding:8px 0;border:0;border-radius:14px;background:none;color:#d4d8dc;font-size:12px;font-weight:800}
+.profile-strip button:hover{background:#ffffff0d;color:#fff}
+.profile-strip button span:last-child{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.launch-choice{margin:22px 0 8px;padding:16px;border:1px solid #ffffff1a;border-radius:16px;background:#12161b}
+.launch-choice legend{padding:0 6px;color:#eef2f4;font-family:Manrope,sans-serif;font-size:14px;font-weight:800}
+.launch-choice label{display:flex;align-items:flex-start;gap:12px;padding:11px 12px;border-radius:12px;cursor:pointer}
+.launch-choice label.selected{background:#ffffff0d}
+.launch-choice input{margin:3px 0 0;width:18px;height:18px;accent-color:#6ce4be}
+.launch-choice strong,.launch-choice small{display:block}
+.launch-choice strong{font-size:13px}
+.launch-choice small{margin-top:3px;color:#a3aab2;font-size:12px;line-height:1.5}
+.launch-choice p{margin:8px 4px 0;color:#c9cdd2;font-size:12px;line-height:1.5}
+.watching-as{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:0 0 22px;padding:16px 18px;border:1px solid #ffffff1a;border-radius:18px;background:#12161bcc}
+.watching-as>span:nth-child(2){flex:1;min-width:120px}
+.watching-as small{display:block;color:#9aa1a9;font-size:11px;font-weight:800;letter-spacing:.16em}
+.watching-as strong{display:block;margin-top:3px;font-size:18px}
+.watching-as .outline-button{border-radius:999px}
+@media(max-width:800px){.welcome-split{gap:32px}.welcome-choices{flex-basis:100%;padding:20px}}
+.account-choice{margin:24px 0 4px;padding:16px;border:1px solid #6b5a2c;border-radius:14px;background:#2b2615;color:#f3e2b0;font-size:13px;line-height:1.55}
+.account-choice p{margin:0 0 12px}
+.account-choice div{display:flex;flex-wrap:wrap;gap:10px}
+.account-choice .outline-button{border-radius:999px}

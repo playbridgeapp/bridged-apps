@@ -14,6 +14,11 @@
   import CatalogRail from './lib/CatalogRail.svelte';
   import { clearRailPositions } from './lib/rail-positions';
   import TitleSkeleton from './lib/TitleSkeleton.svelte';
+  import ProfileAvatar from './lib/ProfileAvatar.svelte';
+  import ProfileGate from './lib/ProfileGate.svelte';
+  import SignInSheet from './lib/SignInSheet.svelte';
+  import { cachedNuvioProfiles, chosenInThisTab, profileAvatarImage, profileGateRequired, rememberChosenInThisTab, saveNuvioProfilesForDisplay, savedProfileLaunchMode, saveProfileLaunchMode } from './lib/profile-launch';
+  import type { AvatarCatalogItem, PinResult, ProfileLaunchMode } from './lib/profile-launch';
   import { fadeIn } from './lib/image-fade';
   import TmdbSettingsPanel from './lib/TmdbSettings.svelte';
   import TmdbDetails from './lib/TmdbDetails.svelte';
@@ -47,7 +52,7 @@
   import { addAccountAddon, fetchAccountAddons, fetchAccountLibrary, login, loginWithKey, moveAccountAddon, refreshUser, removeAccountAddon, savedSession, saveSession, saveWatchProgress, setLibraryMembership } from './lib/stremio';
   import { NUVIO_CLOUD_PUBLISHABLE_KEY, NUVIO_CLOUD_URL, changeNuvioSource, createNuvioPrimaryProfile, decorateNuvioLibrary, deleteNuvioLibraryItem, discoverNuvio, fetchNuvioLibrary, fetchNuvioProfiles, fetchNuvioSources, freshNuvioSession, loginNuvio, moveNuvioAddon, pushNuvioLibraryItem, savedNuvioSession, saveNuvioSession, setNuvioAddonEnabled, verifyNuvioPin } from './lib/nuvio';
   import type { NuvioLibraryItem, NuvioProfile, NuvioProgress, NuvioWatchedItem, NuvioSession } from './lib/nuvio';
-  import { fetchNuvioPluginPreferences, changeNuvioScraperPreference } from './lib/nuvio';
+  import { fetchNuvioPluginPreferences, changeNuvioScraperPreference, fetchNuvioAvatarCatalog, NuvioPinError } from './lib/nuvio';
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider, PlaybackDestination } from './lib/types';
   import { hasNativePluginsApi, fetchNativePluginsStatus, manageDevicePlugins, cancelNativeResolution, clearNativeStatusCache } from './lib/native-plugins';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
@@ -134,7 +139,21 @@
   let nuvioKey = NUVIO_CLOUD_PUBLISHABLE_KEY;
   let nuvioEmail = '';
   let nuvioPassword = '';
-  let nuvioPin = '';
+  // "Who's watching?" follows Nuvio's AppGate; see profileGateRequired.
+  let profileLaunchMode: ProfileLaunchMode = savedProfileLaunchMode();
+  let nuvioChosenThisTab = initialNuvioSession ? chosenInThisTab(initialNuvioSession, nuvioProfileIndex) : false;
+  let cachedGateProfiles: NuvioProfile[] = initialNuvioSession ? cachedNuvioProfiles(initialNuvioSession) : [];
+  let lastNuvioProfile = nuvioProfileIndex;
+  let forceProfileChoice = false;
+  let profileGateManual = false;
+  let profileGatePin: number | null = null;
+  let profileGateDismissed = false;
+  let profileGateBusy: number | null = null;
+  let profileGateMessage = '';
+  let pendingProfileRoute: AppRoute | null = null;
+  let avatarCatalog: AvatarCatalogItem[] = [];
+  let avatarCatalogFor = '';
+  let signInProvider: 'nuvio' | 'stremio' | null = null;
   let nuvioBusy = false;
   let nuvioProfilesLoading = !!initialNuvioSession;
   let nuvioProfilesLoadFailed = false;
@@ -559,6 +578,16 @@
   $: nuvioProfileLocked = activeNuvioProfile?.pin_enabled === true && nuvioUnlockedProfile !== nuvioProfileIndex;
   $: nuvioProfileReady = !!activeNuvioProfile && !nuvioProfileLocked;
   $: nuvioDisplayReady = nuvioProfileReady || provisionalNuvioCache;
+  $: gateProfiles = nuvioProfiles.length ? nuvioProfiles : cachedGateProfiles;
+  $: profileGateNeeded = !!nuvioSession && ((forceProfileChoice && gateProfiles.length > 1) || profileGateRequired({ profiles: gateProfiles,
+    activeIndex: nuvioProfileIndex, unlockedIndex: nuvioUnlockedProfile, mode: profileLaunchMode, chosenInThisTab: nuvioChosenThisTab }));
+  $: profileGateOpen = !!nuvioSession && !signInProvider && gateProfiles.length > 0
+    && (profileGateManual || profileGatePin !== null || (profileGateNeeded && !profileGateDismissed));
+  $: profileReturnRoute = profileGateManual ? null : currentRoute.kind !== 'tab' ? currentRoute : pendingProfileRoute;
+  $: profileReturnLabel = !profileReturnRoute || profileReturnRoute.kind === 'tab' ? ''
+    : profileReturnRoute.kind === 'catalog' ? 'the catalog you were viewing'
+    : selected && selected.id === profileReturnRoute.id && selected.name ? selected.name : 'the title you were viewing';
+  $: profileImage = (profile: NuvioProfile) => nuvioSession ? profileAvatarImage(profile, avatarCatalog, nuvioSession.backendUrl) : null;
   $: searchAddons = uniqueEnabledAddons([...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : []), ...localAddons]);
   $: currentSearchIdentity = JSON.stringify([account?.user._id ?? null,
     nuvioSession ? [nuvioSession.backendUrl, nuvioSession.user.id, nuvioProfileIndex, nuvioUnlockedProfile] : null]);
@@ -825,6 +854,12 @@
         else if (!event.shiftKey && document.activeElement === last && first) { event.preventDefault(); first.focus(); }
       }
       if (event.key !== 'Escape') return;
+      if (signInProvider) { signInProvider = null; return; }
+      if (profileGateOpen) {
+        if (profileGatePin !== null) cancelProfilePin();
+        else if (profileGateManual && !profileGateNeeded) closeProfileGate();
+        return;
+      }
       if (watchingTarget) { watchingTarget = null; }
       else if (activeTrailer) { event.preventDefault(); activeTrailer = null; }
       else if (openDiscoverDropdown) closeDiscoverMenu();
@@ -948,11 +983,15 @@
     try {
       const signedIn = loginMode === 'password' ? await login(email, password) : await loginWithKey(authKeyInput);
       if (generation !== accountGeneration) return;
+      // One account at a time: the other signs out only once this sign-in has succeeded.
+      if (nuvioSession) await replaceAccount('nuvio');
+      if (generation !== accountGeneration) return;
       account = signedIn;
       if (addonDestination === 'local') addonDestination = 'stremio';
       saveSession(signedIn);
       password = '';
       authKeyInput = '';
+      if (signInProvider === 'stremio') signInProvider = null;
       await syncAccount();
     } catch (error) {
       if (generation === accountGeneration) accountError = message(error);
@@ -1008,6 +1047,17 @@
     void loadCatalogs();
   }
 
+  /** Signs out the other provider, first trying to deliver its queued watching changes. */
+  async function replaceAccount(provider: 'stremio' | 'nuvio') {
+    await flushPlaybackWrites();
+    if (provider === 'stremio' && account) disconnectAccount();
+    if (provider === 'nuvio' && nuvioSession) disconnectNuvio();
+  }
+
+  async function keepOnlyAccount(provider: 'stremio' | 'nuvio') {
+    await replaceAccount(provider === 'stremio' ? 'nuvio' : 'stremio');
+  }
+
   async function discoverNuvioBackend() {
     nuvioBusy = true;
     nuvioError = '';
@@ -1054,9 +1104,18 @@
     try {
       const signedIn = await loginNuvio(nuvioBackend, nuvioKey, nuvioEmail, nuvioPassword);
       if (generation !== nuvioGeneration) return;
+      if (account) await replaceAccount('stremio');
+      if (generation !== nuvioGeneration) return;
       nuvioSession = signedIn;
       saveNuvioSession(signedIn);
       nuvioPassword = '';
+      // Like the Nuvio app, a fresh sign-in always asks which profile is watching.
+      forceProfileChoice = true;
+      nuvioChosenThisTab = false;
+      lastNuvioProfile = 0;
+      profileGateDismissed = false;
+      cachedGateProfiles = [];
+      if (signInProvider === 'nuvio') signInProvider = null;
       await loadNuvioProfiles(signedIn, generation);
     } catch (error) { if (generation === nuvioGeneration) nuvioError = message(error); }
     finally { if (generation === nuvioGeneration) nuvioBusy = false; }
@@ -1073,6 +1132,10 @@
       nuvioProfilesCheckedAt = Date.now();
       const previousIndex = nuvioProfileIndex;
       const returnedProfile = profiles.find(profile => profile.profile_index === previousIndex);
+      const knownUnprotected = provisionalNuvioCache || nuvioProfiles.some((profile) => profile.profile_index === previousIndex && !profile.pin_enabled);
+      saveNuvioProfilesForDisplay(current, profiles);
+      cachedGateProfiles = profiles;
+      if (profiles.some((profile) => profile.avatar_id && !profile.avatar_url)) void loadAvatarCatalog(current);
       // Unknown/changed authorization must revoke every cached surface before assigning profiles.
       const revoked = !returnedProfile || (returnedProfile.pin_enabled && nuvioUnlockedProfile !== previousIndex);
       if (revoked) revokeNuvioCachedContent();
@@ -1090,9 +1153,15 @@
       if (!returnedProfile) {
         nuvioProfileIndex = 0;
         nuvioMessage = 'Choose a Nuvio profile. The previous profile is no longer available.';
+        profileGateMessage = previousIndex > 0 ? 'The profile you were using is no longer available. Choose another.' : '';
+        profileGateDismissed = false;
         return;
       }
       nuvioProfileIndex = previousIndex;
+      if (returnedProfile.pin_enabled && nuvioUnlockedProfile !== previousIndex && knownUnprotected) {
+        profileGateMessage = `${returnedProfile.name || 'This profile'} now has a PIN. Enter it to continue.`;
+        profileGateDismissed = false;
+      }
       if (profiles.find((profile) => profile.profile_index === nuvioProfileIndex)?.pin_enabled) {
         if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
       } else {
@@ -1120,8 +1189,10 @@
     if (current) await loadNuvioProfiles(current, nuvioGeneration, create);
   }
 
-  async function chooseNuvioProfile(index: number) {
+  /** Switches the active profile; `unlocked` means its PIN was already verified for this switch. */
+  async function chooseNuvioProfile(index: number, unlocked = false) {
     if (!nuvioProfiles.some((profile) => profile.profile_index === index)) return;
+    const locked = !unlocked && nuvioProfiles.find((profile) => profile.profile_index === index)?.pin_enabled === true;
     revokeNuvioCachedContent();
     nuvioGeneration += 1;
     pluginMutation++;
@@ -1132,12 +1203,11 @@
     nuvioProfileIndex = index;
     if (nuvioSession) saveNuvioAuthorization(nuvioSession, nuvioProfiles.find(profile => profile.profile_index === index)!, nuvioProfilesCheckedAt);
     if (nuvioSession) writePersistentSession(NUVIO_PROFILE_KEY, { userId: nuvioSession.user.id, index });
-    if (nuvioProfiles.find((profile) => profile.profile_index === index)?.pin_enabled) {
+    if (locked) {
       if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
       syncNewPlugin = false;
-    }
-    nuvioUnlockedProfile = null;
-    nuvioPin = '';
+    } else if (!account && addonDestination === 'local') addonDestination = 'nuvio';
+    nuvioUnlockedProfile = unlocked ? index : null;
     nuvioAddons = [];
     nuvioPlugins = [];
     nuvioLibrary = [];
@@ -1155,30 +1225,111 @@
     nuvioSyncing = false;
     nuvioMessage = '';
     nuvioError = '';
-    if (!nuvioProfiles.find((profile) => profile.profile_index === index)?.pin_enabled && nuvioSession) hydrateNuvioCache(nuvioSession, index);
+    if (!locked && nuvioSession) hydrateNuvioCache(nuvioSession, index);
     await loadCatalogs();
-    if (!nuvioProfiles.find((profile) => profile.profile_index === index)?.pin_enabled) await syncNuvio();
+    if (!locked) await syncNuvio();
   }
 
-  async function unlockNuvioProfile() {
-    if (!nuvioSession) return;
+  /** Enters a profile from "Who's watching?" or settings, verifying its PIN before switching. */
+  async function enterNuvioProfile(index: number, pin = ''): Promise<PinResult> {
     const current = nuvioSession;
-    const index = nuvioProfileIndex;
+    const profile = nuvioProfiles.find((item) => item.profile_index === index);
+    if (!current || !profile) return { ok: false, message: 'That profile is no longer available.' };
     const generation = nuvioGeneration;
-    nuvioBusy = true;
-    nuvioError = '';
+    const returnRoute = profileReturnRoute;
+    const needsPin = profile.pin_enabled === true && nuvioUnlockedProfile !== index;
+    profileGateBusy = index;
     try {
-      await verifyNuvioPin(current, index, nuvioPin);
-      if (generation !== nuvioGeneration || index !== nuvioProfileIndex) return;
-      invalidateSearch();
-      nuvioUnlockedProfile = index;
-      nuvioPin = '';
-      hydrateNuvioCache(current, index);
-      if (!account && addonDestination === 'local') addonDestination = 'nuvio';
-      void loadCatalogs();
-      await syncNuvio();
-    } catch (error) { if (generation === nuvioGeneration) nuvioError = message(error); }
-    finally { if (generation === nuvioGeneration) nuvioBusy = false; }
+      if (needsPin) await verifyNuvioPin(current, index, pin);
+    } catch (error) {
+      if (isNuvioAuthorizationError(error)) { disconnectNuvio(); nuvioError = 'Sign in to Nuvio again.'; return { ok: false, message: 'Sign in to Nuvio again.' }; }
+      return { ok: false, message: message(error), retryAfterSeconds: error instanceof NuvioPinError ? error.retryAfterSeconds : 0 };
+    } finally { profileGateBusy = null; }
+    if (generation !== nuvioGeneration || nuvioSession !== current) return { ok: false, message: 'Your profiles changed. Choose again.' };
+    const sameProfile = index === nuvioProfileIndex;
+    // Unlock first: the picker must not reopen between closing and the switch taking effect.
+    const switching = sameProfile ? (needsPin ? applyNuvioUnlock(current, index) : Promise.resolve()) : chooseNuvioProfile(index, needsPin);
+    finishProfileGate(current, index);
+    await switching;
+    if (returnRoute && currentRoute.kind === 'tab' && generation + (sameProfile ? 0 : 1) === nuvioGeneration && nuvioSession === current) {
+      replaceRoute(returnRoute);
+      void applyRoute(returnRoute);
+    }
+    return { ok: true };
+  }
+
+  async function applyNuvioUnlock(current: NuvioSession, index: number) {
+    invalidateSearch();
+    nuvioUnlockedProfile = index;
+    nuvioError = '';
+    hydrateNuvioCache(current, index);
+    if (!account && addonDestination === 'local') addonDestination = 'nuvio';
+    void loadCatalogs();
+    await syncNuvio();
+  }
+
+  function finishProfileGate(current: NuvioSession, index: number) {
+    nuvioChosenThisTab = true;
+    rememberChosenInThisTab(current, index);
+    lastNuvioProfile = index;
+    forceProfileChoice = false;
+    profileGateManual = false;
+    profileGatePin = null;
+    profileGateDismissed = false;
+    profileGateMessage = '';
+    pendingProfileRoute = null;
+  }
+
+  function pickProfile(index: number) {
+    const profile = nuvioProfiles.find((item) => item.profile_index === index);
+    if (!profile) return;
+    if (profile.pin_enabled && nuvioUnlockedProfile !== index) { profileGatePin = index; return; }
+    void enterNuvioProfile(index);
+  }
+
+  /** Settings entry point: an already active, unlocked profile needs nothing. */
+  function requestNuvioProfile(index: number) {
+    if (index === nuvioProfileIndex && nuvioProfileReady) return;
+    const profile = nuvioProfiles.find((item) => item.profile_index === index);
+    if (profile?.pin_enabled && nuvioUnlockedProfile !== index) profileGateManual = true;
+    pickProfile(index);
+  }
+
+  function openProfileGate() {
+    profileGateDismissed = false;
+    profileGateManual = true;
+  }
+
+  function cancelProfilePin() {
+    profileGatePin = null;
+  }
+
+  function closeProfileGate() {
+    profileGateManual = false;
+    profileGatePin = null;
+    // Only reachable without a choice when profiles failed to load; ask again on the next visit.
+    if (profileGateNeeded) profileGateDismissed = true;
+    pendingProfileRoute = null;
+  }
+
+  function useAnotherNuvioAccount() {
+    disconnectNuvio();
+    signInProvider = 'nuvio';
+  }
+
+  function setProfileLaunchMode(mode: ProfileLaunchMode) {
+    profileLaunchMode = mode;
+    saveProfileLaunchMode(mode);
+  }
+
+  async function loadAvatarCatalog(current: NuvioSession) {
+    const key = `${current.backendUrl}:${current.user.id}`;
+    if (avatarCatalogFor === key) return;
+    avatarCatalogFor = key;
+    try {
+      const items = await fetchNuvioAvatarCatalog(current);
+      if (nuvioSession === current) avatarCatalog = items;
+    } catch { if (avatarCatalogFor === key) avatarCatalogFor = ''; }
   }
 
   async function syncNuvio() {
@@ -1257,6 +1408,18 @@
     addonWorking = '';
     nuvioSession = null;
     if (addonDestination === 'nuvio') addonDestination = account ? 'stremio' : 'local';
+    saveNuvioProfilesForDisplay(null);
+    rememberChosenInThisTab(null, null);
+    nuvioChosenThisTab = false;
+    cachedGateProfiles = [];
+    forceProfileChoice = false;
+    profileGateManual = false;
+    profileGatePin = null;
+    profileGateDismissed = false;
+    profileGateMessage = '';
+    pendingProfileRoute = null;
+    avatarCatalog = [];
+    avatarCatalogFor = '';
     nuvioProfiles = [];
     nuvioProfilesLoading = false;
     nuvioProfilesLoadFailed = false;
@@ -1300,6 +1463,8 @@
     nuvioWatchingSyncing = false; nuvioSyncing = false;
     resetPlayer(); resetDetail(); resetCatalogPage();
     ++routeRequest;
+    // A link opened by a reload comes back once its profile is chosen and unlocked.
+    if (!restorationComplete && currentRoute.kind !== 'tab' && nuvioSession) pendingProfileRoute = currentRoute;
     if (currentRoute.kind !== 'tab') replaceRoute({ kind: 'tab', tab });
     rows = [];
     void loadCatalogs();
@@ -3204,7 +3369,7 @@
   <title>{selected ? detailIdentityReady ? `${selected.name} · Bridged Streams` : 'Loading title · Bridged Streams' : catalogPage ? `${catalogPage.title} · Bridged Streams` : 'Bridged Streams · PlayBridge'}</title>
 </svelte:head>
 
-<div class:detail-open={!!selected && !accountPanel && !managing} class:content-open={!!selected || !!catalogPage} class="app-shell">
+<div class:detail-open={!!selected && !accountPanel && !managing} class:content-open={!!selected || !!catalogPage} class="app-shell" inert={profileGateOpen || !!signInProvider}>
   <header class:scrolled={pageScrolled} class="sidebar site-header">
     <button class="brand" onclick={() => navigate('home')} aria-label="Bridged Streams home">
       <span class="brand-mark"><Clapperboard size={23} strokeWidth={2.4} /></span>
@@ -3232,8 +3397,11 @@
     {#if tab === 'settings'}
       <section class="settings-page browse tab-page">
         <div class="page-intro"><div class="eyebrow">YOUR SPACE</div><h1>Settings</h1><p>Manage your accounts, addons, and playback preferences.</p></div>
+        {#if nuvioSession && nuvioProfiles.length && activeNuvioProfile}
+          <div class="watching-as"><ProfileAvatar profile={activeNuvioProfile} image={profileImage(activeNuvioProfile)} size={52} locked={nuvioProfileLocked} /><span><small>WATCHING AS</small><strong>{activeNuvioProfile.name || `Profile ${activeNuvioProfile.profile_index}`}</strong></span>{#if nuvioProfiles.length > 1 || nuvioProfileLocked}<button class="outline-button" onclick={openProfileGate}>{nuvioProfileLocked ? 'Enter PIN' : 'Switch profile'}</button>{/if}</div>
+        {/if}
         <div class="settings-grid">
-          <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account || nuvioSession ? [account && 'Stremio', nuvioSession && 'Nuvio'].filter(Boolean).join(' · ') + ' connected' : 'Connect Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
+          <button class="settings-card" onclick={() => openSettingsPanel('accounts')}><span class="settings-card-icon"><UserRound size={24} /></span><span class="settings-card-copy"><strong>Accounts and profiles</strong><small>{account && nuvioSession ? 'Choose one account to keep' : account ? 'Stremio connected' : nuvioSession ? 'Nuvio connected' : 'Sign in with Stremio or Nuvio'}</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('addons')}><span class="settings-card-icon"><Clapperboard size={24} /></span><span class="settings-card-copy"><strong>Addons and playback</strong><small>{addons.length} enabled {addons.length === 1 ? 'addon' : 'addons'} · catalogs, streams, and TMDB</small></span><ArrowRight size={19} /></button>
           <button class="settings-card" onclick={() => openSettingsPanel('integrations')}><span class="settings-card-icon"><Info size={24} /></span><span class="settings-card-copy"><strong>Integrations</strong><small>TMDB enrichment · {tmdbSettings.enabled ? 'On' : 'Off'}</small></span><ArrowRight size={19} /></button>
           <a class="settings-card" href="https://github.com/playbridgeapp/bridged-apps" target="_blank" rel="noopener noreferrer" aria-label="About this project: source code on GitHub (opens in a new tab)"><span class="settings-card-icon"><Github size={24} /></span><span class="settings-card-copy"><strong>About this project</strong><small>Open source on GitHub · playbridgeapp/bridged-apps</small></span><ExternalLink size={19} /></a>
@@ -3301,7 +3469,17 @@
           <div class="eyebrow">ACCOUNT CONNECTED</div><h1>Your space is ready.<br /><em>Add a source to watch.</em></h1><p>Your account is connected. Add a catalog addon to browse movies, shows, and sports here.</p>
           <div class="welcome-actions"><button class="primary-button" onclick={() => openSettingsPanel('addons')}><Plus size={18} /> Add an addon</button>{#if nuvioSession && !nuvioProfiles.length}<button class="outline-button" onclick={() => openSettingsPanel('accounts')}><UserRound size={18} /> Set up Nuvio profile</button>{/if}</div>
         {:else}
-          <div class="eyebrow">YOUR STREAMING, CONNECTED</div><h1>All your addons.<br /><em>One place to watch.</em></h1><p>Connect Stremio or Nuvio to bring in your addons and library, or install a compatible addon URL yourself. Browse, play, and pick up where you left off in your browser.</p><div class="welcome-actions"><button class="primary-button" onclick={() => openSettingsPanel('accounts')}><UserRound size={19} /> Connect an account</button><button class="outline-button" onclick={() => openSettingsPanel('addons')}><Plus size={18} /> Add an addon</button></div>
+          <div class="welcome-split">
+            <div class="welcome-copy"><div class="eyebrow">WELCOME</div><h1>Pick up where you left off</h1><p>Sign in to bring your profiles, addons, library and Continue Watching into this browser. Play here, or send it to a PlayBridge TV.</p></div>
+            <div class="welcome-choices">
+              <h2>Choose how to sign in</h2>
+              <button class="welcome-choice" onclick={() => signInProvider = 'nuvio'}><span class="choice-mark" aria-hidden="true">N</span><span><strong>Continue with Nuvio</strong><small>Profiles, addons, plugins and progress</small></span><ChevronRight size={18} /></button>
+              <button class="welcome-choice" onclick={() => signInProvider = 'stremio'}><span class="choice-mark stremio" aria-hidden="true">S</span><span><strong>Continue with Stremio</strong><small>Addons, library and progress</small></span><ChevronRight size={18} /></button>
+              <div class="welcome-or" aria-hidden="true">OR</div>
+              <button class="welcome-addon" onclick={() => openSettingsPanel('addons')}><Plus size={18} /> Add an addon without an account</button>
+              <p>Use one account at a time; you can switch later in Settings. Passwords go straight to the service you pick and are never stored.</p>
+            </div>
+          </div>
         {/if}
       </section>
       {:else}
@@ -3384,6 +3562,14 @@
   <div class="overlay" role="presentation" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(150) }} onclick={(event) => { if (event.target === event.currentTarget) closeSettingsPanel(); }}>
     <div class="manage-panel account-panel" role="dialog" aria-modal="true" aria-label="Accounts">
       <div class="panel-header"><div><div class="eyebrow">ACCOUNT SYNC</div><h2>Connected accounts</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close account"><X size={22} /></button></div>
+      {#if account && nuvioSession}
+        <div class="account-choice" role="group" aria-label="Choose one account">
+          <p><strong>Streams now uses one account at a time.</strong> Choose which one to keep in this browser. Its watching changes sync first.</p>
+          <div><button class="outline-button" onclick={() => void keepOnlyAccount('nuvio')}>Keep Nuvio</button><button class="outline-button" onclick={() => void keepOnlyAccount('stremio')}>Keep Stremio</button></div>
+        </div>
+      {/if}
+      {#snippet stremioAccount()}
+      <section class="account-provider" aria-label="Stremio">
       <h3 class="account-section-title">Stremio</h3>
       {#if account}
         <div class="signed-in-card"><div class="account-avatar"><UserRound size={24} /></div><div><strong>{account.user.email}</strong><small>{stremioRestoring ? 'Restoring Stremio session…' : 'Connected to Stremio'}</small></div></div>
@@ -3394,22 +3580,23 @@
         <div class="sync-summary"><span><strong>{accountAddons.length}</strong> account addons</span><span><strong>{accountLibrary.filter((item) => !item.removed && !item.temp).length}</strong> library titles</span></div>
         <button class="disconnect-button" onclick={disconnectAccount}>Disconnect this account</button>
       {:else}
-        <p class="panel-copy">Sign in with your Stremio account to import your installed addons, library, and Continue Watching progress.</p>
-        <div class="login-tabs"><button class:active={loginMode === 'password'} onclick={() => loginMode = 'password'}>Email & password</button><button class:active={loginMode === 'key'} onclick={() => loginMode = 'key'}>Auth key</button></div>
-        <form class="login-form" onsubmit={(event) => { event.preventDefault(); void connectAccount(); }}>
-          {#if loginMode === 'password'}<label>Email<input type="email" bind:value={email} autocomplete="username" required placeholder="you@example.com" /></label><label>Password<input type="password" bind:value={password} autocomplete="current-password" required placeholder="Your Stremio password" /></label>
-          {:else}<label>Stremio auth key<input type="password" bind:value={authKeyInput} autocomplete="off" required placeholder="Paste your auth key" /></label><p class="login-hint">Use an auth key if you sign in to Stremio through a linked account.</p>{/if}
-          <button class="primary-button" type="submit" disabled={accountBusy}>{#if accountBusy}<LoaderCircle size={18} class="spin" />{:else}<UserRound size={18} />{/if} Sign in</button>
-        </form>
-        {#if accountError}<p class="error-message" role="alert">{accountError}</p>{/if}
-        <p class="login-hint">Your password is sent directly to Stremio over HTTPS and is not saved. Your session key stays in this browser until you disconnect or clear site data.</p>
+        {#if nuvioSession}
+          <p class="panel-copy">Streams uses one account at a time. Signing in to Stremio signs out of Nuvio in this browser.</p>
+          <button class="sync-button" onclick={() => signInProvider = 'stremio'}><UserRound size={18} /> Switch to Stremio</button>
+        {:else}
+          <p class="panel-copy">Sign in with your Stremio account to import your installed addons, library, and Continue Watching progress.</p>
+          <button class="sync-button" onclick={() => signInProvider = 'stremio'}><UserRound size={18} /> Sign in to Stremio</button>
+        {/if}
       {/if}
-      {#if pendingSaves}<p class="sync-message" role="status">{pendingSaves} watching {pendingSaves === 1 ? 'change waiting' : 'changes waiting'} to sync. <button class="text-action" disabled={outboxFlushing} onclick={() => void flushPlaybackWrites()}>Retry saves</button></p>{/if}
+      </section>
+      {/snippet}
+      {#snippet nuvioAccount()}
+      <section class="account-provider" aria-label="Nuvio">
       <h3 class="account-section-title">Nuvio</h3>
       {#if nuvioSession}
         <div class="signed-in-card"><div class="account-avatar"><UserRound size={24} /></div><div><strong>{nuvioSession.user.email}</strong><small>{nuvioRestoring ? 'Restoring Nuvio session…' : `Connected to Nuvio · ${nuvioSession.backendUrl}`}</small></div></div>
         {#if nuvioProfiles.length}
-          <label class="profile-select">Profile<select value={nuvioProfileIndex} onchange={(event) => void chooseNuvioProfile(Number(event.currentTarget.value))}>{#if nuvioProfileIndex === 0}<option value={0} disabled>Choose a profile</option>{/if}{#each nuvioProfiles as profile (profile.profile_index)}<option value={profile.profile_index}>{profile.name || `Profile ${profile.profile_index}`}{profile.pin_enabled ? ' · PIN' : ''}</option>{/each}</select></label>
+          <div class="profile-strip" role="radiogroup" aria-label="Nuvio profile">{#each nuvioProfiles as profile (profile.profile_index)}<button role="radio" aria-checked={profile.profile_index === nuvioProfileIndex} aria-label={`${profile.name || `Profile ${profile.profile_index}`}${profile.pin_enabled ? ', PIN required' : ''}`} disabled={profileGateBusy !== null} onclick={() => requestNuvioProfile(profile.profile_index)}><ProfileAvatar {profile} image={profileImage(profile)} size={50} locked={profile.pin_enabled === true} ring={profile.profile_index === nuvioProfileIndex} /><span>{profile.name || `Profile ${profile.profile_index}`}</span></button>{/each}</div>
         {:else if nuvioProfilesLoading}
           <p class="panel-copy" role="status">Loading Nuvio profiles…</p>
         {:else if nuvioProfilesLoadFailed}
@@ -3420,9 +3607,11 @@
           <button class="sync-button" onclick={() => void retryNuvioProfiles(true)} disabled={nuvioProfilesLoading}><Plus size={18} /> Create primary profile</button>
           <button class="sync-button" onclick={() => void retryNuvioProfiles()} disabled={nuvioProfilesLoading}><RefreshCw size={18} /> Refresh profiles</button>
         {/if}
-        {#if nuvioProfiles.length && nuvioProfileLocked}
-          <p class="panel-copy">This profile has a PIN. Unlock it to import its sources, library, and progress.</p>
-          <form class="login-form" onsubmit={(event) => { event.preventDefault(); void unlockNuvioProfile(); }}><label>Profile PIN<input type="password" inputmode="numeric" bind:value={nuvioPin} autocomplete="off" required /></label><button class="primary-button" type="submit" disabled={nuvioBusy}>Unlock profile</button></form>
+        {#if nuvioProfiles.length && nuvioProfileIndex === 0}
+          <p class="panel-copy">Choose a profile to sync its addons, library, and progress.</p>
+        {:else if nuvioProfiles.length && nuvioProfileLocked}
+          <p class="panel-copy">{activeNuvioProfile?.name || 'This profile'} has a PIN. Enter it to import its sources, library, and progress.</p>
+          <button class="sync-button" onclick={() => { profileGateManual = true; profileGatePin = nuvioProfileIndex; }}>Enter PIN</button>
         {:else if nuvioProfileReady}
           <p class="panel-copy">Nuvio addons, plugin repositories, library, progress, and watched history refresh every 10 minutes. Library changes and playback progress made here sync to this profile.</p>
           <button class="sync-button" onclick={() => void syncNuvio()} disabled={nuvioSyncing || !!pluginSaving}>{#if nuvioSyncing}<LoaderCircle size={18} class="spin" />{:else}<RefreshCw size={18} />{/if} Sync Nuvio now</button>
@@ -3430,24 +3619,29 @@
         {/if}
         {#if nuvioMessage}<p class="sync-message" role="status">{nuvioMessage}</p>{/if}
         {#if nuvioError}<p class="error-message" role="alert">{nuvioError}</p>{/if}
+        {#if nuvioProfiles.length > 1}
+          <fieldset class="launch-choice"><legend>When Streams opens</legend>
+            <label class:selected={profileLaunchMode === 'ask'}><input type="radio" name="profile-launch" checked={profileLaunchMode === 'ask'} onchange={() => setProfileLaunchMode('ask')} /><span><strong>Ask who's watching</strong><small>On every new visit. Refreshing the same tab keeps the profile.</small></span></label>
+            <label class:selected={profileLaunchMode === 'remember'}><input type="radio" name="profile-launch" checked={profileLaunchMode === 'remember'} onchange={() => setProfileLaunchMode('remember')} /><span><strong>Remember last profile</strong><small>Opens straight into it in this browser.</small></span></label>
+            <p>PIN-protected profiles always ask for their PIN, including after a refresh.</p>
+          </fieldset>
+        {/if}
         <button class="disconnect-button" onclick={disconnectNuvio}>Disconnect Nuvio</button>
       {:else}
-        <p class="panel-copy">Sign in to Nuvio Cloud to use its profiles, addons, plugin repositories, library, and Continue Watching.</p>
-        <form class="login-form" onsubmit={(event) => { event.preventDefault(); void connectNuvio(); }}>
-          <label>Email<input type="email" bind:value={nuvioEmail} autocomplete="username" required placeholder="you@example.com" /></label>
-          <label>Password<input type="password" bind:value={nuvioPassword} autocomplete="current-password" required placeholder="Your Nuvio password" /></label>
-          <details class="nuvio-advanced"><summary>Self-hosted backend settings</summary>
-            <label>Backend URL<input type="url" bind:value={nuvioBackend} required placeholder="https://api.nuvio.tv" /></label>
-            <button class="discovery-button" type="button" onclick={() => void discoverNuvioBackend()} disabled={nuvioBusy}>Get public settings from backend</button>
-            <label>Public publishable key<input type="text" bind:value={nuvioKey} autocomplete="off" required placeholder="Nuvio public client key" /></label>
-            <button class="discovery-button" type="button" onclick={() => { nuvioBackend = NUVIO_CLOUD_URL; nuvioKey = NUVIO_CLOUD_PUBLISHABLE_KEY; }}>Use Nuvio Cloud</button>
-          </details>
-          <button class="primary-button" type="submit" disabled={nuvioBusy}>{#if nuvioBusy}<LoaderCircle size={18} class="spin" />{:else}<UserRound size={18} />{/if} Sign in to Nuvio</button>
-        </form>
-        {#if nuvioMessage}<p class="sync-message" role="status">{nuvioMessage}</p>{/if}
+        {#if account}
+          <p class="panel-copy">Streams uses one account at a time. Signing in to Nuvio signs out of Stremio in this browser.</p>
+          <button class="sync-button" onclick={() => signInProvider = 'nuvio'}><UserRound size={18} /> Switch to Nuvio</button>
+        {:else}
+          <p class="panel-copy">Sign in to Nuvio to use its profiles, addons, plugin repositories, library, and Continue Watching.</p>
+          <button class="sync-button" onclick={() => signInProvider = 'nuvio'}><UserRound size={18} /> Sign in to Nuvio</button>
+        {/if}
         {#if nuvioError}<p class="error-message" role="alert">{nuvioError}</p>{/if}
-        <p class="login-hint">Your password is sent to the selected Nuvio backend and is not saved. Your session stays in this browser until you disconnect or clear site data.</p>
       {/if}
+      </section>
+      {/snippet}
+      <!-- The account in use comes first; the other offers a switch. -->
+      {#if nuvioSession && !account}{@render nuvioAccount()}{@render stremioAccount()}{:else}{@render stremioAccount()}{@render nuvioAccount()}{/if}
+      {#if pendingSaves}<p class="sync-message" role="status">{pendingSaves} watching {pendingSaves === 1 ? 'change waiting' : 'changes waiting'} to sync. <button class="text-action" disabled={outboxFlushing} onclick={() => void flushPlaybackWrites()}>Retry saves</button></p>{/if}
     </div>
   </div>
 {/if}
@@ -3684,4 +3878,23 @@
       {#if watchingError}<p class="error-message" role="alert">{watchingError}</p>{/if}
     </div>
   </div>
+{/if}
+
+{#if signInProvider === 'stremio'}
+  <SignInSheet provider="stremio" replacing={nuvioSession ? 'Nuvio' : ''} bind:email bind:password bind:loginMode bind:authKey={authKeyInput} busy={accountBusy} error={accountError}
+    onSubmit={() => void connectAccount()} onClose={() => signInProvider = null} />
+{:else if signInProvider === 'nuvio'}
+  <SignInSheet provider="nuvio" replacing={account ? 'Stremio' : ''} bind:email={nuvioEmail} bind:password={nuvioPassword} bind:backend={nuvioBackend} bind:publishableKey={nuvioKey}
+    defaultBackend={NUVIO_CLOUD_URL} busy={nuvioBusy} error={nuvioError} message={nuvioMessage}
+    onSubmit={() => void connectNuvio()} onClose={() => signInProvider = null} onDiscover={() => void discoverNuvioBackend()}
+    onUseCloud={() => { nuvioBackend = NUVIO_CLOUD_URL; nuvioKey = NUVIO_CLOUD_PUBLISHABLE_KEY; }} />
+{/if}
+
+{#if profileGateOpen && nuvioSession}
+  <ProfileGate profiles={gateProfiles} imageFor={profileImage} highlightIndex={profileGateManual ? nuvioProfileIndex : lastNuvioProfile}
+    highlightLabel={profileGateManual ? 'Current' : 'Last used'} validating={!nuvioProfiles.length} busyIndex={profileGatePin === null ? profileGateBusy : null}
+    error={nuvioProfilesLoadFailed ? nuvioError : ''} message={profileGateMessage} pinIndex={profileGatePin} returnLabel={profileReturnLabel}
+    email={nuvioSession.user.email} closable={profileGateManual && !profileGateNeeded}
+    onPick={pickProfile} onSubmitPin={(pin) => profileGatePin === null ? Promise.resolve({ ok: false, message: '' }) : enterNuvioProfile(profileGatePin, pin)}
+    onCancelPin={cancelProfilePin} onRetry={() => void retryNuvioProfiles()} onClose={closeProfileGate} onSignOut={useAnotherNuvioAccount} />
 {/if}

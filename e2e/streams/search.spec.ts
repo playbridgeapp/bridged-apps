@@ -204,6 +204,7 @@ test('profile and PIN unlock invalidate cached local previews without persisting
   await page.addInitScript(() => {
     localStorage.setItem('bridged-streams.nuvio-session.v1',JSON.stringify({backendUrl:'https://cloud.search.test',publishableKey:'synthetic-public-key',accessToken:'synthetic-access',refreshToken:'synthetic-refresh',expiresAt:Date.now()+3600000,user:{id:'synthetic-user',email:'synthetic@example.invalid'}}));
     localStorage.setItem('bridged-streams.nuvio-profile.v1',JSON.stringify({userId:'synthetic-user',index:1}));
+    localStorage.setItem('bridged-streams.profile-launch.v1','remember');
   });
   await page.route('https://cloud.search.test/**',route=>route.fulfill({json:route.request().url().includes('sync_pull_profiles')?[{profile_index:1,name:'Main'},{profile_index:2,name:'Locked',pin_enabled:true}]:route.request().url().includes('verify_profile_pin')?{unlocked:true}:[],headers}));
   await page.reload();
@@ -211,8 +212,12 @@ test('profile and PIN unlock invalidate cached local previews without persisting
   await submit(page); await expect(page.locator('.search-results .media-card')).toHaveCount(2); await expect(page.locator('.search-pending')).toHaveCount(0);
   await settings(page); await page.getByRole('button',{name:/Accounts and profiles/}).click();
   const accounts=page.getByRole('dialog',{name:'Accounts'});
-  await accounts.locator('.profile-select select').selectOption('2');
-  await expect(accounts.getByRole('button',{name:'Unlock profile',exact:true})).toBeVisible();
+  // Entering the locked profile verifies its PIN, then switches and invalidates the previews.
+  await accounts.getByRole('radio',{name:'Locked, PIN required',exact:true}).click();
+  const profiles=page.getByRole('dialog',{name:"Who's watching?"});
+  await profiles.getByLabel('Profile PIN',{exact:true}).fill('0000');
+  await expect(profiles).toHaveCount(0);
+  await expect(accounts.getByRole('radio',{name:'Locked, PIN required',exact:true})).toHaveAttribute('aria-checked','true');
   await accounts.getByRole('button',{name:'Close account',exact:true}).click(); await returnToSearch(page);
   const held=gate();
   for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,async route=>{await held.promise;await answer(route,[meta(id)]);});
@@ -221,9 +226,8 @@ test('profile and PIN unlock invalidate cached local previews without persisting
     await expect(page.getByLabel('Searching addon catalogs')).toBeVisible();
     held.release(); await expect(page.locator('.search-results .media-card')).toHaveCount(2); await expect(page.locator('.search-pending')).toHaveCount(0);
     await settings(page); await page.getByRole('button',{name:/Accounts and profiles/}).click();
-    await accounts.getByLabel('Profile PIN',{exact:true}).fill('0000');
-    await accounts.getByRole('button',{name:'Unlock profile',exact:true}).click();
-    await expect(accounts.getByRole('button',{name:'Unlock profile',exact:true})).toHaveCount(0);
+    await accounts.getByRole('radio',{name:'Main',exact:true}).click();
+    await expect(accounts.getByRole('radio',{name:'Main',exact:true})).toHaveAttribute('aria-checked','true');
     const refreshed=gate();
     for(const id of ['a','b'])await page.route(`https://search-${id}.test/catalog/**`,async route=>{await refreshed.promise;await answer(route,[]);});
     try {

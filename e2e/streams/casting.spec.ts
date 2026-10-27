@@ -1321,6 +1321,7 @@ async function mockNuvioPluginSync(page: Page, options: { guardedMissing?: boole
   await page.addInitScript(() => {
     localStorage.setItem('bridged-streams.nuvio-session.v1', JSON.stringify({ backendUrl: 'https://nuvio.test', publishableKey: 'test-key', accessToken: 'test-access', refreshToken: 'test-refresh', expiresAt: Date.now() + 3600000, user: { id: 'test-user', email: 'viewer@example.com' } }));
     localStorage.setItem('bridged-streams.tmdb-key.v1', 'test-key');
+    localStorage.setItem('bridged-streams.profile-launch.v1', 'remember');
   });
   await page.reload();
   await openAddons(page);
@@ -1375,7 +1376,7 @@ test('isolates Nuvio scraper controls by profile and protects shared plugins', a
   expect(state.writes[0].p_profile_id).toBe(1);
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
   await openAccounts(page);
-  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('2');
+  await page.getByRole('radio', { name: 'Kids', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
   await page.getByRole('button', { name: 'Close account' }).click();
   await openAddons(page);
@@ -1384,7 +1385,7 @@ test('isolates Nuvio scraper controls by profile and protects shared plugins', a
   await page.getByRole('button', { name: 'Cancel', exact: true }).click();
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
   await openAccounts(page);
-  await page.getByRole('combobox', { name: 'Profile', exact: true }).selectOption('3');
+  await page.getByRole('radio', { name: 'Shared', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Sync Nuvio now' })).toBeEnabled();
   await page.getByRole('button', { name: 'Close account' }).click();
   await openAddons(page);
@@ -1446,9 +1447,12 @@ test('imports Stremio account addons, library, and progress without removing loc
     await route.fulfill({ json: { metas: [{ id: 'tt300', type: 'movie', name: 'Saved Movie' }] }, headers: { 'access-control-allow-origin': '*' } });
   });
   await openAccounts(page);
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in to Stremio', exact: true }).click();
+  const signIn = page.getByRole('dialog', { name: 'Sign in to Stremio' });
+  await signIn.getByLabel('Email', { exact: true }).fill('viewer@example.com');
+  await signIn.getByLabel('Password', { exact: true }).fill('test-password');
+  await signIn.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(signIn).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Synced 1 addons and 1 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Sync now' }).click();
   await expect.poll(() => syncCount).toBe(2);
@@ -1505,9 +1509,12 @@ test('writes account addon changes, library membership, and linked TV progress t
   });
 
   await openAccounts(page);
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Email', { exact: true }).first().fill('viewer@example.com');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByLabel('Password', { exact: true }).first().fill('test-password');
-  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Accounts' }).getByRole('button', { name: 'Sign in to Stremio', exact: true }).click();
+  const signIn = page.getByRole('dialog', { name: 'Sign in to Stremio' });
+  await signIn.getByLabel('Email', { exact: true }).fill('viewer@example.com');
+  await signIn.getByLabel('Password', { exact: true }).fill('test-password');
+  await signIn.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(signIn).toHaveCount(0);
   await expect(page.getByRole('status').getByText('Synced 1 addons and 0 library titles.')).toBeVisible();
   await page.getByRole('button', { name: 'Close account' }).click();
 

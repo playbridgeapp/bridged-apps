@@ -1,6 +1,6 @@
 # Bridged Streams
 
-Svelte web client for Stremio-compatible catalog addons and browser-compatible Nuvio stream plugins. Connect Stremio and Nuvio accounts independently. Browse and play on the website; cast to PlayBridge when available.
+Svelte web client for Stremio-compatible catalog addons and browser-compatible Nuvio stream plugins. Sign in with a Stremio or a Nuvio account (one at a time). Browse and play on the website; cast to PlayBridge when available.
 
 ## Run
 
@@ -48,9 +48,13 @@ Production builds register a service worker that caches the public app shell (th
 
 Sports Streams and some other addons mark direct HTTP sources `notWebReady` even when the playlist and segments permit browser requests. These sources appear with **Try in browser** and **Cast** actions. Browser playback can still fail if the media host blocks it. Stream lookup errors now appear beside the source list.
 
+## Signing in
+
+Without an account, Home offers **Continue with Nuvio**, **Continue with Stremio**, or adding an addon URL yourself. Streams uses one account at a time: signing in to the other provider (**Settings → Accounts and profiles → Switch to …**) signs the current one out only after the new sign-in succeeds, after first trying to deliver its queued watching changes. A browser that still has both accounts from an earlier version is asked which one to keep.
+
 ## Stremio account sync
 
-Open **Settings → Accounts and profiles → Stremio** and sign in with your Stremio email and password, or use an existing auth key for an account linked to another sign-in provider. Your password is sent directly to Stremio over HTTPS and is not stored. The auth key stays in this browser's site storage until you disconnect or clear site data.
+Open **Settings → Accounts and profiles → Sign in to Stremio** and sign in with your Stremio email and password, or use an existing auth key for an account linked to another sign-in provider. Your password is sent directly to Stremio over HTTPS and is not stored. The auth key stays in this browser's site storage until you disconnect or clear site data.
 
 The app imports your Stremio addons, library, and Continue Watching progress on sign-in and every 10 minutes. **Sync now** refreshes them immediately. Install an addon with **Stremio account** selected, remove an account addon, or change a Stremio library entry to write it back. Addons saved directly in Bridged Streams remain local. Nuvio plugin repositories and the TMDB key are separate from Stremio's addon collection.
 
@@ -58,9 +62,9 @@ Linked TV casts report movie and episode watch position to Stremio when PlayBrid
 
 ## Nuvio account sync
 
-Open **Settings → Accounts and profiles → Nuvio** and sign in with your Nuvio Cloud email and password. The app uses [Nuvio's published public client key](https://github.com/NuvioMedia/self-host/blob/main/.env.example). For a self-hosted account, open **Self-hosted backend settings**, enter its backend URL, and load its public key from `/.well-known/nuvio` or enter the key printed by `./nuvio credentials`. Never enter a service-role or secret key. The password is not stored; the access and refresh tokens stay in this browser's site storage until you disconnect or clear site data.
+Open **Settings → Accounts and profiles → Sign in to Nuvio** and sign in with your Nuvio Cloud email and password. The app uses [Nuvio's published public client key](https://github.com/NuvioMedia/self-host/blob/main/.env.example). For a self-hosted account, select **Server → Change**, enter its backend URL, and load its public key from `/.well-known/nuvio` or enter the key printed by `./nuvio credentials`. Never enter a service-role or secret key. The password is not stored; the access and refresh tokens stay in this browser's site storage until you disconnect or clear site data.
 
-Choose a Nuvio profile after signing in. If the account has no profiles, create a primary profile here or in Nuvio Mobile; if the profile request fails, use **Retry profiles** to see the error and try again. PIN-protected profiles must be unlocked in this tab before their data loads. The app imports addons, enabled plugin repositories, library titles, and watch progress on sign-in and every 10 minutes. Disabled addons remain visible in Manage addons. The Nuvio **Sync now** button refreshes them immediately. Imported sources are combined with local and Stremio sources for browsing. Browser CORS and scraper runtime limitations still apply.
+**Who's watching?** follows Nuvio Mobile's launch rules. It appears after signing in (unless the account has a single profile without a PIN) and, by default, on every new visit; refreshing the same tab keeps an unlocked profile. **Settings → Accounts and profiles → When Streams opens → Remember last profile** opens straight into the last profile instead, like Nuvio's *Remember Last Profile*. A PIN-protected profile always asks for its 4-digit PIN, including after a refresh: the unlock is held in memory only and Nuvio verifies the PIN before the profile is entered. Rate-limited attempts disable the keypad until Nuvio allows another try. A refreshed title or player link reopens after its profile is chosen. A profile that gained a PIN or was deleted on another device brings the picker back with the reason. Profile names, colours and lock states are cached for the picker; avatars use the profile's image URL or Nuvio's public avatar catalog, otherwise its colour and initial. Create, edit or lock profiles in the Nuvio app. If the account has no profiles, create a primary profile here or in Nuvio Mobile; if the profile request fails, use **Retry** to try again. The app imports addons, enabled plugin repositories, library titles, and watch progress on sign-in and every 10 minutes. Disabled addons remain visible in Manage addons. The Nuvio **Sync now** button refreshes them immediately. Imported sources are combined with local and Stremio sources for browsing. Browser CORS and scraper runtime limitations still apply.
 
 Nuvio Continue Watching includes unfinished titles outside the library and **Next up** after a completed episode. Watched history from the selected profile also contributes, including episodes marked watched in Nuvio. Episodes count as complete at 90%; tiny positive progress still appears as **<1% watched**. A newer partial episode resumes; otherwise the next available episode opens at position zero. A new season needs a known past release date. Episode metadata resolves in the background for up to 16 recent title candidates with two lookups at a time. See [Nuvio feature gaps](NUVIO_FEATURE_GAPS.md) for remaining integration differences.
 
@@ -70,7 +74,7 @@ Nuvio progress and watched history use persisted delta cursors after an initial 
 
 Playback changes are queued in browser storage before sending them to the cloud. Playback positions persist at most every five seconds while playing and immediately on pause, stop, completion, or leaving the page; routine cloud writes are limited to once per 30 seconds per item, with final states sent immediately. Failed saves survive reload and retry on reconnect, return to the page, and periodic checks. **Accounts → Retry saves** retries queued changes. Account/profile scopes stay separate; reopening imports cloud changes first and discards older queued progress if newer cloud progress exists. Disconnecting an account discards its queued changes. Closing the browser stops retries until you reopen it, and clearing site storage removes unsent changes. Provider clips shorter than 121 seconds are excluded from movie/series progress saves to avoid treating error clips as watched episodes.
 
-Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV movie and episode casts report watch progress to both connected accounts; each account keeps its own library actions. Direct movie casts on older PlayBridge versions do not provide playback callbacks.
+Select **Nuvio profile** when installing an addon, or select **Install new plugin repositories in my Nuvio profile**, to save the source to that profile. Source removals and Nuvio library changes also sync back. Profiles configured to share the primary profile's sources must be edited from the primary profile. Browser playback and linked TV movie and episode casts report watch progress to the connected account. Direct movie casts on older PlayBridge versions do not provide playback callbacks.
 
 ### Scraper controls and configuration sync
 
