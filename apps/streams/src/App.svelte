@@ -259,7 +259,7 @@
   let opening: OpeningAttempt | null = null;
   let pendingStreamMessage = '';
   let restoreOpeningFocus = false;
-  let directContinue: { type: MediaType; id: string } | null = null;
+  let directContinue: { type: MediaType; id: string; attempt: OpeningAttempt } | null = null;
   let autoTimer: ReturnType<typeof setTimeout> | undefined;
 
   let pendingAutoAction: { type: MediaType; id: string; videoId?: string; destinationId?: string } | null = null;
@@ -686,8 +686,9 @@
     && (selected.type !== 'series' || detailTarget) ? lookupKey(selected.type, detailTarget?.id || selected.id) : '', selected, detailTarget);
   $: if (directContinue && selected && !loadingDetail && currentRoute.kind === 'detail' && !profileGateOpen
     && directContinue.id === selected.id && directContinue.type === selected.type) {
+    const attempt = directContinue.attempt;
     directContinue = null;
-    if (!detailError) void detailPlay();
+    if (opening === attempt) resumeDirectOpening(attempt, selected, detailTarget);
   }
   $: detailResumeMs = selected ? resumePositionMs(selected, episode, accountLibrary, nuvioProgress, nuvioWatched) : 0;
   $: detailNuvioAction = selected ? nuvioSeriesAction(selected, nuvioProgress, nuvioWatched) : null;
@@ -2751,7 +2752,7 @@
     }
     await tick();
     if (request !== routeRequest) return;
-    if (restoreOpeningFocus && route.kind === 'detail') { restoreOpeningFocus = false; document.querySelector<HTMLButtonElement>('.detail-play')?.focus(); }
+    if (restoreOpeningFocus && route.kind === 'detail') { restoreOpeningFocus = false; focusDetailAction(); }
     const position = routePositions.get(routePositionKey(currentRoute));
     if (route.kind === 'tab' && !returningToTab) {
       // Each tab keeps its place, restored instantly once its content is laid out.
@@ -2768,14 +2769,24 @@
   }
 
   function openDetail(preview: MetaPreview, fromContinue = false) {
-    directContinue = fromContinue && streamSelection.resumeDirectlyFromContinueWatching && autoPlayEnabled(streamSelection)
-      ? { type: preview.type, id: preview.id } : null;
+    const direct = fromContinue && streamSelection.resumeDirectlyFromContinueWatching && autoPlayEnabled(streamSelection);
+    const startedAt = Date.now();
+    const trigger = document.activeElement as HTMLElement | null;
+    directContinue = null;
     previewMemory.set(`${preview.type}:${preview.id}`, preview);
     const nextUp = fromContinue ? (preview as MetaPreview & { nextUp?: Video }).nextUp : undefined;
-    // Continue Watching opens the detail screen (with the resume/next-up episode selected) rather than jumping to sources.
     pendingAutoAction = null;
     router?.push({ kind: 'detail', type: preview.type, id: preview.id,
       ...(nextUp ? { videoId: nextUp.id, season: nextUp.season, episode: nextUp.episode } : {}) });
+    if (direct) {
+      const known = detailMemory.get(`${preview.type}:${preview.id}`) || nuvioProgressMetadata.get(`${preview.type}:${preview.id}`) || preview;
+      const video = nextUp || detailPlayEpisode(known, null, accountLibrary, nuvioLibrary, nuvioProgress, nuvioWatched);
+      const attempt = createOpening(known, video, startedAt, trigger);
+      directContinue = { type: preview.type, id: preview.id, attempt };
+      opening = attempt;
+      router?.beginTransient(() => cancelOpening(false));
+      scheduleOpeningDeadline(attempt);
+    }
   }
 
   async function loadDetail(preview: MetaPreview, route: MediaRoute, cached?: Meta, onStreamsUpdate?: () => void) {
@@ -3073,11 +3084,17 @@
     void entry.promise.finally(() => entry.listeners.delete(update));
   }
 
+  function focusDetailAction() {
+    (document.querySelector<HTMLButtonElement>('.detail-play:not(:disabled)')
+      || document.querySelector<HTMLButtonElement>('.detail-back'))?.focus();
+  }
+
   function cancelOpening(navigateBack = true) {
     const attempt = opening;
     if (!attempt) return;
     clearTimeout(attempt.timer); attempt.unsubscribe?.();
     restoreOpeningFocus = true;
+    directContinue = null;
     opening = null;
     if (!attempt.browser && attempt.phase === 'opening') void stopLinkedCast().catch(() => {});
     if (attempt.entry) attempt.entry.adopted = false;
@@ -3085,13 +3102,14 @@
     resetPlayer();
     if (navigateBack && !attempt.playerRoute) router?.endTransient();
     if (navigateBack && attempt.playerRoute && currentRoute.kind === 'player') router?.back(mediaRoute('detail', attempt.video));
-    else void tick().then(() => { if (currentRoute.kind === 'detail' && restoreOpeningFocus) { restoreOpeningFocus = false; document.querySelector<HTMLButtonElement>('.detail-play')?.focus(); } });
+    else void tick().then(() => { if (currentRoute.kind === 'detail' && restoreOpeningFocus) { restoreOpeningFocus = false; focusDetailAction(); } });
   }
 
   function openingManual(error = '') {
     const attempt = opening;
     if (!attempt) return;
     clearTimeout(attempt.timer); attempt.unsubscribe?.();
+    directContinue = null;
     opening = null;
     resetPlayer();
     pendingAutoAction = null;
@@ -3106,24 +3124,45 @@
     }
   }
 
+  function resumeDirectOpening(attempt: OpeningAttempt, meta: Meta, video: Video | null) {
+    if (detailError) { openingManual(detailError); return; }
+    attempt.meta = meta; attempt.video = video; episode = video;
+    opening = attempt;
+    replaceRoute(mediaRoute('detail', video));
+    if (meta.type === 'series' && !video) openingManual('Choose an episode to continue.');
+    else void loadOpeningLookup(attempt);
+  }
+
   async function startOpening(video: Video | null) {
     if (!selected || loadingDetail || detailError || opening) return;
     episode = video;
     replaceRoute(mediaRoute('detail', video));
-    const attempt: OpeningAttempt = { meta: selected, video, startedAt: Date.now(), destinationId: playbackDestination?.id,
-      destinationName, phase: 'finding', browser: false, playerRoute: false, trigger: document.activeElement as HTMLElement | null };
+    const attempt = createOpening(selected, video);
     opening = attempt;
     router?.beginTransient(() => cancelOpening(false));
+    scheduleOpeningDeadline(attempt);
+    await loadOpeningLookup(attempt);
+  }
+
+  function createOpening(meta: Meta, video: Video | null, startedAt = Date.now(), trigger = document.activeElement as HTMLElement | null): OpeningAttempt {
+    return { meta, video, startedAt, destinationId: playbackDestination?.id, destinationName, phase: 'finding', browser: false, playerRoute: false, trigger };
+  }
+
+  function scheduleOpeningDeadline(attempt: OpeningAttempt) {
+    const limit = streamSelection.timeoutSeconds === 'unlimited' || streamSelection.timeoutSeconds === 0 ? 60_000 : streamSelection.timeoutSeconds * 1000;
+    attempt.timer = setTimeout(() => evaluateOpening(attempt), Math.max(0, limit - (Date.now() - attempt.startedAt)));
+  }
+
+  async function loadOpeningLookup(attempt: OpeningAttempt) {
+    const { meta, video } = attempt;
     clearTimeout(prefetchTimer);
     ++prefetchGeneration;
-    const existing = detailLookups.adopt(lookupKey(selected.type, video?.id || selected.id));
+    const existing = detailLookups.adopt(lookupKey(meta.type, video?.id || meta.id));
     // Adopt before the reactive detail-prefetch cleanup can cancel this request.
     if (existing) attempt.entry = existing;
     // Cancel the old episode before a new native lookup captures its generation.
     detailLookups.cancelUnadopted();
-    const limit = streamSelection.timeoutSeconds === 'unlimited' || streamSelection.timeoutSeconds === 0 ? 60_000 : streamSelection.timeoutSeconds * 1000;
-    attempt.timer = setTimeout(() => evaluateOpening(attempt), limit);
-    const entry = existing || await prepareLookup(selected.type, video?.id || selected.id, () => opening === attempt, true);
+    const entry = existing || await prepareLookup(meta.type, video?.id || meta.id, () => opening === attempt, true);
     if (!entry || opening !== attempt) return;
     entry.adopted = true; attempt.entry = entry;
     const update = () => evaluateOpening(attempt);
@@ -3485,7 +3524,7 @@
       }
       return true;
     } catch (error) {
-      if (navigation === routeRequest && selected?.id === meta.id) {
+      if (navigation === routeRequest && selected?.id === meta.id && (!attempt || opening === attempt)) {
         const code = (error as { code?: string })?.code;
         sourceError = code === 'receiver_changed' ? 'The selected receiver disconnected or changed. Reconnect, choose a device, or play on this device.'
           : code === 'user_gesture_required' ? 'The playback destination is not ready. Choose a device and try again.'
