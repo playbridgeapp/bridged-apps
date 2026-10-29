@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000">
+  <defs>
+    <pattern id="windows" width="54" height="58" patternUnits="userSpaceOnUse"><path fill="#fffbd9" d="M0 0h54v58H0z"/><path fill="#f28b2f" d="M8 8h18v30H8z"/><path fill="#65cee1" d="M32 8h14v30H32z"/><path stroke="#724b48" stroke-width="3" d="M0 48h54"/></pattern>
+    <pattern id="leaves" width="95" height="70" patternUnits="userSpaceOnUse"><path fill="#b2e551" d="M0 0h95v70H0z"/><path fill="#438f64" d="M0 38Q35 0 68 28Q40 75 0 38M60 70Q38 28 95 6V70"/></pattern>
+  </defs>
+  <path fill="#fff4bf" d="M0 0h1600v1000H0z"/>
+  <circle cx="800" cy="150" r="135" fill="#fff"/>
+  <path stroke="#ffd34a" stroke-width="13" d="M800 0v100M630 0l70 100M960 0l-65 100M550 150h140M910 150h160M610 290l95-80M900 220l110 100"/>
+  <path fill="url(#windows)" stroke="#91623c" stroke-width="10" d="M30 120h360v650H30zM1190 80h370v700h-370zM360 290h190v540H360zM1040 320h200v500h-200z"/>
+  <path fill="url(#leaves)" d="M0 640Q220 500 450 700Q660 500 820 710Q1110 510 1600 650V1000H0z"/>
+  <g stroke="#483d43" stroke-width="8">
+    <path fill="#ec644a" d="M540 540Q670 475 790 560L830 990H490z"/>
+    <path fill="#5ecce5" d="M810 565Q950 490 1060 555L1110 990H790z"/>
+    <ellipse cx="670" cy="420" rx="94" ry="117" fill="#ffd9a1"/>
+    <ellipse cx="946" cy="440" rx="90" ry="110" fill="#ffdbb2"/>
+    <path fill="#754d3e" d="M577 400Q565 246 690 288Q780 285 765 398L705 355L663 381L623 348z"/>
+    <path fill="#edbb51" d="M857 420Q835 291 945 303Q1073 291 1037 460L1000 360L948 397L900 370z"/>
+    <path stroke-width="11" d="M620 420h26M695 420h26M903 438h25M970 438h25"/>
+    <path fill="none" d="M638 480q35 25 64-2M919 496q26 20 53-4"/>
+    <path stroke="#fff7da" stroke-width="16" d="M552 622l210 205M557 757l220-130M826 626l247 195M834 774l219-124"/>
+  </g>
+  <g fill="#fff" stroke="#cc9b36" stroke-width="3"><path d="m445 95 12 28 30 4-22 20 5 30-25-15-27 15 6-30-22-20 30-4zM1150 230l12 28 30 4-22 20 5 30-25-15-27 15 6-30-22-20 30-4zM450 425l12 28 30 4-22 20 5 30-25-15-27 15 6-30-22-20 30-4z"/></g>
+</svg>
