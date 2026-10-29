@@ -157,3 +157,11 @@ test('reuse reloads the same scope, clears on profile switch, bounds entries and
   restored.clear();
   assert.equal(restored.lastLink('item', 24), undefined);
 });
+
+
+test('preferred provider uses trusted plugin identity rather than a returned provider URL', () => {
+  const first = stream('1080p', 'other');
+  const native = stream('1080p', 'returned-label', { selectionSource: { kind: 'plugin', id: 'repo:scraper' } });
+  assert.equal(evaluate([source('other', [first]), source('repo:scraper', [native], false, 'plugin')],
+    prefs({ mode: 'preferences', provider: 'repo:scraper' })).stream, native);
+});

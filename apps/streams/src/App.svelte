@@ -30,7 +30,8 @@
   import { fetchTmdbMetadata, fetchTmdbSeason, applyTmdbMetadata, applyTmdbSeason } from './lib/tmdb';
   import type { TmdbMetadata } from './lib/tmdb';
   import StreamSelectionSettings from './lib/StreamSelectionSettings.svelte';
-  import { savedStreamSelection, saveStreamSelection, selectPreferredStream, selectReadyPreferredStream, selectNextStream, selectionContext, sortStreamsByPreference, matchesAllStreamPreferences } from './lib/stream-selection';
+  import { StreamReuseStore, streamContentKey } from './lib/stream-reuse';
+  import { savedStreamSelection, saveStreamSelection, autoPlayEnabled, evaluateAutoPlay, selectNextStream, selectionContext, sortStreamsByPreference, matchesAllStreamPreferences } from './lib/stream-selection';
   import type { StreamSelectionContext, StreamSelectionPreferences } from './lib/stream-selection';
   import { cachedDetailPreview, clearDetailPreviews, saveDetailPreview } from './lib/detail-cache';
   import { addonSettings, clearAddonSettings, configuredAddon, saveAddonSettings, unavailableAddon } from './lib/addon-settings';
@@ -238,6 +239,13 @@
   type PlaybackChoice = { stream: Stream; selection: StreamSelectionContext };
   const playerMemory = new Map<string, PlaybackChoice>();
   let streamSelection = savedStreamSelection();
+  let selectionPreviewStreams: Stream[] = [];
+  let reuseStoreScope = '';
+  const streamReuse = new StreamReuseStore((() => { try { return localStorage; } catch { return undefined; } })());
+  let autoVisit: { token: number; startedAt?: number; destinationId?: string } | null = null;
+  let autoPlayWaiting = false;
+  let autoTimer: ReturnType<typeof setTimeout> | undefined;
+
   let pendingAutoAction: { type: MediaType; id: string; videoId?: string; destinationId?: string } | null = null;
   let streamActionRequest = 0;
   type HomeAnchor = { index: number; top: number };
@@ -530,12 +538,12 @@
   $: selectionProviders = [...new Map([
     ...addons.filter((addon) => !addon.disabledFeatures?.includes('stream') && addon.manifest.resources.some((resource) =>
       (typeof resource === 'string' ? resource : resource.name) === 'stream'))
-      .map((addon) => ({ id: addon.manifestUrl, name: addon.manifest.name })),
+      .map((addon) => ({ id: addon.manifestUrl, name: addon.manifest.name, kind: 'addon' as const })),
     ...plugins.flatMap((repo) => repo.scrapers.filter(browserCompatible)
-      .map((scraper) => ({ id: `${repo.manifestUrl}:${scraper.id}`, name: `${scraper.name} · ${repo.name}` }))),
+      .map((scraper) => ({ id: `${repo.manifestUrl}:${scraper.id}`, name: `${scraper.name} · ${repo.name}`, kind: 'plugin' as const }))),
     ...deviceProviders.map((provider) => ({
       id: `${provider.repoUrl}:${provider.scraperId}`,
-      name: `${provider.name} · Device plugin`
+      name: `${provider.name} · Device plugin`, kind: 'plugin' as const
     }))
   ].map((provider) => [provider.id, provider])).values()];
   $: visibleRows = rows.filter((row) => !effectiveAddonFilter || row.addon.manifestUrl === effectiveAddonFilter);
@@ -616,6 +624,15 @@
   $: currentSearchSources = searchSources(searchAddons);
   $: syncSearchConfiguration(currentSearchIdentity, currentSearchSources, searchAddons);
   $: nextDismissalScope = nuvioSession && nuvioDisplayReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
+  // Keep the saved profile identity stable while its authorization is restored.
+  // Profile changes/revocation clear reuse explicitly; the profile gate blocks playback.
+  $: selectionReuseScope = nuvioSession ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : account ? `stremio:${account.user._id}` : 'browser';
+  $: if (reuseStoreScope !== selectionReuseScope) {
+    reuseStoreScope = selectionReuseScope;
+    streamReuse.useScope(selectionReuseScope);
+    selectionPreviewStreams = [];
+  }
+  $: if (streamScreen) selectionPreviewStreams = streams;
   $: if (nextDismissalScope !== dismissalScope) { dismissalScope = nextDismissalScope; dismissedWatching = watchingDismissals(dismissalScope); }
   $: nuvioMetadataScope = nuvioSession && nuvioProfileReady ? nuvioCacheScope(nuvioSession, nuvioProfileIndex) : '';
   $: nuvioMetadataProviders = addons.filter((addon) => supports(addon, 'meta', 'movie') || supports(addon, 'meta', 'series'));
@@ -762,6 +779,7 @@
   }
 
   onDestroy(() => {
+    cancelAutoPlay();
     searchSession.invalidate();
     clearNativeVideoEvents();
     nuvioMetadataController?.abort();
@@ -1053,6 +1071,9 @@
   }
 
   function disconnectAccount() {
+    streamReuse.clear();
+    selectionPreviewStreams = [];
+    cancelAutoPlay();
     invalidateSearch();
     if (account) { try { discardPlaybackWrites(`stremio:${account.user._id}`); clearWatchingDismissals(`stremio:${account.user._id}`); } catch { /* storage error */ } }
     stremioWatchingReady = false;
@@ -1451,6 +1472,9 @@
   }
 
   function revokeNuvioCachedContent() {
+    streamReuse.clear();
+    selectionPreviewStreams = [];
+    cancelAutoPlay();
     window.clearTimeout(provisionalNuvioTimer);
     provisionalNuvioCache = false;
     clearNuvioAuthorization();
@@ -2571,6 +2595,11 @@
     const actionToken = ++streamActionRequest;
     const automaticAction = pendingAutoAction;
     pendingAutoAction = null;
+    cancelAutoPlay();
+    if (route.kind === 'streams' && automaticAction && automaticAction.type === route.type && automaticAction.id === route.id
+      && automaticAction.videoId === route.videoId && autoPlayEnabled(streamSelection)) {
+      autoVisit = { token: actionToken, destinationId: automaticAction.destinationId };
+    }
     const previousMeta = loadingDetail ? undefined : selected;
     // Keep the same source screen alive beneath the player, including unfinished lookups.
     const retainMedia = (route.kind === 'streams' || route.kind === 'player')
@@ -2655,7 +2684,7 @@
               if (route.kind === 'streams' && automaticAction && request === routeRequest && actionToken === streamActionRequest
                 && automaticAction.type === route.type && automaticAction.id === route.id
                 && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
-                && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
+                && autoPlayEnabled(streamSelection) && !detailError && (selected?.type !== 'series' || episode)) {
                 void startPreferredStream(true, automaticAction.destinationId);
               }
             });
@@ -2677,8 +2706,8 @@
         } else if (route.kind === 'streams' && automaticAction && actionToken === streamActionRequest
           && automaticAction.type === route.type && automaticAction.id === route.id
           && (!automaticAction.videoId || automaticAction.videoId === episode?.id)
-          && streamSelection.enabled && !detailError && (selected?.type !== 'series' || episode)) {
-          await startPreferredStream(false, automaticAction.destinationId);
+          && autoPlayEnabled(streamSelection) && !detailError && (selected?.type !== 'series' || episode)) {
+          await startPreferredStream(true, automaticAction.destinationId);
         }
       }
     }
@@ -2945,7 +2974,7 @@
 
   function openStreamScreen(video: Video | null) {
     if (!selected) return;
-    pendingAutoAction = streamSelection.enabled ? { type: selected.type, id: selected.id, videoId: video?.id,
+    pendingAutoAction = autoPlayEnabled(streamSelection) ? { type: selected.type, id: selected.id, videoId: video?.id,
       destinationId: playbackDestination?.id } : null;
     replaceRoute(mediaRoute('detail', video));
     router?.push(mediaRoute('streams', video));
@@ -3101,12 +3130,15 @@
         sourceLoading = { ...sourceLoading, [source.key]: false };
         loadingStreams = restoringStreamSources || Object.values(sourceLoading).some(Boolean);
         onUpdate?.();
+        if (autoVisit) void startPreferredStream(true);
       }
     }
   }
 
   async function loadStreams(type: MediaType, id: string, forceRefresh = false, onUpdate?: () => void) {
     const request = ++streamRequest;
+    // Link reuse must compare against a fresh provider response, never the stream cache.
+    forceRefresh ||= streamSelection.reuseLastLink;
     if (hasNativePluginsApi()) {
       await refreshDevicePlugins();
       if (request !== streamRequest) return;
@@ -3121,6 +3153,7 @@
     sourceLoading = Object.fromEntries(activeStreamSources.map((source) => [source.key, true]));
     restoringStreamSources = !restorationComplete;
     loadingStreams = restoringStreamSources || activeStreamSources.length > 0;
+    onUpdate?.();
     const lookups = activeStreamSources.map((source) => refreshStreamSource(source, type, id, request, forceRefresh, onUpdate));
     if (restoringStreamSources) {
       // Render available sources now, then append sources restored from other accounts/plugins.
@@ -3136,6 +3169,7 @@
       restoringStreamSources = false;
       loadingStreams = Object.values(sourceLoading).some(Boolean);
       onUpdate?.();
+      if (autoVisit) void startPreferredStream(true);
     }
     await Promise.all(lookups);
   }
@@ -3154,24 +3188,62 @@
     saveStreamSelection(preferences);
   }
 
-  async function startPreferredStream(allowPending = false, destinationId = playbackDestination?.id) {
-    if (!selected || loadingDetail || (loadingStreams && !allowPending)) return;
-    const stream = loadingStreams
-      ? selectReadyPreferredStream(activeStreamSources.map((source) => ({ id: source.key.replace(/^(addon|plugin):/, ''),
-        streams: (sourceStreams[source.key] || []).filter(playableStream), loading: !!sourceLoading[source.key] })),
-        streamSelection, restoringStreamSources)
-      : selectPreferredStream(streams.filter(playableStream), streamSelection);
-    if (!stream) {
-      if (loadingStreams) return;
-      sourceError = 'No stream matches your auto-selection settings. Choose a stream below or adjust your settings.';
-      return;
-    }
-    const selection = selectionContext(stream, streamSelection, false);
-    await playStream(stream, selection, destinationId);
+  function cancelAutoPlay() {
+    clearTimeout(autoTimer);
+    autoTimer = undefined;
+    autoVisit = null;
+    autoPlayWaiting = false;
   }
 
-  async function playStream(stream: Stream, selection = selectionContext(stream, streamSelection), destinationId = playbackDestination?.id) {
+  function chooseStreamsManually() {
+    cancelAutoPlay();
+    ++streamActionRequest;
+    sourceError = '';
+  }
+
+  function rememberStream(meta: Meta, video: Video | null | undefined, stream: Stream, selection: StreamSelectionContext) {
+    streamReuse.remember(selection.reuseScope || '', streamContentKey(meta.type, meta.id, video?.id), stream,
+      meta.type === 'series' ? streamContentKey(meta.type, meta.id) : undefined,
+      selection.preferences.reuseLastLink, selection.preferences.reuseBingeGroup);
+  }
+
+  async function startPreferredStream(automatic = false, destinationId = playbackDestination?.id) {
+    if (!selected || loadingDetail || detailError || (selected.type === 'series' && !episode)) return;
+    if (!automatic) {
+      cancelAutoPlay();
+      autoVisit = { token: streamActionRequest, destinationId };
+    }
+    const visit = autoVisit;
+    if (!visit || visit.token !== streamActionRequest) return;
+    visit.startedAt ??= Date.now();
+    const preferences = streamSelection;
+    const result = evaluateAutoPlay(activeStreamSources.map((source) => ({
+      id: source.key.replace(/^(addon|plugin):/, ''), kind: source.addon ? 'addon' : 'plugin',
+      streams: (sourceStreams[source.key] || []).filter(playableStream), loading: !!sourceLoading[source.key]
+    })), preferences, { startedAt: visit.startedAt, now: Date.now(), restoring: restoringStreamSources,
+      lastLink: preferences.reuseLastLink ? streamReuse.lastLink(streamContentKey(selected.type, selected.id, episode?.id), preferences.lastLinkHours) : undefined,
+      preferredBingeGroup: preferences.reuseBingeGroup && selected.type === 'series'
+        ? streamReuse.bingeGroup(streamContentKey(selected.type, selected.id)) : undefined });
+    autoPlayWaiting = result.waiting;
+    clearTimeout(autoTimer);
+    if (result.waiting) {
+      const limit = preferences.timeoutSeconds === 'unlimited' || preferences.timeoutSeconds === 0 ? 60_000 : preferences.timeoutSeconds * 1000;
+      autoTimer = setTimeout(() => { if (autoVisit === visit) void startPreferredStream(true, visit.destinationId); },
+        Math.max(1, limit - (Date.now() - visit.startedAt)));
+      return;
+    }
+    cancelAutoPlay();
+    if (!result.stream) {
+      sourceError = result.reason === 'timeout' ? 'Stream selection timed out. Choose a stream below or try again.'
+        : 'No stream matches your auto-selection settings. Choose a stream below or adjust your settings.';
+      return;
+    }
+    await playStream(result.stream, selectionContext(result.stream, preferences, false, selectionReuseScope), visit.destinationId);
+  }
+
+  async function playStream(stream: Stream, selection = selectionContext(stream, streamSelection, true, selectionReuseScope), destinationId = playbackDestination?.id) {
     if (!selected || nativePlayBusy || playerLoading) return;
+    cancelAutoPlay();
     if (!bridgeAvailable()) { await playInBrowser(stream, true, selection); return; }
     const meta = selected;
     const chosenEpisode = episode;
@@ -3203,7 +3275,7 @@
         await playInBrowser(stream, true, selection);
         return;
       }
-      const options = { destinationId, addons, canStart: () => navigation === routeRequest && selected?.id === meta.id,
+      const options = { destinationId, addons, onStreamStarted: (startedStream: Stream, video?: Video) => rememberStream(meta, video, startedStream, selection), canStart: () => navigation === routeRequest && selected?.id === meta.id,
         initialOrientation: playbackOpeningOrientation(destinationId, api.capabilities.localPlaybackOrientation === 1, thisDevicePlayback) };
       if (meta.type === 'series') {
         if (!chosenEpisode) throw new Error('Choose an episode first.');
@@ -3227,7 +3299,7 @@
     } finally { nativePlayBusy = false; void refreshPlaybackDestination(); }
   }
 
-  async function playInBrowser(stream: Stream, recordHistory = true, selection = selectionContext(stream, streamSelection)) {
+  async function playInBrowser(stream: Stream, recordHistory = true, selection = selectionContext(stream, streamSelection, true, selectionReuseScope)) {
     if (!selected || !playableStream(stream)) return;
     if (recordHistory) {
       ++streamActionRequest;
@@ -3328,6 +3400,7 @@
   function browserPlaying(event: Event) {
     if (event.currentTarget !== playerElement) return;
     browserResume.observe(event.currentTarget as HTMLMediaElement, playing);
+    if (playing) rememberStream(playing.meta, playing.video, playing.stream, playing.selection);
     logPlayback(event.currentTarget instanceof HTMLVideoElement ? 'native playing' : 'playing');
   }
 
@@ -3375,7 +3448,7 @@
 
   async function browserEnded() {
     const current = playing;
-    if (!current?.video) return;
+    if (!current?.video || !current.selection.preferences.nextEpisodeAutoPlay) return;
     const videos = [...(current.meta.videos || [])]
       .filter((video) => video.season != null && video.episode != null)
       .sort((a, b) => (a.season! - b.season!) || (a.episode! - b.episode!));
@@ -3384,7 +3457,7 @@
     try {
       const sources = (await fetchStreams(addons, 'series', next.id, plugins, tmdbKey)).filter(playableStream);
       if (playing !== current) return;
-      const stream = selectNextStream(sources, current.selection);
+      const stream = selectNextStream(sources, { ...current.selection, initialStream: current.stream });
       if (stream) {
         playbackAttempt += 1;
         logPlayback('next episode', `season=${next.season}; episode=${next.episode}`);
@@ -3398,7 +3471,10 @@
         replaceRoute(route);
         void loadStreams('series', next.id);
         playerError = '';
-      } else playerError = `No matching browser stream for ${next.title || `S${next.season}E${next.episode}`}.`;
+      } else {
+        pendingAutoAction = null;
+        router?.push({ kind: 'streams', type: current.meta.type, id: current.meta.id, videoId: next.id, season: next.season, episode: next.episode });
+      }
     } catch { playerError = 'Could not load the next episode.'; }
   }
 </script>
@@ -3817,7 +3893,7 @@
     <div class="manage-panel playback-panel" role="dialog" aria-modal="true" aria-label="Playback settings"><div class="panel-header"><div><div class="eyebrow">THIS DEVICE</div><h2>Playback</h2></div><button class="icon-button" onclick={closeSettingsPanel} aria-label="Close"><X size={22} /></button></div>
       <p class="panel-copy">These settings stay on this device and apply to every account.</p>
       <h3 class="playback-section-title">Choosing a stream</h3>
-      <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} onChange={updateStreamSelection} />
+      <StreamSelectionSettings preferences={streamSelection} providers={selectionProviders} streams={selectionPreviewStreams.filter(playableStream)} onChange={updateStreamSelection} />
       <h3 class="playback-section-title">Player</h3>
       {#if destinationSupported}
         <div class="this-device-playback-settings">
@@ -3875,7 +3951,8 @@
         {#if detailIdentityReady && (selected.type !== 'series' || episode)}
           <div class="stream-screen-heading"><div><span class="section-type">AVAILABLE SOURCES</span><h2>Streams <small>{visiblePlayable.length}</small></h2></div></div>
           {@render destinationRow()}
-          {#if streamSelection.enabled}<div class="stream-auto-actions"><button class="watch-button" onclick={() => void startPreferredStream()} disabled={loadingDetail || loadingStreams || playerLoading || nativePlayBusy || destinationBusy || destinationPending}><Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume best match' : 'Play best match'}</button></div>{/if}
+          {#if autoPlayWaiting}<div class="stream-auto-actions" role="status">Finding a stream… <button class="watch-button" onclick={chooseStreamsManually}>Choose manually</button></div>{/if}
+          {#if autoPlayEnabled(streamSelection)}<div class="stream-auto-actions"><button class="watch-button" onclick={() => void startPreferredStream()} disabled={loadingDetail || playerLoading || nativePlayBusy || destinationBusy || destinationPending}><Play size={17} fill="currentColor" /> {detailResumeMs > 0 ? 'Resume best match' : 'Play best match'}</button></div>{/if}
           <div class="stream-provider-row" role="group" aria-label="Filter and refresh stream sources">
             <button class="stream-refresh-all" onclick={refreshAllStreams} disabled={loadingDetail} aria-label="Refresh all streams" title="Refresh all streams"><RefreshCw size={17} class={loadingStreams ? 'spin' : ''} /></button>
             <button class:active={!selectedStreamSource} class="stream-provider-chip" onclick={() => selectedStreamSource = ''}>All <small>{playable.length}</small></button>

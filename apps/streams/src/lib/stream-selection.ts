@@ -98,14 +98,14 @@ export function matchesStreamPreferences(stream: Stream, preferences: StreamSele
 export function matchesAllStreamPreferences(stream: Stream, preferences: StreamSelectionPreferences): boolean {
   return !!(preferences.resolution !== 'any' || preferences.releaseTypes.length || preferences.provider)
     && matchesStreamPreferences(stream, preferences)
-    && (!preferences.provider || stream.addonUrl === preferences.provider);
+    && (!preferences.provider || streamSource(stream).id === preferences.provider);
 }
 
 // Sort only the displayed list; automatic playback continues to use its original order.
 export function sortStreamsByPreference(streams: Stream[], preferences: StreamSelectionPreferences): Stream[] {
   if (!preferences.sortByPreference) return streams;
   return streams.map((stream, index) => {
-    const providerMatch = !!preferences.provider && stream.addonUrl === preferences.provider;
+    const providerMatch = !!preferences.provider && streamSource(stream).id === preferences.provider;
     const fullMatch = matchesStreamPreferences(stream, preferences);
     const score = Number(providerMatch)
       + Number(preferences.resolution !== 'any' && streamResolution(stream) === preferences.resolution)
@@ -118,7 +118,7 @@ export function sortStreamsByPreference(streams: Stream[], preferences: StreamSe
 // Callers supply only streams eligible for playback/casting, in stable provider order.
 export function selectPreferredStream(streams: Stream[], preferences: StreamSelectionPreferences): Stream | undefined {
   const matches = streams.filter((stream) => matchesStreamPreferences(stream, preferences));
-  return matches.find((stream) => preferences.provider && stream.addonUrl === preferences.provider) || matches[0];
+  return matches.find((stream) => preferences.provider && streamSource(stream).id === preferences.provider) || matches[0];
 }
 
 // A ready preferred provider wins immediately. Otherwise wait only for providers
