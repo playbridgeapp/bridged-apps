@@ -77,6 +77,7 @@ export class HashRouter {
   private lastHash: string;
   private changed: (route: AppRoute, motion: NavigationMotion) => void;
   private requestedBack = false;
+  private transientBack: (() => void) | null = null;
   private rootTab: RootTabRoute = { kind: 'tab', tab: 'home' };
   private tabSelection: Promise<void> | null = null;
   private traversal: (() => void) | null = null;
@@ -90,6 +91,10 @@ export class HashRouter {
       settle();
       return;
     }
+    if (this.transientBack && window.location.hash === this.lastHash) {
+      const cancel = this.transientBack; this.transientBack = null; cancel(); return;
+    }
+    this.transientBack = null;
     if (window.location.hash === this.lastHash) return; // popstate + hashchange can describe the same traversal.
     this.lastHash = window.location.hash;
     const motion = this.requestedBack ? 'back' : 'history';
@@ -128,6 +133,25 @@ export class HashRouter {
     const state = history.state as Partial<RouteState> | null;
     return state?.streamsRouter === 1 && Number.isSafeInteger(state.depth) && state.depth! >= 0
       ? state as RouteState : { streamsRouter: 1, depth: 0 };
+  }
+
+  /** An opening attempt has history ownership without exposing a stream-list route. */
+  beginTransient(onBack: () => void): void {
+    this.transientBack = onBack;
+    history.pushState({ streamsRouter: 1, depth: this.state().depth + 1, parent: window.location.hash } satisfies RouteState, '', window.location.hash);
+  }
+
+  replaceTransient(route: AppRoute): void {
+    if (!this.transientBack) { this.push(route); return; }
+    this.transientBack = null;
+    this.replace(route);
+    this.changed(route, 'push');
+  }
+
+  endTransient(): void {
+    if (!this.transientBack) return;
+    this.transientBack = null;
+    history.back();
   }
 
   push(route: AppRoute) {

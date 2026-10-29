@@ -213,3 +213,19 @@ test('addon-declared content types have links; reserved and path-like types do n
   assert.deepEqual(parseRoute('#/Live%20TV/ch1/streams'), { kind: 'streams', type: 'Live TV', id: 'ch1', videoId: undefined, season: undefined, episode: undefined });
   for (const hash of ['#/settings/x', '#/Search/abc', '#/../abc', '#/%2Fetc/abc']) assert.equal(parseRoute(hash).kind === 'detail', false, hash);
 });
+
+test('opening Back consumes only its transient entry and player replacement returns to detail', async t => {
+  const { router, history, changes, tick } = browser(t);
+  router.push(detail);
+  let cancelled = 0;
+  router.beginTransient(() => cancelled++);
+  history.back(); await tick();
+  assert.equal(cancelled, 1);
+  assert.equal(changes.at(-1).route.kind, 'detail');
+  router.beginTransient(() => cancelled++);
+  router.replaceTransient({ ...detail, kind: 'player' });
+  assert.equal(changes.at(-1).route.kind, 'player');
+  history.back(); await tick();
+  assert.equal(changes.at(-1).route.kind, 'detail');
+  assert.equal(cancelled, 1);
+});

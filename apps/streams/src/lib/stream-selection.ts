@@ -19,6 +19,7 @@ export const TIMEOUT_SECONDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30
 export const LAST_LINK_HOURS = [1, 2, 3, 6, 12, 24, 48, 72, 168] as const;
 export type AutoPlayMode = typeof AUTO_PLAY_MODES[number];
 export type StreamSelectionPreferences = {
+  prefetchStreamsOnDetail: boolean; resumeDirectlyFromContinueWatching: boolean;
   mode: AutoPlayMode; sortByPreference: boolean; resolution: Resolution; provider: string; releaseTypes: ReleaseType[];
   regex: string; timeoutSeconds: typeof TIMEOUT_SECONDS[number]; scope: 'all' | 'addons' | 'plugins';
   allowedAddons: string[]; allowedPlugins: string[]; reuseLastLink: boolean; lastLinkHours: number;
@@ -28,6 +29,7 @@ export type StreamSelectionContext = { preferences: StreamSelectionPreferences; 
 export const STREAM_SELECTION_KEY = 'bridged-streams.stream-selection.v2';
 const LEGACY_KEY = 'bridged-streams.stream-selection.v1';
 export const defaultStreamSelection = (): StreamSelectionPreferences => ({
+  prefetchStreamsOnDetail: true, resumeDirectlyFromContinueWatching: false,
   mode: 'manual', sortByPreference: false, resolution: 'any', provider: '', releaseTypes: [], regex: '', timeoutSeconds: 3,
   scope: 'all', allowedAddons: [], allowedPlugins: [], reuseLastLink: false, lastLinkHours: 24,
   nextEpisodeAutoPlay: true, preferBingeGroup: true, bingeFallback: true, reuseBingeGroup: false
@@ -42,6 +44,7 @@ export function normalizeStreamSelection(raw: unknown, legacy = false): StreamSe
   const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const ids = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === 'string' && !!id))].slice(0, 200) : [];
   return {
+    prefetchStreamsOnDetail: value.prefetchStreamsOnDetail !== false, resumeDirectlyFromContinueWatching: value.resumeDirectlyFromContinueWatching === true,
     mode: legacy ? value.enabled === true ? 'preferences' : 'manual' : AUTO_PLAY_MODES.includes(value.mode as AutoPlayMode) ? value.mode as AutoPlayMode : 'manual',
     sortByPreference: value.sortByPreference === true,
     resolution: RESOLUTIONS.includes(value.resolution as Resolution) ? value.resolution as Resolution : 'any',
@@ -211,7 +214,7 @@ function selectModeStream(streams: Stream[], preferences: StreamSelectionPrefere
 
 export type AutoPlaySource = { id: string; kind: 'addon' | 'plugin'; streams: Stream[]; loading: boolean };
 export type AutoPlayContext = { startedAt: number; now: number; restoring?: boolean; preferredBingeGroup?: string; lastLink?: StreamFingerprint };
-export type AutoPlayEvaluation = { stream?: Stream; waiting: boolean; reason: 'manual' | 'waiting' | 'last-link' | 'binge-group' | 'match' | 'no-match' | 'timeout' | 'invalid-regex' };
+export type AutoPlayEvaluation = { candidates?: Stream[]; stream?: Stream; waiting: boolean; reason: 'manual' | 'waiting' | 'last-link' | 'binge-group' | 'match' | 'no-match' | 'timeout' | 'invalid-regex' };
 
 export function evaluateAutoPlay(sources: AutoPlaySource[], preferences: StreamSelectionPreferences, context: AutoPlayContext): AutoPlayEvaluation {
   if (!autoPlayEnabled(preferences)) return { waiting: false, reason: preferences.mode === 'regex' ? 'invalid-regex' : 'manual' };
@@ -220,18 +223,36 @@ export function evaluateAutoPlay(sources: AutoPlaySource[], preferences: StreamS
   const pending = !!context.restoring || eligible.some((source) => source.loading);
   const elapsed = Math.max(0, context.now - context.startedAt);
   if (elapsed >= 60_000 && (pending || preferences.timeoutSeconds === 'unlimited')) return { waiting: false, reason: 'timeout' };
-  const reused = preferences.reuseLastLink && context.lastLink ? streams.find((stream) => matchesFingerprint(stream, context.lastLink!)) : undefined;
-  const group = preferences.preferBingeGroup && context.preferredBingeGroup ? streams.find((stream) => stream.behaviorHints?.bingeGroup === context.preferredBingeGroup) : undefined;
-  const stream = reused || group || selectModeStream(streams, preferences);
+  const candidates = rankAutoPlayCandidates(streams, preferences, context);
+  const stream = candidates[0];
+  const reused = stream && preferences.reuseLastLink && context.lastLink && matchesFingerprint(stream, context.lastLink);
+  const group = stream && preferences.preferBingeGroup && context.preferredBingeGroup === stream.behaviorHints?.bingeGroup;
   const deadline = preferences.timeoutSeconds !== 'unlimited' && elapsed >= preferences.timeoutSeconds * 1000;
   if (pending && preferences.timeoutSeconds !== 0 && !deadline) {
     if (preferences.timeoutSeconds !== 'unlimited' && preferences.mode === 'preferences' && preferences.provider && !context.lastLink && !context.preferredBingeGroup) {
       const ready = selectReadyPreferredStream(eligible, preferences, context.restoring);
-      if (ready) return { stream: ready, waiting: false, reason: 'match' };
+      if (ready) return { stream: ready, candidates: [ready, ...candidates.filter((candidate) => candidate !== ready)].slice(0, 3), waiting: false, reason: 'match' };
     }
     return { waiting: true, reason: 'waiting' };
   }
-  if (stream) return { stream, waiting: false, reason: reused ? 'last-link' : group ? 'binge-group' : 'match' };
+  if (stream) return { stream, candidates, waiting: false, reason: reused ? 'last-link' : group ? 'binge-group' : 'match' };
   if (pending && preferences.timeoutSeconds === 0) return { waiting: true, reason: 'waiting' };
   return { waiting: false, reason: deadline && pending ? 'timeout' : 'no-match' };
+}
+
+
+/** Ranked ready alternatives only; never broaden a regex/filter to an arbitrary release. */
+export function rankAutoPlayCandidates(streams: Stream[], preferences: StreamSelectionPreferences,
+  context: Pick<AutoPlayContext, 'lastLink' | 'preferredBingeGroup'> = {}): Stream[] {
+  const eligible = streams.filter((stream) => sourceAllowed(streamSource(stream), preferences));
+  const reused = preferences.reuseLastLink && context.lastLink ? eligible.filter((stream) => matchesFingerprint(stream, context.lastLink!)) : [];
+  const grouped = preferences.preferBingeGroup && context.preferredBingeGroup ? eligible.filter((stream) => stream.behaviorHints?.bingeGroup === context.preferredBingeGroup) : [];
+  const mode = eligible.filter((stream) => !!selectModeStream([stream], preferences));
+  if (preferences.mode === 'preferences' && preferences.provider) mode.sort((a, b) => Number(streamSource(b).id === preferences.provider) - Number(streamSource(a).id === preferences.provider));
+  const seen = new Set<string>();
+  return [...reused, ...grouped, ...mode].filter((stream) => {
+    const key = JSON.stringify([stream.url, stream.headers || {}]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, 3);
 }
