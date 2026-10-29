@@ -71,6 +71,17 @@ test.beforeEach(async ({ page }) => {
     session.provideItems = async (requestId, result) => { calls.push({ method: 'provideItems', payload: { requestId, ...result } }); };
     session.unlink = async () => { calls.push({ method: 'unlink', payload: {} }); };
     (window as any).__streamTest = { calls, session };
+    // These providers return synthetic, non-decodable media URLs. Model a first
+    // frame for automatic playback; real decoding remains in browser-resume.spec.
+    const started = new WeakSet<Element>();
+    new MutationObserver(() => {
+      if (!document.querySelector('.opening-overlay')) return;
+      for (const player of document.querySelectorAll('movi-player')) {
+        if (started.has(player)) continue;
+        started.add(player);
+        setTimeout(() => { if (player.isConnected) player.dispatchEvent(new Event('playing')); }, 20);
+      }
+    }).observe(document, { childList: true, subtree: true });
     (window as any).__streamTest.bridge = {
       cast: (payload: any) => calls.push({ method: 'cast', payload }),
       play: async (payload: any) => { calls.push({ method: 'play', payload }); return session; },
@@ -657,7 +668,8 @@ test('waits for the preferred provider instead of starting a faster matching pro
   await page.locator('.detail-play').click();
   await requestStarted;
   try {
-    await expect(page.locator('.stream-result')).toHaveCount(1);
+    await expect(page.getByRole('dialog', { name: 'Opening Sample Film' })).toBeVisible();
+    await expect(page.locator('.stream-result')).toHaveCount(0);
     await expect(page.locator('movi-player')).toHaveCount(0);
   } finally { release(); }
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/preferred.mp4');
@@ -769,7 +781,6 @@ test(`automatic native continuation ${preferBingeGroup ? 'prefers its binge grou
   }
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.locator('.detail-play').click();
-  await page.getByRole('button', { name: /Pilot/ }).click();
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'auto-next', count: 1 } })));
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
@@ -1938,9 +1949,9 @@ test('retains the destination chosen at Play while preferred streams are loading
       };
       window.dispatchEvent(new Event('pageshow'));
     });
-    await expect(page.locator('.stream-panel').getByRole('button', { name: 'Playback destination: Bedroom TV. Change device' })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Opening Sample Film' })).toBeVisible();
   } finally { release(); }
-  await expect(page.getByRole('alert')).toContainText('destination changed');
+  await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('destination changed');
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls).toHaveLength(1);
   expect(calls[0].payload.destinationId).toBe('tv-1');
@@ -2035,7 +2046,7 @@ test('fonts load from local versioned assets without contacting Google Fonts', a
   await page.reload();
   await page.evaluate(() => document.fonts.ready);
   expect(requests).toEqual([]);
-  expect(await page.evaluate(() => document.fonts.check('700 16px Manrope') && document.fonts.check('400 16px "DM Sans"'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => document.fonts.check('700 16px Manrope') && document.fonts.check('400 16px "DM Sans"'))).toBe(true);
 });
 
 test('regex mode auto-plays the matching stream and validates presets in settings', async ({ page }) => {
@@ -2139,7 +2150,7 @@ for (const target of ['browser', 'native'] as const) {
   });
 }
 
-test('last-link reuse records a successful browser start, refetches, and keeps URLs out of storage', async ({ page }) => {
+test('last-link reuse records a successful browser start, adopts cached results, and keeps URLs out of storage', async ({ page }) => {
   let lookups = 0;
   await page.route(`${addon}/stream/movie/tt100.json`, (route) => {
     lookups++;
@@ -2165,12 +2176,12 @@ test('last-link reuse records a successful browser start, refetches, and keeps U
   await page.getByRole('dialog', { name: 'Streams for Sample Film' }).getByRole('button', { name: 'Details', exact: true }).click();
   await page.locator('.detail-play').click();
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/chosen.mp4');
-  expect(lookups).toBe(2);
+  expect(lookups).toBe(1);
   await page.goto('/');
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await page.locator('.detail-play').click();
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/chosen.mp4');
-  expect(lookups).toBe(3);
+  expect(lookups).toBe(2);
 });
 
 test('TV fallback off still retries an empty lookup, then intentionally stops a missing continuation', async ({ page }) => {
