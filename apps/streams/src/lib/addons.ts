@@ -142,7 +142,7 @@ export async function fetchStreams(
     const url = resourceUrl(addon, 'stream', type, id);
     return cachedStreamLookup(`addon:${url}:${addon.manifest.version}`, async () => {
       const data = await getJson<{ streams?: Omit<Stream, 'addonName' | 'addonUrl'>[] }>(url, signal);
-      return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl }));
+      return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl, selectionSource: { id: addon.manifestUrl, kind: 'addon' as const } }));
     }, forceRefresh || !!signal);
   }));
   results.forEach((result, index) => {

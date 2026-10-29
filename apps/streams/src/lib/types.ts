@@ -101,6 +101,7 @@ export interface Meta extends MetaPreview {
 }
 
 export interface Stream {
+  selectionSource?: { id: string; kind: 'addon' | 'plugin' };
   addonName: string;
   addonUrl: string;
   name?: string;

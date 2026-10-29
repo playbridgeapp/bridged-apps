@@ -232,6 +232,7 @@ export async function fetchPluginStreams(
           nativeResult.warnings.forEach((w) => onWarning?.(`${scraper.name}: ${w}`));
         }
         return nativeResult.streams.map((item): Stream => ({
+          selectionSource: { id: `${repo.manifestUrl}:${scraper.id}`, kind: 'plugin' },
           addonName: item.addonName || scraper.name,
           addonUrl: item.addonUrl || `${repo.manifestUrl}:${scraper.id}`,
           url: item.url,
@@ -268,7 +269,7 @@ export async function fetchPluginStreams(
       if (!value || typeof value !== 'object') return [];
       const item = value as { url?: string | { url?: string }; title?: string; name?: string; headers?: Record<string, string> };
       const url = typeof item.url === 'string' ? item.url : item.url?.url;
-      return url ? [{ addonName: scraper.name, addonUrl: `${repo.manifestUrl}:${scraper.id}`, url, title: item.title, name: item.name, headers: normalizePluginHeaders(item.headers) }] : [];
+      return url ? [{ selectionSource: { id: `${repo.manifestUrl}:${scraper.id}`, kind: 'plugin' as const }, addonName: scraper.name, addonUrl: `${repo.manifestUrl}:${scraper.id}`, url, title: item.title, name: item.name, headers: normalizePluginHeaders(item.headers) }] : [];
     });
   }));
 
