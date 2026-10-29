@@ -1,4 +1,6 @@
 import type { Stream } from './types';
+import { matchesFingerprint } from './stream-reuse.ts';
+import type { StreamFingerprint } from './stream-reuse.ts';
 
 export const RESOLUTIONS = ['any', '2160p', '1080p', '720p'] as const;
 export const RELEASE_TYPES = [
@@ -12,24 +14,65 @@ export const RELEASE_TYPES = [
 ] as const;
 export type Resolution = typeof RESOLUTIONS[number];
 export type ReleaseType = typeof RELEASE_TYPES[number]['key'];
-export type StreamSelectionPreferences = { enabled: boolean; sortByPreference: boolean; resolution: Resolution; provider: string; releaseTypes: ReleaseType[] };
-export type StreamSelectionContext = { preferences: StreamSelectionPreferences; manual: boolean; initialStream: Stream };
-const SETTINGS_KEY = 'bridged-streams.stream-selection.v1';
-export const defaultStreamSelection = (): StreamSelectionPreferences => ({ enabled: false, sortByPreference: false, resolution: 'any', provider: '', releaseTypes: [] });
+export const AUTO_PLAY_MODES = ['manual', 'first', 'regex', 'preferences'] as const;
+export const TIMEOUT_SECONDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 'unlimited'] as const;
+export const LAST_LINK_HOURS = [1, 2, 3, 6, 12, 24, 48, 72, 168] as const;
+export type AutoPlayMode = typeof AUTO_PLAY_MODES[number];
+export type StreamSelectionPreferences = {
+  prefetchStreamsOnDetail: boolean; resumeDirectlyFromContinueWatching: boolean;
+  mode: AutoPlayMode; sortByPreference: boolean; resolution: Resolution; provider: string; releaseTypes: ReleaseType[];
+  regex: string; timeoutSeconds: typeof TIMEOUT_SECONDS[number]; scope: 'all' | 'addons' | 'plugins';
+  allowedAddons: string[]; allowedPlugins: string[]; reuseLastLink: boolean; lastLinkHours: number;
+  nextEpisodeAutoPlay: boolean; preferBingeGroup: boolean; bingeFallback: boolean; reuseBingeGroup: boolean;
+};
+export type StreamSelectionContext = { preferences: StreamSelectionPreferences; manual: boolean; initialStream: Stream; reuseScope?: string };
+export const STREAM_SELECTION_KEY = 'bridged-streams.stream-selection.v2';
+const LEGACY_KEY = 'bridged-streams.stream-selection.v1';
+export const defaultStreamSelection = (): StreamSelectionPreferences => ({
+  prefetchStreamsOnDetail: true, resumeDirectlyFromContinueWatching: false,
+  mode: 'manual', sortByPreference: false, resolution: 'any', provider: '', releaseTypes: [], regex: '', timeoutSeconds: 3,
+  scope: 'all', allowedAddons: [], allowedPlugins: [], reuseLastLink: false, lastLinkHours: 24,
+  nextEpisodeAutoPlay: true, preferBingeGroup: true, bingeFallback: true, reuseBingeGroup: false
+});
+
+function nearest(value: unknown, values: readonly number[], fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return values.reduce((best, next) => Math.abs(value - next) < Math.abs(value - best) ? next : best);
+}
+
+export function normalizeStreamSelection(raw: unknown, legacy = false): StreamSelectionPreferences {
+  const value = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  const ids = (value: unknown) => Array.isArray(value) ? [...new Set(value.filter((id): id is string => typeof id === 'string' && !!id))].slice(0, 200) : [];
+  return {
+    prefetchStreamsOnDetail: value.prefetchStreamsOnDetail !== false, resumeDirectlyFromContinueWatching: value.resumeDirectlyFromContinueWatching === true,
+    mode: legacy ? value.enabled === true ? 'preferences' : 'manual' : AUTO_PLAY_MODES.includes(value.mode as AutoPlayMode) ? value.mode as AutoPlayMode : 'manual',
+    sortByPreference: value.sortByPreference === true,
+    resolution: RESOLUTIONS.includes(value.resolution as Resolution) ? value.resolution as Resolution : 'any',
+    provider: typeof value.provider === 'string' ? value.provider : '',
+    releaseTypes: RELEASE_TYPES.filter((type) => Array.isArray(value.releaseTypes) && value.releaseTypes.includes(type.key)).map((type) => type.key),
+    regex: typeof value.regex === 'string' ? value.regex : '',
+    timeoutSeconds: value.timeoutSeconds === 'unlimited' || value.timeoutSeconds === 2147483647 ? 'unlimited'
+      : nearest(value.timeoutSeconds, TIMEOUT_SECONDS.filter((value) => value !== 'unlimited'), 3) as StreamSelectionPreferences['timeoutSeconds'],
+    scope: value.scope === 'addons' || value.scope === 'plugins' ? value.scope : 'all',
+    allowedAddons: ids(value.allowedAddons), allowedPlugins: ids(value.allowedPlugins), reuseLastLink: value.reuseLastLink === true,
+    lastLinkHours: nearest(value.lastLinkHours, LAST_LINK_HOURS, 24),
+    nextEpisodeAutoPlay: value.nextEpisodeAutoPlay !== false, preferBingeGroup: value.preferBingeGroup !== false,
+    bingeFallback: value.bingeFallback !== false, reuseBingeGroup: value.reuseBingeGroup === true
+  };
+}
 
 export function savedStreamSelection(): StreamSelectionPreferences {
   try {
-    const value = JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') as Partial<StreamSelectionPreferences> | null;
-    return { enabled: value?.enabled === true, sortByPreference: value?.sortByPreference === true,
-      resolution: RESOLUTIONS.includes(value?.resolution as Resolution) ? value!.resolution! : 'any',
-      provider: typeof value?.provider === 'string' ? value.provider : '',
-      releaseTypes: Array.isArray(value?.releaseTypes)
-        ? RELEASE_TYPES.filter((type) => value!.releaseTypes!.includes(type.key)).map((type) => type.key) : [] };
+    const stored = localStorage.getItem(STREAM_SELECTION_KEY);
+    if (stored !== null) return normalizeStreamSelection(JSON.parse(stored));
+    const value = normalizeStreamSelection(JSON.parse(localStorage.getItem(LEGACY_KEY) || '{}'), true);
+    saveStreamSelection(value);
+    return value;
   } catch { return defaultStreamSelection(); }
 }
 
 export function saveStreamSelection(preferences: StreamSelectionPreferences): void {
-  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(preferences)); }
+  try { localStorage.setItem(STREAM_SELECTION_KEY, JSON.stringify(normalizeStreamSelection(preferences))); }
   catch { /* Selection works in memory when browser storage is unavailable. */ }
 }
 
@@ -58,14 +101,14 @@ export function matchesStreamPreferences(stream: Stream, preferences: StreamSele
 export function matchesAllStreamPreferences(stream: Stream, preferences: StreamSelectionPreferences): boolean {
   return !!(preferences.resolution !== 'any' || preferences.releaseTypes.length || preferences.provider)
     && matchesStreamPreferences(stream, preferences)
-    && (!preferences.provider || stream.addonUrl === preferences.provider);
+    && (!preferences.provider || streamSource(stream).id === preferences.provider);
 }
 
 // Sort only the displayed list; automatic playback continues to use its original order.
 export function sortStreamsByPreference(streams: Stream[], preferences: StreamSelectionPreferences): Stream[] {
   if (!preferences.sortByPreference) return streams;
   return streams.map((stream, index) => {
-    const providerMatch = !!preferences.provider && stream.addonUrl === preferences.provider;
+    const providerMatch = !!preferences.provider && streamSource(stream).id === preferences.provider;
     const fullMatch = matchesStreamPreferences(stream, preferences);
     const score = Number(providerMatch)
       + Number(preferences.resolution !== 'any' && streamResolution(stream) === preferences.resolution)
@@ -78,7 +121,7 @@ export function sortStreamsByPreference(streams: Stream[], preferences: StreamSe
 // Callers supply only streams eligible for playback/casting, in stable provider order.
 export function selectPreferredStream(streams: Stream[], preferences: StreamSelectionPreferences): Stream | undefined {
   const matches = streams.filter((stream) => matchesStreamPreferences(stream, preferences));
-  return matches.find((stream) => preferences.provider && stream.addonUrl === preferences.provider) || matches[0];
+  return matches.find((stream) => preferences.provider && streamSource(stream).id === preferences.provider) || matches[0];
 }
 
 // A ready preferred provider wins immediately. Otherwise wait only for providers
@@ -98,24 +141,118 @@ export function selectReadyPreferredStream(providers: { id: string; streams: Str
   }
 }
 
-export function selectionContext(stream: Stream, preferences: StreamSelectionPreferences, manual = true): StreamSelectionContext {
-  return { initialStream: stream, manual, preferences: { ...preferences, releaseTypes: [...preferences.releaseTypes] } };
+export function selectionContext(stream: Stream, preferences: StreamSelectionPreferences, manual = true, reuseScope?: string): StreamSelectionContext {
+  return { initialStream: stream, manual, reuseScope, preferences: { ...preferences, releaseTypes: [...preferences.releaseTypes],
+    allowedAddons: [...preferences.allowedAddons], allowedPlugins: [...preferences.allowedPlugins] } };
 }
 
-export function selectNextStream(streams: Stream[], context: StreamSelectionContext, allowAnyFallback = false): Stream | undefined {
-  const { initialStream: selected, preferences, manual } = context;
-  const candidates = !manual && preferences.enabled ? streams.filter((stream) => matchesStreamPreferences(stream, preferences)) : streams;
-  const group = selected.behaviorHints?.bingeGroup;
-  const sameGroup = candidates.find((stream) => group && stream.behaviorHints?.bingeGroup === group);
-  const resolution = streamResolution(selected);
-  const releaseType = streamReleaseType(selected);
-  const sameSignature = (stream: Stream) => (!resolution || streamResolution(stream) === resolution)
-    && (!releaseType || streamReleaseType(stream) === releaseType);
-  const sameName = candidates.find((stream) => selected.name && stream.addonUrl === selected.addonUrl
-    && stream.name === selected.name && (!preferences.enabled || sameSignature(stream)));
-  const sameRelease = resolution || releaseType ? candidates.find((stream) => stream.addonUrl === selected.addonUrl && sameSignature(stream)) : undefined;
-  const continuation = sameGroup || sameName || sameRelease;
-  if (continuation) return continuation;
-  if (preferences.enabled) return selectPreferredStream(streams, preferences);
-  return streams.find((stream) => stream.addonUrl === selected.addonUrl) || (allowAnyFallback ? streams[0] : undefined);
+export function streamSource(stream: Stream): { id: string; kind: 'addon' | 'plugin' } {
+  return stream.selectionSource || { id: stream.addonUrl, kind: 'addon' };
+}
+
+export function sourceAllowed(source: { id: string; kind: 'addon' | 'plugin' }, preferences: StreamSelectionPreferences): boolean {
+  if (preferences.scope === 'addons' && source.kind !== 'addon' || preferences.scope === 'plugins' && source.kind !== 'plugin') return false;
+  const allowed = source.kind === 'addon' ? preferences.allowedAddons : preferences.allowedPlugins;
+  return !allowed.length || allowed.includes(source.id);
+}
+
+export function selectNextStream(streams: Stream[], context: StreamSelectionContext): Stream | undefined {
+  const { initialStream: selected, preferences } = context;
+  if (!preferences.nextEpisodeAutoPlay) return;
+  const candidates = streams.filter((stream) => sourceAllowed(streamSource(stream), preferences));
+  if (preferences.preferBingeGroup) {
+    const group = selected.behaviorHints?.bingeGroup;
+    const sameGroup = candidates.find((stream) => group && stream.behaviorHints?.bingeGroup === group);
+    if (sameGroup) return sameGroup;
+    const resolution = streamResolution(selected), release = streamReleaseType(selected);
+    const sameSignature = (stream: Stream) => (!resolution || streamResolution(stream) === resolution) && (!release || streamReleaseType(stream) === release);
+    const sameName = candidates.find((stream) => selected.name && stream.addonUrl === selected.addonUrl && stream.name === selected.name && sameSignature(stream));
+    const sameRelease = resolution || release ? candidates.find((stream) => stream.addonUrl === selected.addonUrl && sameSignature(stream)) : undefined;
+    if (sameName || sameRelease) return sameName || sameRelease;
+  }
+  if (!preferences.bingeFallback) return;
+  return selectModeStream(candidates, preferences) || (preferences.mode === 'manual' ? candidates[0] : undefined);
+}
+
+export const REGEX_PRESETS = [
+  ['1080p or higher', '(2160p|4k|1080p)'], ['4K / Remux', '(2160p|4k|remux)'],
+  ['1080p standard', '(1080p|full\\s*hd)'], ['720p / smaller', '(720p|webrip|web-dl)'],
+  ['Web sources', '(web[-\\s]?dl|webrip)'], ['BluRay quality', '(bluray|b[dr]rip|remux)'],
+  ['HEVC / x265', '(hevc|x265|h\\.265)'], ['AVC / x264', '(x264|h\\.264|avc)'],
+  ['HDR / Dolby Vision', '(hdr|hdr10\\+?|dv|dolby\\s*vision)'], ['Atmos / DTS', '(atmos|truehd|dts[-\\s]?hd|dtsx?)'],
+  ['English', '(\\beng\\b|english)'], ['No CAM / TS', '^(?!.*\\b(cam|hdcam|ts|telesync)\\b).*$'],
+  ['No Remux / HDR', '(?is)^(?!.*\\b(hdr|hdr10|dv|dolby|vision|hevc|remux|2160p)\\b).+$']
+] as const;
+
+export function compileStreamRegex(pattern: string): { matches: (stream: Stream) => boolean; error?: string } {
+  if (pattern.length > 500) return { matches: () => false, error: 'Use a pattern of 500 characters or fewer.' };
+  if (!/[\p{L}\p{N}]/u.test(pattern)) return { matches: () => false, error: 'Include a letter or digit in the pattern.' };
+  try {
+    // Mobile's presets use leading Kotlin inline flags; JavaScript takes them separately.
+    const normalized = pattern.trim().replace(/^\(\?[is]+\)/, '');
+    const regex = new RegExp(normalized, /^\(\?[is]*s[is]*\)/.test(pattern.trim()) ? 'is' : 'i');
+    const excluded = [...pattern.matchAll(/\(\?![^)]*?\(([^)]+)\)/g)].flatMap((match) => match[1].split('|')).map((word) => word.trim()).filter(Boolean);
+    const exclusions = excluded.length ? new RegExp(`\\b(?:${excluded.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i') : null;
+    return { matches: (stream) => {
+      const text = [stream.addonName, stream.name, stream.title, stream.description, stream.url].filter(Boolean).join(' ');
+      return regex.test(text) && !exclusions?.test(text);
+    } };
+  } catch { return { matches: () => false, error: 'Invalid regular expression.' }; }
+}
+
+export function autoPlayEnabled(preferences: StreamSelectionPreferences): boolean {
+  return preferences.reuseLastLink || preferences.reuseBingeGroup && preferences.preferBingeGroup
+    || preferences.mode === 'first' || preferences.mode === 'preferences'
+    || preferences.mode === 'regex' && !compileStreamRegex(preferences.regex).error;
+}
+
+function selectModeStream(streams: Stream[], preferences: StreamSelectionPreferences): Stream | undefined {
+  if (preferences.mode === 'first') return streams[0];
+  if (preferences.mode === 'preferences') return selectPreferredStream(streams, preferences);
+  if (preferences.mode === 'regex') return streams.find(compileStreamRegex(preferences.regex).matches);
+}
+
+export type AutoPlaySource = { id: string; kind: 'addon' | 'plugin'; streams: Stream[]; loading: boolean };
+export type AutoPlayContext = { startedAt: number; now: number; restoring?: boolean; preferredBingeGroup?: string; lastLink?: StreamFingerprint };
+export type AutoPlayEvaluation = { candidates?: Stream[]; stream?: Stream; waiting: boolean; reason: 'manual' | 'waiting' | 'last-link' | 'binge-group' | 'match' | 'no-match' | 'timeout' | 'invalid-regex' };
+
+export function evaluateAutoPlay(sources: AutoPlaySource[], preferences: StreamSelectionPreferences, context: AutoPlayContext): AutoPlayEvaluation {
+  if (!autoPlayEnabled(preferences)) return { waiting: false, reason: preferences.mode === 'regex' ? 'invalid-regex' : 'manual' };
+  const eligible = sources.filter((source) => sourceAllowed(source, preferences));
+  const streams = eligible.flatMap((source) => source.streams);
+  const pending = !!context.restoring || eligible.some((source) => source.loading);
+  const elapsed = Math.max(0, context.now - context.startedAt);
+  if (elapsed >= 60_000 && (pending || preferences.timeoutSeconds === 'unlimited')) return { waiting: false, reason: 'timeout' };
+  const candidates = rankAutoPlayCandidates(streams, preferences, context);
+  const stream = candidates[0];
+  const reused = stream && preferences.reuseLastLink && context.lastLink && matchesFingerprint(stream, context.lastLink);
+  const group = stream && preferences.preferBingeGroup && context.preferredBingeGroup === stream.behaviorHints?.bingeGroup;
+  const deadline = preferences.timeoutSeconds !== 'unlimited' && elapsed >= preferences.timeoutSeconds * 1000;
+  if (pending && preferences.timeoutSeconds !== 0 && !deadline) {
+    if (preferences.timeoutSeconds !== 'unlimited' && preferences.mode === 'preferences' && preferences.provider && !context.lastLink && !context.preferredBingeGroup) {
+      const ready = selectReadyPreferredStream(eligible, preferences, context.restoring);
+      if (ready) return { stream: ready, candidates: [ready, ...candidates.filter((candidate) => candidate !== ready)].slice(0, 3), waiting: false, reason: 'match' };
+    }
+    return { waiting: true, reason: 'waiting' };
+  }
+  if (stream) return { stream, candidates, waiting: false, reason: reused ? 'last-link' : group ? 'binge-group' : 'match' };
+  if (pending && preferences.timeoutSeconds === 0) return { waiting: true, reason: 'waiting' };
+  return { waiting: false, reason: deadline && pending ? 'timeout' : 'no-match' };
+}
+
+
+/** Ranked ready alternatives only; never broaden a regex/filter to an arbitrary release. */
+export function rankAutoPlayCandidates(streams: Stream[], preferences: StreamSelectionPreferences,
+  context: Pick<AutoPlayContext, 'lastLink' | 'preferredBingeGroup'> = {}): Stream[] {
+  const eligible = streams.filter((stream) => sourceAllowed(streamSource(stream), preferences));
+  const reused = preferences.reuseLastLink && context.lastLink ? eligible.filter((stream) => matchesFingerprint(stream, context.lastLink!)) : [];
+  const grouped = preferences.preferBingeGroup && context.preferredBingeGroup ? eligible.filter((stream) => stream.behaviorHints?.bingeGroup === context.preferredBingeGroup) : [];
+  const mode = eligible.filter((stream) => !!selectModeStream([stream], preferences));
+  if (preferences.mode === 'preferences' && preferences.provider) mode.sort((a, b) => Number(streamSource(b).id === preferences.provider) - Number(streamSource(a).id === preferences.provider));
+  const seen = new Set<string>();
+  return [...reused, ...grouped, ...mode].filter((stream) => {
+    const key = JSON.stringify([stream.url, stream.headers || {}]);
+    if (seen.has(key)) return false;
+    seen.add(key); return true;
+  }).slice(0, 3);
 }

@@ -5,7 +5,7 @@ import { defaultStreamSelection, matchesStreamPreferences, selectPreferredStream
   savedStreamSelection, saveStreamSelection } from '../src/lib/stream-selection.ts';
 
 const stream = (name, provider = 'a', extra = {}) => ({ name, addonName: provider, addonUrl: provider, url: 'https://media.test/video', ...extra });
-const settings = (extra = {}) => ({ ...defaultStreamSelection(), enabled: true, resolution: '1080p', releaseTypes: ['web-dl'], ...extra });
+const settings = (extra = {}) => ({ ...defaultStreamSelection(), mode: 'preferences', resolution: '1080p', releaseTypes: ['web-dl'], ...extra });
 
 test('quality and release parsing handles filename separators, aliases, and invisible characters', () => {
   const source = stream('Film.1\u200d0\u200d8\u200d0\u200dp.Web\u200d-\u200ddl');
@@ -73,13 +73,13 @@ test('manual episode choice overrides saved filters and preserves its release wh
   assert.equal(selectNextStream([preferred], context), preferred);
 });
 
-test('automatic continuation keeps required filters and stops instead of choosing an arbitrary cast source', () => {
+test('binge continuation wins before mode filters; disabling group preference restores mode filtering', () => {
   const original = stream('1080p WEB-DL', 'a', { behaviorHints: { bingeGroup: 'chosen' } });
   const context = selectionContext(original, settings(), false);
   const wrong = stream('720p WEB-DL', 'a', { behaviorHints: { bingeGroup: 'chosen' } });
   const fallback = stream('1080p WEB-DL', 'b');
-  assert.equal(selectNextStream([wrong, fallback], context, true), fallback);
-  assert.equal(selectNextStream([wrong], context, true), undefined);
+  assert.equal(selectNextStream([wrong, fallback], context), wrong);
+  assert.equal(selectNextStream([wrong], selectionContext(original, settings({ preferBingeGroup: false }), false)), undefined);
 });
 
 test('playback sessions retain their settings snapshot and original manual choice', () => {
@@ -102,7 +102,7 @@ test('display sorting prioritizes full matches before partial matches and preser
   const tied = stream('1080p WEB-DL second', 'preferred');
   const unknownPreferred = stream('Unknown quality', 'preferred');
   const input = [none, one, two, fullOther, fullPreferred, tied, unknownPreferred];
-  const preferences = settings({ enabled: false, sortByPreference: true, provider: 'preferred' });
+  const preferences = settings({ mode: 'manual', sortByPreference: true, provider: 'preferred' });
   assert.deepEqual(sortStreamsByPreference(input, preferences), [fullPreferred, tied, fullOther, two, one, unknownPreferred, none]);
   assert.deepEqual(input, [none, one, two, fullOther, fullPreferred, tied, unknownPreferred]);
   assert.equal(selectPreferredStream(input, preferences), fullPreferred);
@@ -123,15 +123,14 @@ test('sorting can be disabled, handles provider-only and multiple release prefer
     [input[1], input[2], input[3], input[0]]);
 });
 
-test('existing saved preferences keep sorting off and the two switches persist independently', () => {
+test('v1 migration retains filters and sorting while persisting an independent v2 mode', () => {
   const oldStorage = globalThis.localStorage;
-  let stored = JSON.stringify({ enabled: true, resolution: '1080p', releaseTypes: ['web-dl'], provider: 'a' });
-  globalThis.localStorage = { getItem: () => stored, setItem: (_key, value) => { stored = value; } };
+  const data = new Map([['bridged-streams.stream-selection.v1', JSON.stringify({ enabled: true, resolution: '1080p', releaseTypes: ['web-dl'], provider: 'a' })]]);
+  globalThis.localStorage = { getItem: (key) => data.get(key) ?? null, setItem: (key, value) => data.set(key, value) };
   try {
-    assert.equal(savedStreamSelection().sortByPreference, false);
-    assert.equal(savedStreamSelection().enabled, true);
-    saveStreamSelection({ ...savedStreamSelection(), enabled: false, sortByPreference: true });
-    assert.deepEqual(savedStreamSelection(), settings({ enabled: false, sortByPreference: true, provider: 'a' }));
+    assert.deepEqual(savedStreamSelection(), settings({ provider: 'a' }));
+    saveStreamSelection({ ...savedStreamSelection(), mode: 'manual', sortByPreference: true });
+    assert.deepEqual(savedStreamSelection(), settings({ mode: 'manual', sortByPreference: true, provider: 'a' }));
   } finally {
     if (oldStorage === undefined) delete globalThis.localStorage;
     else globalThis.localStorage = oldStorage;

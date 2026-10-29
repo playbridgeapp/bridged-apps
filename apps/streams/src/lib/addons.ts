@@ -142,8 +142,8 @@ export async function fetchStreams(
     const url = resourceUrl(addon, 'stream', type, id);
     return cachedStreamLookup(`addon:${url}:${addon.manifest.version}`, async () => {
       const data = await getJson<{ streams?: Omit<Stream, 'addonName' | 'addonUrl'>[] }>(url, signal);
-      return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl }));
-    }, forceRefresh || !!signal);
+      return (data.streams || []).map((stream) => ({ ...stream, addonName: addon.manifest.name, addonUrl: addon.manifestUrl, selectionSource: { id: addon.manifestUrl, kind: 'addon' as const } }));
+    }, forceRefresh, undefined, signal);
   }));
   results.forEach((result, index) => {
     if (result.status === 'rejected' && !signal?.aborted) {
@@ -217,14 +217,14 @@ export async function fetchStreams(
       // Native approvals/toggles are evaluated by the host on every resolution.
       // Never let the browser cache bypass a changed device policy.
       return fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
-        parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined, onWarning, bridge);
+        parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined, onWarning, bridge, signal);
     }
     return cachedStreamLookup(
       JSON.stringify(['plugin', repo.manifestUrl, scraper.id, isDevice ? 'device' : scraper.filename, scraper.enabled, scraper.supportedPlatforms,
         type, pluginId, parts?.[2], parts?.[3], isDevice ? '' : tmdbKey, isDevice ? '' : scraper.settings]),
       () => fetchPluginStreams([{ ...repo, scrapers: [scraper] }], type, pluginId, tmdbKey,
         parts ? Number(parts[2]) : undefined, parts ? Number(parts[3]) : undefined,
-        (warning) => { warned = true; onWarning?.(warning); }, bridge), forceRefresh || !!signal, () => !warned);
+        (warning) => { warned = true; onWarning?.(warning); }, bridge, signal), forceRefresh, () => !warned, signal);
   }));
   const pluginStreams = pluginResults.flatMap((result) => result.status === 'fulfilled' ? result.value : []);
   return [...addonStreams, ...pluginStreams];

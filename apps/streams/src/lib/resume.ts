@@ -79,3 +79,14 @@ export function resumePositionMs(meta: Meta, video: Video | null, stremio: Strem
         && candidate.season != null && candidate.episode != null)))));
   return point && (!nextUp || point.watchedAt > action!.watchedAt) ? Math.floor(point.positionMs) : 0;
 }
+
+
+/** Shared by the primary action and detail prefetch, including untouched series. */
+export function detailPlayEpisode(meta: Meta, selected: Video | null, stremio: StremioLibraryItem[],
+  library: NuvioLibraryItem[], progress: NuvioProgress[], watched: NuvioWatchedItem[] = [], now = Date.now()): Video | null {
+  if (meta.type !== 'series') return null;
+  return selected || resumeEpisode(meta, stremio, library, progress, watched)
+    || [...(meta.videos || [])].filter((video) => video.season != null && video.episode != null
+      && video.season >= 1 && video.available !== false && (!video.released || Date.parse(video.released) <= now))
+      .sort((a, b) => a.season! - b.season! || a.episode! - b.episode!)[0] || null;
+}

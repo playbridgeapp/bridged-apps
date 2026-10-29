@@ -31,10 +31,11 @@ async function openPlayback(page: Page) {
 
 async function enableStreamSelection(page: Page) {
   await openPlayback(page);
-  await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).not.toBeChecked();
+  await expect(page.getByLabel('Stream selection mode', { exact: true })).toHaveValue('manual');
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('preferences');
   await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
   await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
-  await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('preferences');
   await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await goTab(page, 'Home');
 }
@@ -70,6 +71,17 @@ test.beforeEach(async ({ page }) => {
     session.provideItems = async (requestId, result) => { calls.push({ method: 'provideItems', payload: { requestId, ...result } }); };
     session.unlink = async () => { calls.push({ method: 'unlink', payload: {} }); };
     (window as any).__streamTest = { calls, session };
+    // These providers return synthetic, non-decodable media URLs. Model a first
+    // frame for automatic playback; real decoding remains in browser-resume.spec.
+    const started = new WeakSet<Element>();
+    new MutationObserver(() => {
+      if (!document.querySelector('.opening-overlay')) return;
+      for (const player of document.querySelectorAll('movi-player')) {
+        if (started.has(player)) continue;
+        started.add(player);
+        setTimeout(() => { if (player.isConnected) player.dispatchEvent(new Event('playing')); }, 20);
+      }
+    }).observe(document, { childList: true, subtree: true });
     (window as any).__streamTest.bridge = {
       cast: (payload: any) => calls.push({ method: 'cast', payload }),
       play: async (payload: any) => { calls.push({ method: 'play', payload }); return session; },
@@ -603,7 +615,7 @@ test('automatically plays a matching release, saves preferences, and leaves Back
   await page.locator('.stream-result').filter({ hasText: '720p WEB-DL' }).getByRole('button', { name: 'Play', exact: true }).click();
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/low.mp4');
   await page.goto('/#/settings/playback');
-  await expect(page.getByRole('switch', { name: 'Auto-select stream', exact: true })).toBeChecked();
+  await expect(page.getByLabel('Stream selection mode', { exact: true })).toHaveValue('preferences');
   await expect(page.getByLabel('Preferred resolution', { exact: true })).toHaveValue('1080p');
   await expect(page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
@@ -644,18 +656,20 @@ test('waits for the preferred provider instead of starting a faster matching pro
   await expect(page.locator('.addon-management-card').getByText('Preferred Provider', { exact: true })).toBeVisible();
   await page.getByRole('dialog', { name: 'Manage addons' }).getByRole('button', { name: 'Close', exact: true }).click();
   await openPlayback(page);
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('preferences');
   await expect(page.getByLabel('Preferred provider', { exact: true }).locator('option', { hasText: 'Preferred Provider' })).toHaveCount(1);
   await page.getByLabel('Preferred resolution', { exact: true }).selectOption('1080p');
   await page.getByLabel('Preferred provider', { exact: true }).selectOption('https://preferred.test/manifest.json');
   await page.getByRole('region', { name: 'Stream selection settings' }).getByRole('button', { name: 'WEB-DL', exact: true }).click();
-  await page.getByRole('switch', { name: 'Auto-select stream', exact: true }).check();
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('preferences');
   await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
   await goTab(page, 'Home');
   await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
   await page.locator('.detail-play').click();
   await requestStarted;
   try {
-    await expect(page.locator('.stream-result')).toHaveCount(1);
+    await expect(page.getByRole('dialog', { name: 'Opening Sample Film' })).toBeVisible();
+    await expect(page.locator('.stream-result')).toHaveCount(0);
     await expect(page.locator('movi-player')).toHaveCount(0);
   } finally { release(); }
   await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/preferred.mp4');
@@ -747,7 +761,8 @@ for (const target of ['browser', 'native'] as const) {
   });
 }
 
-test('keeps automatic native continuation within the required quality and release filters', async ({ page }) => {
+for (const preferBingeGroup of [true, false]) {
+test(`automatic native continuation ${preferBingeGroup ? 'prefers its binge group before quality filters' : 'uses quality filters when group preference is disabled'}`, async ({ page }) => {
   await enableNativePlayback(page);
   await page.route(`${addon}/stream/series/**`, (route) => {
     const next = route.request().url().includes('1%3A2');
@@ -758,17 +773,24 @@ test('keeps automatic native continuation within the required quality and releas
     headers: { 'access-control-allow-origin': '*' } });
   });
   await enableStreamSelection(page);
+  if (!preferBingeGroup) {
+    await openPlayback(page);
+    await page.getByRole('switch', { name: 'Prefer binge group', exact: true }).uncheck();
+    await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+    await goTab(page, 'Home');
+  }
   await page.getByRole('button', { name: 'View details for Sample Series' }).first().click();
   await page.locator('.detail-play').click();
-  await page.getByRole('button', { name: /Pilot/ }).click();
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(1);
   await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'auto-next', count: 1 } })));
   await expect.poll(async () => page.evaluate(() => (window as any).__streamTest.calls.length)).toBe(2);
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls[0].payload.items[0].url).toBe('https://media.test/matching-first.mp4');
-  expect(calls[1].payload.items[0].url).toBe('https://media.test/matching-next.mp4');
+  expect(calls[1].payload.items[0].url).toBe(preferBingeGroup ? 'https://media.test/wrong-next.mp4' : 'https://media.test/matching-next.mp4');
   await expect(page.locator('movi-player')).toHaveCount(0);
 });
+
+}
 
 test('shows a skeleton for an uncached deep link instead of exposing its media ID', async ({ page }) => {
   let release!: () => void;
@@ -1927,9 +1949,9 @@ test('retains the destination chosen at Play while preferred streams are loading
       };
       window.dispatchEvent(new Event('pageshow'));
     });
-    await expect(page.locator('.stream-panel').getByRole('button', { name: 'Playback destination: Bedroom TV. Change device' })).toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Opening Sample Film' })).toBeVisible();
   } finally { release(); }
-  await expect(page.getByRole('alert')).toContainText('destination changed');
+  await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('destination changed');
   const calls = await page.evaluate(() => (window as any).__streamTest.calls);
   expect(calls).toHaveLength(1);
   expect(calls[0].payload.destinationId).toBe('tv-1');
@@ -2024,5 +2046,209 @@ test('fonts load from local versioned assets without contacting Google Fonts', a
   await page.reload();
   await page.evaluate(() => document.fonts.ready);
   expect(requests).toEqual([]);
-  expect(await page.evaluate(() => document.fonts.check('700 16px Manrope') && document.fonts.check('400 16px "DM Sans"'))).toBe(true);
+  await expect.poll(() => page.evaluate(() => document.fonts.check('700 16px Manrope') && document.fonts.check('400 16px "DM Sans"'))).toBe(true);
+});
+
+test('regex mode auto-plays the matching stream and validates presets in settings', async ({ page }) => {
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => route.fulfill({ json: { streams: [
+    { name: '720p CAM', url: 'https://media.test/low.mp4' },
+    { name: '1080p WEB-DL', url: 'https://media.test/regex.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await openPlayback(page);
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('regex');
+  await page.getByLabel('Regular expression', { exact: true }).fill('[a');
+  await expect(page.getByRole('alert')).toHaveText('Invalid regular expression.');
+  await expect(page.getByLabel('Regex preset').locator('option')).toHaveCount(14);
+  await page.getByLabel('Regular expression', { exact: true }).fill('1080p');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/regex.mp4');
+  await page.getByRole('button', { name: 'Choose another stream' }).click();
+  await page.goto('/#/settings/playback');
+  await expect(page.getByText('Matches 1 of 2 streams', { exact: true })).toBeVisible();
+});
+
+for (const cancel of [false, true]) {
+  test(cancel ? 'Choose manually cancels selection for this visit, including late results'
+    : 'bounded timeout shows the list and does not auto-play a late match', async ({ page }) => {
+    let release!: () => void;
+    let requested!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { requested = resolve; });
+    await page.route(`${addon}/stream/movie/tt100.json`, async (route) => {
+      requested();
+      await gate;
+      await route.fulfill({ json: { streams: [{ name: 'Late source', url: 'https://media.test/late.mp4' }] },
+        headers: { 'access-control-allow-origin': '*' } });
+    });
+    await openPlayback(page);
+    await page.getByLabel('Stream selection mode', { exact: true }).selectOption('first');
+    await page.getByLabel('Selection timeout', { exact: true }).fill('1');
+    await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+    await goTab(page, 'Home');
+    try {
+      await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+      await page.locator('.detail-play').click();
+      await started;
+      await expect(page.getByRole('button', { name: 'Choose manually', exact: true })).toBeVisible();
+      if (cancel) await page.getByRole('button', { name: 'Choose manually', exact: true }).click();
+      else await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('Stream selection timed out');
+      await expect(page.getByRole('button', { name: 'Choose manually', exact: true })).toHaveCount(0);
+    } finally { release(); }
+    await expect(page.getByText('Late source', { exact: true })).toBeVisible();
+    await expect(page.locator('movi-player')).toHaveCount(0);
+    await expect(page).toHaveURL(/\/streams$/);
+    // An explicit attempt remains possible after cancellation or timeout.
+    await page.getByRole('button', { name: 'Play best match', exact: true }).click();
+    await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/late.mp4');
+  });
+}
+
+test('next-episode fallback off opens the next stream list in the browser', async ({ page }) => {
+  await page.route(`${addon}/stream/series/tt200%3A1%3A2.json`, (route) => route.fulfill({ json: { streams: [
+    { name: 'Different release', url: 'https://media.test/different.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await openPlayback(page);
+  await page.getByRole('switch', { name: 'Allow continuation fallback', exact: true }).uncheck();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result .watch-button').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/ep1.mp4');
+  await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('ended')));
+  await expect(page).toHaveURL(/\/streams\?video=tt200%3A1%3A2/);
+  await expect(page.getByText('Different release', { exact: true })).toBeVisible();
+  await expect(page.locator('movi-player')).toHaveCount(0);
+});
+
+for (const target of ['browser', 'native'] as const) {
+  test(`next-episode disabled does not fetch or advance on ${target}`, async ({ page }) => {
+    let nextLookups = 0;
+    await page.route(`${addon}/stream/series/tt200%3A1%3A2.json`, async (route) => { nextLookups++; await route.fallback(); });
+    await openPlayback(page);
+    await page.getByRole('switch', { name: 'Auto-play next episode', exact: true }).uncheck();
+    await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+    await goTab(page, 'Home');
+    if (target === 'native') await enableNativePlayback(page);
+    await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+    await page.getByRole('button', { name: /Pilot/ }).click();
+    await page.locator('.stream-result .watch-button').click();
+    if (target === 'browser') {
+      await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/ep1.mp4');
+      await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('ended')));
+      await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/ep1.mp4');
+    } else {
+      await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.filter((call: any) => call.method === 'play').length)).toBe(1);
+      await page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'disabled', count: 1 } })));
+      await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'provideItems')?.payload)).toEqual({ requestId: 'disabled', items: [], endOfList: true });
+    }
+    expect(nextLookups).toBe(0);
+  });
+}
+
+test('last-link reuse records a successful browser start, adopts cached results, and keeps URLs out of storage', async ({ page }) => {
+  let lookups = 0;
+  await page.route(`${addon}/stream/movie/tt100.json`, (route) => {
+    lookups++;
+    return route.fulfill({ json: { streams: [
+      { name: 'First release', url: 'https://media.test/first.mp4' },
+      { name: 'Chosen release', url: 'https://media.test/chosen.mp4' }
+    ] }, headers: { 'access-control-allow-origin': '*' } });
+  });
+  await openPlayback(page);
+  await page.getByRole('switch', { name: 'Reuse last link', exact: true }).check();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('.stream-panel').getByRole('alert')).toContainText('No stream matches');
+  await page.locator('.stream-result').filter({ hasText: 'Chosen release' }).getByRole('button', { name: 'Play', exact: true }).click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/chosen.mp4');
+  await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('playing')));
+  const saved = await page.evaluate(() => localStorage.getItem('bridged-streams.stream-reuse.v1'));
+  expect(saved).toContain('urlHash');
+  expect(saved).not.toContain('https://media.test/');
+  await page.getByRole('button', { name: 'Choose another stream' }).click();
+  await page.getByRole('dialog', { name: 'Streams for Sample Film' }).getByRole('button', { name: 'Details', exact: true }).click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/chosen.mp4');
+  expect(lookups).toBe(1);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'View details for Sample Film' }).first().click();
+  await page.locator('.detail-play').click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/chosen.mp4');
+  expect(lookups).toBe(2);
+});
+
+test('TV fallback off still retries an empty lookup, then intentionally stops a missing continuation', async ({ page }) => {
+  let nextLookups = 0;
+  await page.route(`${addon}/stream/series/tt200%3A1%3A2.json`, (route) => route.fulfill({ json: { streams: ++nextLookups === 1 ? [] : [
+    { name: 'Different release', url: 'https://media.test/different.mp4' }
+  ] }, headers: { 'access-control-allow-origin': '*' } }));
+  await openPlayback(page);
+  await page.getByRole('switch', { name: 'Allow continuation fallback', exact: true }).uncheck();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await enableNativePlayback(page);
+  await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result .watch-button').click();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.filter((call: any) => call.method === 'play').length)).toBe(1);
+  const request = () => page.evaluate(() => (window as any).__streamTest.session.dispatchEvent(new CustomEvent('needitems', { detail: { requestId: 'fallback-off', count: 1 } })));
+  await request();
+  await expect(page.getByText(/PlayBridge will retry the next episode/)).toBeVisible();
+  expect(await page.evaluate(() => (window as any).__streamTest.calls.filter((call: any) => call.method === 'provideItems'))).toEqual([]);
+  await request();
+  await expect.poll(() => page.evaluate(() => (window as any).__streamTest.calls.find((call: any) => call.method === 'provideItems')?.payload)).toEqual({ requestId: 'fallback-off', items: [], endOfList: true });
+  expect(nextLookups).toBe(2);
+});
+
+test('reuse binge group prefers the last successfully played series group on another episode', async ({ page }) => {
+  for (const episode of [1, 2]) {
+    await page.route(`${addon}/stream/series/tt200%3A1%3A${episode}.json`, (route) => route.fulfill({ json: { streams: [
+      { name: 'Other group', url: `https://media.test/other-${episode}.mp4`, behaviorHints: { bingeGroup: 'other' } },
+      { name: 'Chosen group', url: `https://media.test/group-${episode}.mp4`, behaviorHints: { bingeGroup: 'chosen' } }
+    ] }, headers: { 'access-control-allow-origin': '*' } }));
+  }
+  await openPlayback(page);
+  await page.getByRole('switch', { name: 'Reuse binge group', exact: true }).check();
+  await page.getByRole('dialog', { name: 'Playback settings' }).getByRole('button', { name: 'Close', exact: true }).click();
+  await goTab(page, 'Home');
+  await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+  await page.getByRole('button', { name: /Pilot/ }).click();
+  await page.locator('.stream-result').filter({ hasText: 'Chosen group' }).getByRole('button', { name: 'Play', exact: true }).click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/group-1.mp4');
+  await page.locator('movi-player').evaluate((element) => element.dispatchEvent(new Event('playing')));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'View details for Sample Series' }).click();
+  await page.getByRole('button', { name: /Next Episode/ }).click();
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/group-2.mp4');
+});
+
+test('explicit best match on a manual stream visit reacts to newly arriving results', async ({ page }) => {
+  let release!: () => void;
+  let requested!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  await page.route(`${addon}/stream/movie/tt100.json`, async (route) => {
+    requested();
+    await gate;
+    await route.fulfill({ json: { streams: [{ name: 'Arriving source', url: 'https://media.test/arriving.mp4' }] },
+      headers: { 'access-control-allow-origin': '*' } });
+  });
+  await openPlayback(page);
+  await page.getByLabel('Stream selection mode', { exact: true }).selectOption('first');
+  await page.getByLabel('Selection timeout', { exact: true }).fill('0');
+  await page.goto('/#/movie/tt100/streams');
+  try {
+    await started;
+    await expect(page.getByRole('button', { name: 'Choose manually', exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: 'Play best match', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Choose manually', exact: true })).toBeVisible();
+  } finally { release(); }
+  await expect(page.locator('movi-player')).toHaveAttribute('src', 'https://media.test/arriving.mp4');
 });

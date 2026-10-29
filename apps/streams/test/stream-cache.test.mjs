@@ -44,3 +44,15 @@ test('a partial lookup marked unsuccessful can be retried', async () => {
   await cachedStreamLookup('failed-stream', load);
   assert.equal(calls, 2);
 });
+
+test('an aborted pending prefetch cannot poison the next lookup or replace its result', async () => {
+  const { cachedStreamLookup } = await import('../src/lib/stream-cache.ts');
+  const controller = new AbortController();
+  let release;
+  const old = cachedStreamLookup('cancelled-prefetch', () => new Promise((resolve) => { release = resolve; }), false, undefined, controller.signal);
+  controller.abort();
+  const fresh = [{ name: 'Fresh', addonName: 'Test', addonUrl: 'test', url: 'https://media.test/fresh.mp4' }];
+  assert.equal(await cachedStreamLookup('cancelled-prefetch', async () => fresh), fresh);
+  release([]); await old;
+  assert.equal(await cachedStreamLookup('cancelled-prefetch', async () => []), fresh);
+});

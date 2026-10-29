@@ -80,18 +80,22 @@ async function tmdbId(id: string, type: MediaType, key: string): Promise<string 
   return (await resolveTmdbId(id, type, key))?.toString() || null;
 }
 
-async function runWorker(code: string, args: Omit<ScraperRequest, 'code'>): Promise<unknown[]> {
+async function runWorker(code: string, args: Omit<ScraperRequest, 'code'>, signal?: AbortSignal): Promise<unknown[]> {
   const WorkerModule = await import('./scraper-worker?worker');
   const WorkerCtor = WorkerModule.default as unknown as new () => Worker;
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('Stream lookup cancelled.')); return; }
     const worker = new WorkerCtor();
-    const timer = window.setTimeout(() => { worker.terminate(); reject(new Error('Scraper timed out.')); }, 30_000);
+    const abort = () => { clearTimeout(timer); worker.terminate(); reject(new Error('Stream lookup cancelled.')); };
+    signal?.addEventListener('abort', abort, { once: true });
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener('abort', abort); worker.terminate(); };
+    const timer = window.setTimeout(() => { cleanup(); reject(new Error('Scraper timed out.')); }, 30_000);
     worker.onmessage = (event: MessageEvent<{ ok: boolean; streams?: unknown[]; error?: string }>) => {
-      clearTimeout(timer); worker.terminate();
+      cleanup();
       if (event.data.ok) resolve(event.data.streams || []);
       else reject(new Error(event.data.error || 'Scraper failed.'));
     };
-    worker.onerror = (event) => { clearTimeout(timer); worker.terminate(); reject(new Error(event.message || 'Scraper failed.')); };
+    worker.onerror = (event) => { cleanup(); reject(new Error(event.message || 'Scraper failed.')); };
     worker.postMessage({ code, ...args });
   });
 }
@@ -134,7 +138,8 @@ export async function fetchPluginStreams(
   season?: number,
   episode?: number,
   onWarning?: (message: string) => void,
-  bridge?: NativePluginsBridge | null
+  bridge?: NativePluginsBridge | null,
+  signal?: AbortSignal
 ): Promise<Stream[]> {
   const generation = getResolutionGeneration();
   if (!repos.length) return [];
@@ -188,7 +193,7 @@ export async function fetchPluginStreams(
     .map((scraper) => ({ repo, scraper })));
 
   const results = await Promise.allSettled(targets.map(async ({ repo, scraper }) => {
-    if (generation !== getResolutionGeneration()) return [];
+    if (signal?.aborted || generation !== getResolutionGeneration()) return [];
     const deviceProvider = matchNativeProvider(repo.manifestUrl, scraper.id, nativeProviders);
     const isNativeTarget = Boolean(deviceProvider || !platformCompatible(scraper));
 
@@ -232,6 +237,7 @@ export async function fetchPluginStreams(
           nativeResult.warnings.forEach((w) => onWarning?.(`${scraper.name}: ${w}`));
         }
         return nativeResult.streams.map((item): Stream => ({
+          selectionSource: { id: `${repo.manifestUrl}:${scraper.id}`, kind: 'plugin' },
           addonName: item.addonName || scraper.name,
           addonUrl: item.addonUrl || `${repo.manifestUrl}:${scraper.id}`,
           url: item.url,
@@ -253,7 +259,7 @@ export async function fetchPluginStreams(
 
     const codeUrl = new URL(scraper.filename, repo.manifestUrl);
     if (!['http:', 'https:'].includes(codeUrl.protocol)) throw new Error('Invalid scraper URL.');
-    const response = await fetch(codeUrl);
+    const response = await fetch(codeUrl, { signal });
     if (!response.ok) throw new Error(`Scraper code returned HTTP ${response.status}.`);
     const output = await runWorker(await response.text(), {
       tmdbId: candidateId,
@@ -263,12 +269,12 @@ export async function fetchPluginStreams(
       tmdbKey: key,
       settings: scraper.settings || {},
       scraperId: scraper.id
-    });
+    }, signal);
     return output.flatMap((value): Stream[] => {
       if (!value || typeof value !== 'object') return [];
       const item = value as { url?: string | { url?: string }; title?: string; name?: string; headers?: Record<string, string> };
       const url = typeof item.url === 'string' ? item.url : item.url?.url;
-      return url ? [{ addonName: scraper.name, addonUrl: `${repo.manifestUrl}:${scraper.id}`, url, title: item.title, name: item.name, headers: normalizePluginHeaders(item.headers) }] : [];
+      return url ? [{ selectionSource: { id: `${repo.manifestUrl}:${scraper.id}`, kind: 'plugin' as const }, addonName: scraper.name, addonUrl: `${repo.manifestUrl}:${scraper.id}`, url, title: item.title, name: item.name, headers: normalizePluginHeaders(item.headers) }] : [];
     });
   }));
 

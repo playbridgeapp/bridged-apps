@@ -11,7 +11,7 @@ export function playbackBridge() {
   return typeof window === 'undefined' ? undefined : window.__bridgedTest?.playbridge ?? window.playbridge;
 }
 
-export type PlaybackOptions = { destinationId: string; addons: InstalledAddon[]; canStart?: () => boolean; initialOrientation?: PlayerOpeningOrientation };
+export type PlaybackOptions = { destinationId: string; addons: InstalledAddon[]; canStart?: () => boolean; initialOrientation?: PlayerOpeningOrientation; onStreamStarted?: (stream: Stream, video?: Video) => void };
 
 async function addSubtitles(item: CastItem, meta: Meta, ids: CastItemIds, options?: PlaybackOptions): Promise<CastItem> {
   if (!options) return item;
@@ -126,6 +126,7 @@ export async function castMovie(meta: Meta, stream: Stream, startPositionMs: num
     return true;
   }
   activeSession = session;
+  options?.onStreamStarted?.(stream);
   session.addEventListener('needitems', (event) => {
     const requestId = event.detail?.requestId;
     if (activeSession === session && typeof requestId === 'string') {
@@ -175,6 +176,10 @@ export async function lazyCastSeries(
     return;
   }
   activeSession = session;
+  options?.onStreamStarted?.(selectedStream, selectedVideo);
+  const queuedStreams = new Map([[selectedVideo.id, selectedStream]]);
+  let continuation = selection;
+  let queueStopped = !selection.preferences.nextEpisodeAutoPlay;
   let cursor = start + 1;
   let retryVideoId: string | null = null;
   let pending = false;
@@ -189,28 +194,38 @@ export async function lazyCastSeries(
     pending = true;
     const batch: CastItem[] = [];
     let nextCursor = cursor;
+    let nextSelection = continuation;
     try {
-      while (batch.length < count && nextCursor < ordered.length) {
+      while (!queueStopped && batch.length < count && nextCursor < ordered.length) {
         const video = ordered[nextCursor];
         const streams = await fetchStreams(addons, 'series', video.id, plugins, tmdbKey, onStatus, undefined, retryVideoId === video.id);
-        const match = selectNextStream(streams.filter(playableStream), selection, true);
+        const match = selectNextStream(streams.filter(playableStream), nextSelection);
         if (!match || !playableStream(match)) {
+          // A policy stop is intentional; an empty/failed fetch remains retryable.
+          if (streams.some(playableStream) && !selection.preferences.bingeFallback) {
+            queueStopped = true;
+            onStatus('Automatic continuation stopped. Choose a stream for the next episode.');
+            break;
+          }
           retryVideoId = video.id;
           onStatus(`No matching playable stream for S${video.season}E${video.episode}. PlayBridge will retry the next episode.`);
           break;
         }
         retryVideoId = null;
+        nextSelection = { ...selection, initialStream: match };
+        queuedStreams.set(video.id, match);
         batch.push(await addSubtitles(castItem(meta, match, ids, video), meta, ids, options));
         nextCursor += 1;
       }
       if (activeSession !== session) return;
       // A failed/empty lookup is not the end of a series. Leave an empty demand
       // outstanding so the host retries it; partial batches can advance safely.
-      const endOfList = nextCursor >= ordered.length;
+      const endOfList = queueStopped || nextCursor >= ordered.length;
       if (!batch.length && !endOfList) return;
       await session.provideItems(requestId, { items: batch, endOfList });
       completedRequests.add(requestId);
       cursor = nextCursor;
+      continuation = nextSelection;
       if (batch.length) onStatus(`Queued through S${ordered[cursor - 1].season}E${ordered[cursor - 1].episode}`);
     } catch (error) {
       onStatus(`Could not load the next episode: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -224,5 +239,9 @@ export async function lazyCastSeries(
       onStatus('Playback ended.');
     }
   });
-  trackSessionProgress(session, ids, onProgress);
+  trackSessionProgress(session, ids, (progress) => {
+    onProgress?.(progress);
+    const stream = queuedStreams.get(progress.videoId);
+    if (progress.state === 'playing' && stream) options?.onStreamStarted?.(stream, ordered.find((video) => video.id === progress.videoId));
+  });
 }
