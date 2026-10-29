@@ -25,6 +25,10 @@
   function toggleSource(key: 'allowedAddons' | 'allowedPlugins', id: string) {
     change({ [key]: preferences[key].includes(id) ? preferences[key].filter((value) => value !== id) : [...preferences[key], id] });
   }
+  const detailSwitches = [
+    ['prefetchStreamsOnDetail', 'Prefetch streams on detail', 'Prepare sources in the background while viewing details, when automatic selection is on.'],
+    ['resumeDirectlyFromContinueWatching', 'Resume directly from Continue Watching', 'Open playback directly when tapping a watching card. Its options menu still offers details.']
+  ] as const;
   const switches = [
     ['nextEpisodeAutoPlay', 'Auto-play next episode', 'Continue automatically when an episode ends.'],
     ['preferBingeGroup', 'Prefer binge group', 'Continue the current release group, name, or quality before using mode rules.'],
@@ -65,6 +69,7 @@
     <fieldset><legend>Release types</legend><div class="release-chips">{#each RELEASE_TYPES as type}<button type="button" class:chosen={preferences.releaseTypes.includes(type.key)} aria-pressed={preferences.releaseTypes.includes(type.key)} onclick={() => toggleRelease(type.key)}>{type.label}</button>{/each}</div><p>{preferences.releaseTypes.length ? 'Use any selected release type. Resolution and release type must match; the provider is a preference.' : 'Any release type. Select one or more to filter automatic selection and rank the list.'}</p></fieldset>
     <p>Unknown quality or release information cannot match a specific filter.</p>
   {/if}
+  {#each detailSwitches as [key, title, description]}<label class="playback-fallback-control"><span><strong>{title}</strong><small>{description}</small></span><input type="checkbox" role="switch" checked={preferences[key]} onchange={(event) => change({ [key]: event.currentTarget.checked })} aria-label={title} /></label>{/each}
   <h3>Next episode</h3>
   {#each switches as [key, title, description]}<label class="playback-fallback-control"><span><strong>{title}</strong><small>{description}</small></span><input type="checkbox" role="switch" checked={preferences[key]} onchange={(event) => change({ [key]: event.currentTarget.checked })} aria-label={title} /></label>{/each}
 </section>
