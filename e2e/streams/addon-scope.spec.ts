@@ -126,8 +126,8 @@ test('playback settings have their own panel for this device', async ({ page }) 
   await settingsTab(page).click();
   await page.getByRole('button', { name: /^Playback / }).click();
   const playback = page.getByRole('dialog', { name: 'Playback settings' });
-  await expect(playback.getByRole('heading', { level: 3 })).toHaveText(['Choosing a stream', 'Player', 'Troubleshooting']);
-  await expect(playback.getByRole('switch', { name: 'Auto-select stream', exact: true })).toBeVisible();
+  await expect(playback.getByRole('heading', { level: 3 })).toHaveText(['Choosing a stream', 'Next episode', 'Player', 'Troubleshooting']);
+  await expect(playback.getByLabel('Stream selection mode', { exact: true })).toBeVisible();
   await expect(playback.getByRole('switch', { name: 'Native player fallback' })).toBeVisible();
   await expect(page).toHaveURL(/#\/settings\/playback$/);
 });
