@@ -11,9 +11,18 @@ export type MediaRoute = {
   season?: number;
   episode?: number;
 };
+/** A TMDB person, production company or TV network page. */
+export type TmdbPageRoute = { kind: 'person' | 'company' | 'network'; id: number };
 export type AppRoute = MediaRoute
   | { kind: 'tab'; tab: Tab; query?: string; panel?: 'accounts' | 'addons' | 'playback' | 'integrations' }
-  | { kind: 'catalog'; addonId: string; type: string; id: string };
+  | { kind: 'catalog'; addonId: string; type: string; id: string }
+  | TmdbPageRoute;
+
+const tmdbPages = new Set(['person', 'company', 'network']);
+
+export function isTmdbPageRoute(route: AppRoute): route is TmdbPageRoute {
+  return tmdbPages.has(route.kind);
+}
 
 const tabs = new Set(['home', 'search', 'library', 'settings']);
 
@@ -26,6 +35,10 @@ export function parseRoute(hash: string): AppRoute {
     const url = new URL(hash.replace(/^#/, '') || '/', 'https://routes.invalid');
     const parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
     if (!parts.length) return { kind: 'tab', tab: 'home' };
+    if (tmdbPages.has(parts[0]) && parts.length === 2) {
+      const id = coordinate(parts[1]);
+      if (id) return { kind: parts[0] as TmdbPageRoute['kind'], id };
+    }
     if (parts[0] === 'catalog' && parts.length === 4) {
       return { kind: 'catalog', addonId: parts[1], type: parts[2], id: parts[3] };
     }
@@ -49,6 +62,8 @@ export function routeHash(route: AppRoute): string {
   let path: string;
   if (route.kind === 'tab') {
     path = route.panel ? `/settings/${route.panel}` : '/';
+  } else if (isTmdbPageRoute(route)) {
+    path = `/${route.kind}/${route.id}`;
   } else if (route.kind === 'catalog') {
     path = `/catalog/${[route.addonId, route.type, route.id].map(encodeURIComponent).join('/')}`;
   } else {

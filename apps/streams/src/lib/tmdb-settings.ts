@@ -12,16 +12,17 @@ export const TMDB_MODULES = [
   { key: 'collections', label: 'Movie collections', description: 'Other movies in the same collection.' }
 ] as const;
 export type TmdbModule = typeof TMDB_MODULES[number]['key'];
-export type TmdbSettings = { enabled: boolean; language: string } & Record<TmdbModule, boolean>;
+export type TmdbSettings = { enabled: boolean; language: string; includeAdult: boolean } & Record<TmdbModule, boolean>;
 const KEY = 'bridged-streams.tmdb-enrichment.v1';
 export function defaultTmdbSettings(): TmdbSettings {
-  return { enabled: false, language: 'en-US', ...Object.fromEntries(TMDB_MODULES.map(({ key }) => [key, true])) } as TmdbSettings;
+  return { enabled: false, language: 'en-US', includeAdult: false, ...Object.fromEntries(TMDB_MODULES.map(({ key }) => [key, true])) } as TmdbSettings;
 }
 export function savedTmdbSettings(): TmdbSettings {
   const settings = defaultTmdbSettings();
   try {
     const value = JSON.parse(localStorage.getItem(KEY) || '{}');
     settings.enabled = value?.enabled === true;
+    settings.includeAdult = value?.includeAdult === true;
     if (typeof value?.language === 'string' && /^[a-z]{2}(?:-[A-Z]{2})?$/.test(value.language)) settings.language = value.language;
     for (const { key } of TMDB_MODULES) if (typeof value?.[key] === 'boolean') settings[key] = value[key];
   } catch { /* Optional enrichment must not affect startup. */ }

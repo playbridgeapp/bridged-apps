@@ -104,6 +104,16 @@ Metadata providers run concurrently: a ready fallback waits up to 300 ms for hig
 
 Addon details appear first; TMDB enrichment loads in the background without delaying Play or stream selection. Public metadata is cached in this tab for six hours, with at most 60 cached API responses. Failed requests are not cached and can be retried. Episode details are fetched only for the season being viewed. Addon title IDs, episode IDs, release dates, existing IMDb ratings, and progress identity are preserved. TMDB fallback ratings are labeled TMDB. Trailers with missing or broken thumbnails are hidden; if none remain, the trailer row disappears. Failed title logos fall back to plain-text titles. Visible trailers open in a responsive YouTube embed popup inside the app, with fullscreen controls and an optional YouTube link. Closing the popup or navigating away removes the player and stops playback. Recommended and collection titles use their IMDb identity for compatible addons when TMDB supplies one; playback still depends on installed stream providers, and series need an addon episode list.
 
+### People, companies, and networks
+
+With enrichment on, cast cards, the director and writer names in the facts card, and production company and network cards open their own page (`#/person/<id>`, `#/company/<id>`, `#/network/<id>`).
+
+- **Person pages** show the photo, birth and death details, and biography, then every movie and TV credit, acting and crew, in one grid. Filter by Movies or TV and by role (Acting, Directing, Writing, Production…), and sort by Popular or Newest. A title the person had several roles in appears once with all of them.
+- **Company and network pages** show the logo, headquarters, country, parent company, and description, then every title TMDB lists for them, loaded page by page as you scroll (TMDB caps a listing at 500 pages). Companies have Movies and TV tabs; networks list TV.
+- Titles open their normal details through their IMDb id, and Back returns to the page with its filters and scroll position.
+- Titles TMDB marks as adult are hidden unless **Show adult titles** is on in TMDB settings.
+- Filmographies and listings are kept in memory only, not in the tab's session cache. A shared page link opened without enrichment asks for the TMDB key instead of failing.
+
 Bridged Streams requires a user-entered key. Enrichment preferences are local to this browser and are not synced to Nuvio profiles.
 
 ## Casting
