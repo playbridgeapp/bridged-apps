@@ -2,7 +2,7 @@
 export type MediaType = 'movie' | 'series' | 'sport' | 'library' | (string & {});
 
 // First route segments the app itself uses; a content type with one of these names could not have a link.
-const RESERVED_TYPES = new Set(['catalog', 'home', 'search', 'settings']);
+const RESERVED_TYPES = new Set(['catalog', 'home', 'search', 'settings', 'person', 'company', 'network']);
 
 /** A content type that can appear in a link: built-in or addon-declared, short, and without path characters. */
 export function isMediaType(value: unknown): value is MediaType {
@@ -77,6 +77,7 @@ export interface Video {
 
 export interface MetaPerson { id: number; name: string; character?: string; photo?: string }
 export interface MetaCompany { id: number; name: string; logo?: string }
+export interface MetaPersonRef { id: number; name: string }
 export interface MetaTrailer { id: string; name: string; url: string; thumbnail: string }
 
 export interface Meta extends MetaPreview {
@@ -92,6 +93,9 @@ export interface Meta extends MetaPreview {
   language?: string;
   ratingSource?: 'TMDB';
   people?: MetaPerson[];
+  /** TMDB ids for the director/creator and writer names, when enrichment supplied them. */
+  directorPeople?: MetaPersonRef[];
+  writerPeople?: MetaPersonRef[];
   productionCompanies?: MetaCompany[];
   networks?: MetaCompany[];
   trailers?: MetaTrailer[];

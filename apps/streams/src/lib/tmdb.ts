@@ -4,7 +4,7 @@ import type { TmdbSettings } from './tmdb-settings';
 const CACHE_KEY = 'bridged-streams.tmdb-cache.v1';
 const CACHE_MS = 6 * 60 * 60_000;
 const MAX_ENTRIES = 60;
-type Entry = { value: unknown; expiresAt: number };
+type Entry = { value: unknown; expiresAt: number; memoryOnly?: boolean };
 const cache = new Map<string, Entry>();
 const pending = new Map<string, Promise<unknown>>();
 let hydrated = false;
@@ -21,7 +21,8 @@ function hydrate() {
   } catch { /* Storage is optional. */ }
 }
 
-async function request<T>(path: string, key: string, params: Record<string, string> = {}): Promise<T> {
+/** `persist: false` keeps large responses (filmographies, discover pages) out of the session-storage cache. */
+export async function request<T>(path: string, key: string, params: Record<string, string> = {}, { persist = true } = {}): Promise<T> {
   hydrate();
   const query = new URLSearchParams(params);
   const cacheId = `${path}?${query}`; // Only public metadata; credentials never enter the stored cache.
@@ -39,11 +40,11 @@ async function request<T>(path: string, key: string, params: Record<string, stri
       const value: unknown = await response.json();
       if (!value || typeof value !== 'object') throw new Error('TMDB returned invalid metadata.');
       cache.delete(cacheId);
-      cache.set(cacheId, { value, expiresAt: Date.now() + CACHE_MS });
+      cache.set(cacheId, { value, expiresAt: Date.now() + CACHE_MS, ...(persist ? {} : { memoryOnly: true }) });
       while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value!);
       clearTimeout(persistTimer);
       persistTimer = setTimeout(() => {
-        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify([...cache])); } catch { /* Full storage must not affect playback. */ }
+        try { sessionStorage.setItem(CACHE_KEY, JSON.stringify([...cache].filter(([, entry]) => !entry.memoryOnly))); } catch { /* Full storage must not affect playback. */ }
       }, 250);
       return value as T;
     } catch (error) {
@@ -72,6 +73,7 @@ type Image = { file_path?: string; iso_639_1?: string | null; vote_average?: num
 type Company = { id: number; name?: string; logo_path?: string };
 type Person = { id: number; name?: string; profile_path?: string; character?: string; roles?: { character: string }[];
   job?: string; jobs?: { job: string }[] };
+const crewRef = (person: Person) => ({ id: person.id, name: person.name! });
 type Result = { id: number; title?: string; name?: string; overview?: string; poster_path?: string; backdrop_path?: string;
   release_date?: string; first_air_date?: string; vote_average?: number; media_type?: string };
 export type TmdbDetails = Result & {
@@ -179,9 +181,16 @@ export function applyTmdbMetadata(meta: Meta, enrichment: TmdbMetadata, settings
     const hasJob = (person: Person, jobs: string[]) => jobs.includes(person.job || '') || person.jobs?.some((job) => jobs.includes(job.job));
     const directors = [...new Set(crew.filter((person) => hasJob(person, ['Director'])).map((person) => person.name).filter(Boolean))] as string[];
     const writers = [...new Set(crew.filter((person) => hasJob(person, ['Writer', 'Screenplay', 'Story'])).map((person) => person.name).filter(Boolean))] as string[];
-    if (directors.length) updated.director = directors;
-    else if (data.created_by?.length && meta.type === 'series') updated.director = data.created_by.map((person) => person.name!).filter(Boolean);
-    if (writers.length) updated.writer = writers;
+    // Keep TMDB ids beside the names so the facts card can open each person's page.
+    const refs = (people: Person[]) => [...new Map(people.filter((person) => person.id > 0 && person.name).map((person) => [person.id, crewRef(person)])).values()];
+    const directorPeople = refs(crew.filter((person) => hasJob(person, ['Director'])));
+    const writerPeople = refs(crew.filter((person) => hasJob(person, ['Writer', 'Screenplay', 'Story'])));
+    if (directors.length) { updated.director = directors; updated.directorPeople = directorPeople; }
+    else if (data.created_by?.length && meta.type === 'series') {
+      updated.director = data.created_by.map((person) => person.name!).filter(Boolean);
+      updated.directorPeople = refs(data.created_by);
+    }
+    if (writers.length) { updated.writer = writers; updated.writerPeople = writerPeople; }
   }
   const companies = (items: Company[] = []) => items.filter((item) => item.name).map((item) => ({
     id: item.id, name: item.name!, logo: tmdbImage(item.logo_path, 'w300')

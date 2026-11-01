@@ -919,3 +919,8 @@ input[type="checkbox"][role="switch"]:disabled,.addon-master input[type="checkbo
 .detail-end{display:flex;justify-content:center;margin-top:48px;padding-top:28px;border-top:1px solid #ffffff17}
 .detail-home{display:inline-flex;align-items:center;gap:9px;min-height:44px;padding:0 20px;border:1px solid #ffffff45;border-radius:999px;background:#ffffff12;color:#fff;font-size:14px;font-weight:800}
 .detail-home:hover{background:#ffffff26;border-color:#ffffff8c}
+
+/* Names in the detail facts card that open a TMDB person page. */
+.fact-person{display:inline;padding:0;border:0;background:none;color:inherit;font:inherit;text-align:left;text-decoration:underline;text-decoration-color:#ffffff59;text-underline-offset:3px;cursor:pointer}
+.fact-person:hover{text-decoration-color:currentColor}
+.fact-person:focus-visible{outline:2px solid #86d5bd;outline-offset:2px;border-radius:3px}

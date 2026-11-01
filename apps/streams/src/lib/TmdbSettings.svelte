@@ -18,6 +18,8 @@
   <label class="field">Preferred language<select value={settings.language} onchange={(event) => onChange({ ...settings, language: event.currentTarget.value })}>{#if !languages.some(([code]) => code === settings.language)}<option value={settings.language}>{settings.language}</option>{/if}{#each languages as [code, label]}<option value={code}>{label}</option>{/each}</select></label>
   <h3>Enrichment modules</h3>
   <div class="module-list">{#each TMDB_MODULES as module}<label class="module"><span><strong>{module.label}</strong><small>{module.description}</small></span><input type="checkbox" checked={settings[module.key]} disabled={!settings.enabled} onchange={(event) => onChange({ ...settings, [module.key]: event.currentTarget.checked })} /></label>{/each}</div>
+  <h3>People and companies</h3>
+  <label class="module"><span><strong>Show adult titles</strong><small>Include titles TMDB marks as adult on person, production company and network pages. Off by default.</small></span><input type="checkbox" aria-label="Show adult titles" checked={settings.includeAdult} disabled={!settings.enabled} onchange={(event) => onChange({ ...settings, includeAdult: event.currentTarget.checked })} /></label>
   <footer><a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer"><img src="/tmdb-logo.png" alt="TMDB" />Metadata from TMDB</a><p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p></footer>
 </section>
 

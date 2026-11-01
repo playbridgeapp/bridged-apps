@@ -61,8 +61,9 @@
   import type { AddonCatalog, InstalledAddon, MediaType, Meta, MetaPreview, MetaTrailer, PluginRepository, Stream, Video, NativePluginProvider, PlaybackDestination } from './lib/types';
   import { hasNativePluginsApi, fetchNativePluginsStatus, manageDevicePlugins, cancelNativeResolution, clearNativeStatusCache } from './lib/native-plugins';
   import type { StremioLibraryItem, StremioSession } from './lib/stremio';
-  import { HashRouter, parseRoute, routeHash, isRootTab } from './lib/router';
-  import type { AppRoute, MediaRoute, Tab } from './lib/router';
+  import { HashRouter, parseRoute, routeHash, isRootTab, isTmdbPageRoute } from './lib/router';
+  import type { AppRoute, MediaRoute, Tab, TmdbPageRoute } from './lib/router';
+  import TmdbPage from './lib/TmdbPage.svelte';
   import moviWasmUrl from 'movi-player/movi.wasm?url';
   import { syncNuvioProgress, syncNuvioWatched, watchedKey } from './lib/nuvio-sync';
   import { clearAccountDeltaSnapshots, updateDeltaSnapshot } from './lib/delta-sync';
@@ -227,6 +228,9 @@
   let lastEnrichmentSeasonKey = '';
   let rows: CatalogRow[] = [];
   let catalogPage: CatalogRow | null = null;
+  /** A TMDB person/company/network page; it stays beneath title details opened from it. */
+  let tmdbPageRoute: TmdbPageRoute | null = null;
+  let tmdbPageTitle = '';
   let catalogPageItems: MetaPreview[] = [];
   let catalogPageNextSkip: number | null = null;
   let catalogPageLoading = false;
@@ -634,6 +638,7 @@
   $: profileReturnRoute = profileGateManual ? null : currentRoute.kind !== 'tab' ? currentRoute : pendingProfileRoute;
   $: profileReturnLabel = !profileReturnRoute || profileReturnRoute.kind === 'tab' ? ''
     : profileReturnRoute.kind === 'catalog' ? 'the catalog you were viewing'
+    : isTmdbPageRoute(profileReturnRoute) ? 'the page you were viewing'
     : selected && selected.id === profileReturnRoute.id && selected.name ? selected.name : 'the title you were viewing';
   $: searchAddons = uniqueEnabledAddons(account || nuvioSession ? [...accountAddons, ...(nuvioDisplayReady ? nuvioAddons : [])] : localAddons);
   $: currentSearchIdentity = JSON.stringify([account?.user._id ?? null,
@@ -947,6 +952,7 @@
       else if (accountPanel || managing || playbackPanel || integrationsPanel) closeSettingsPanel();
       else if (selected && streamScreen) closeStreamScreen();
       else if (selected) closeDetail();
+      else if (tmdbPageRoute) closeTmdbPage();
       else if (catalogPage) closeCatalogPage();
     };
     const closeMenusOnOutsidePointer = (event: PointerEvent) => {
@@ -2603,7 +2609,7 @@
   }
 
   function routePanel() {
-    const selector = selected ? streamScreen ? '.stream-panel' : '.detail-panel' : '.catalog-page-panel';
+    const selector = selected ? streamScreen ? '.stream-panel' : '.detail-panel' : tmdbPageRoute ? '.tmdb-page-panel' : '.catalog-page-panel';
     return [...document.querySelectorAll<HTMLElement>(selector)].at(-1);
   }
 
@@ -2653,6 +2659,12 @@
     if (!retainMedia) resetDetail();
     if (route.kind === 'tab' || (route.kind === 'catalog' && (catalogPage?.addon.manifest.id !== route.addonId
       || catalogPage?.catalog.type !== route.type || catalogPage?.catalog.id !== route.id))) resetCatalogPage();
+    // Title routes keep the TMDB page beneath them; anything else replaces or closes it.
+    if (route.kind === 'tab' || route.kind === 'catalog') tmdbPageRoute = null;
+    else if (isTmdbPageRoute(route) && (tmdbPageRoute?.kind !== route.kind || tmdbPageRoute.id !== route.id)) {
+      tmdbPageRoute = route;
+      tmdbPageTitle = '';
+    }
     accountPanel = false;
     managing = false;
     playbackPanel = false;
@@ -2680,6 +2692,8 @@
           || currentRoute.query !== route.query || submittedSearch === query) return;
         submitSearch(query);
       }
+    } else if (isTmdbPageRoute(route)) {
+      // TmdbPage loads its own data; only the remembered scroll position is restored below.
     } else {
       // Use cached sources immediately; remote account refresh is background work.
       if (route.kind !== 'catalog' && !retainMedia) {
@@ -2882,6 +2896,15 @@
     }
   }
 
+  function openTmdbPage(route: TmdbPageRoute) {
+    if (!(route.id > 0)) return;
+    router?.push(route);
+  }
+
+  function closeTmdbPage() {
+    router?.back({ kind: 'tab', tab });
+  }
+
   function closeDetail() {
     router?.back({ kind: 'tab', tab });
   }
@@ -2978,7 +3001,7 @@
   /** The Home row at the top of the screen. Off-screen rows use estimated heights after Home
    * remounts (content-visibility), so a raw pixel offset would drift; the row anchors it. */
   function homeAnchor(): HomeAnchor | undefined {
-    if (tab !== 'home' || selected || catalogPage) return undefined;
+    if (tab !== 'home' || selected || catalogPage || tmdbPageRoute) return undefined;
     const sections = [...document.querySelectorAll<HTMLElement>('.home-panel .catalog-section')];
     const index = sections.findIndex((section) => section.getBoundingClientRect().bottom > 0);
     return index < 0 ? undefined : { index, top: sections[index].getBoundingClientRect().top };
@@ -3741,6 +3764,8 @@
   }
 </script>
 
+{#snippet personLinks(people: { id: number; name: string }[])}{#each people as person, index (person.id)}{#if index}, {/if}{#if person.id > 0}<button class="fact-person" onclick={() => openTmdbPage({ kind: 'person', id: person.id })}>{person.name}</button>{:else}{person.name}{/if}{/each}{/snippet}
+
 {#snippet loadingSpace(note: string)}
   <section class="startup-screen" role="status" aria-live="polite">
     <div class="startup-copy"><h1>Getting your space ready</h1><p><LoaderCircle size={18} class="spin" /> {note}</p></div>
@@ -3762,10 +3787,10 @@
 
 
 <svelte:head>
-  <title>{selected ? detailIdentityReady ? selected.name : 'Loading title' : catalogPage ? catalogPage.title : tabTitles[tab]}</title>
+  <title>{selected ? detailIdentityReady ? selected.name : 'Loading title' : tmdbPageRoute ? tmdbPageTitle || 'TMDB' : catalogPage ? catalogPage.title : tabTitles[tab]}</title>
 </svelte:head>
 
-<div class:detail-open={!!selected && !accountPanel && !managing && !playbackPanel} class:content-open={!!selected || !!catalogPage} class="app-shell" inert={profileGateOpen || !!signInProvider || !!opening}>
+<div class:detail-open={!!selected && !accountPanel && !managing && !playbackPanel} class:content-open={!!selected || !!catalogPage || !!tmdbPageRoute} class="app-shell" inert={profileGateOpen || !!signInProvider || !!opening}>
   <header class:scrolled={pageScrolled} class="sidebar site-header">
     <button class="brand" onclick={() => navigate('home')} aria-label="Home">
       <span class="brand-mark"><Clapperboard size={23} strokeWidth={2.4} /></span>
@@ -3951,6 +3976,13 @@
       </div>
     </div>
   </div>
+{/if}
+
+{#if tmdbPageRoute}
+  {#key `${tmdbPageRoute.kind}:${tmdbPageRoute.id}`}
+  <TmdbPage route={tmdbPageRoute} motion={navigationMotion} apiKey={tmdbKey} settings={tmdbSettings} hidden={!!selected} onSelect={(item) => void openDetail(item)}
+    onOpen={openTmdbPage} onBack={closeTmdbPage} onSettings={() => openSettingsPanel('integrations')} onTitle={(value) => tmdbPageTitle = value} />
+  {/key}
 {/if}
 
 {#if status}<div class="toast" role="status" in:fade={{ duration: motionDuration(180) }} out:fade={{ duration: motionDuration(130) }}><Play size={17} /> {status}<button onclick={() => showStatus('')} aria-label="Dismiss"><X size={16} /></button></div>{/if}
@@ -4261,7 +4293,7 @@
           {#if selected.description}<div class="detail-summary" class:expanded={detailExpanded}><p class:expanded={detailExpanded} class="detail-description">{selected.description}</p>{#if selected.description.length > 190}<button class="detail-read-more" onclick={toggleDetailDescription}>{detailExpanded ? 'Show less' : 'Read more'}</button>{/if}</div>{/if}
           {/if}
         </div>
-        {#if selected.director || selected.writer || selected.cast?.length || selected.country || selected.status || selected.language}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}</strong></div>{/if}{#if selected.writer}<div><span>WRITTEN BY</span><strong>{Array.isArray(selected.writer) ? selected.writer.join(', ') : selected.writer}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{selected.cast.slice(0, 3).join(', ')}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}{#if selected.language}<div><span>ORIGINAL LANGUAGE</span><strong>{selected.language.toUpperCase()}</strong></div>{/if}</aside>{/if}
+        {#if selected.director || selected.writer || selected.cast?.length || selected.country || selected.status || selected.language}<aside class="detail-facts-card" aria-label="Title facts">{#if selected.director}<div><span>DIRECTED BY</span><strong>{#if selected.directorPeople?.length}{@render personLinks(selected.directorPeople)}{:else}{Array.isArray(selected.director) ? selected.director.join(', ') : selected.director}{/if}</strong></div>{/if}{#if selected.writer}<div><span>WRITTEN BY</span><strong>{#if selected.writerPeople?.length}{@render personLinks(selected.writerPeople)}{:else}{Array.isArray(selected.writer) ? selected.writer.join(', ') : selected.writer}{/if}</strong></div>{/if}{#if selected.cast?.length}<div><span>STARRING</span><strong>{#if selected.people?.length}{@render personLinks(selected.people.slice(0, 3))}{:else}{selected.cast.slice(0, 3).join(', ')}{/if}</strong></div>{/if}{#if selected.country}<div><span>COUNTRY</span><strong>{selected.country}</strong></div>{/if}{#if selected.status}<div><span>STATUS</span><strong>{selected.status}</strong></div>{/if}{#if selected.language}<div><span>ORIGINAL LANGUAGE</span><strong>{selected.language.toUpperCase()}</strong></div>{/if}</aside>{/if}
       </div>
       <div id="detail-about" class="detail-content">
         {#if loadingDetail}<div class="loading-line"><LoaderCircle size={20} class="spin" /> Loading details…</div>{/if}
@@ -4274,7 +4306,7 @@
           {#if episodes.length}<div class="episode-list" bind:this={episodeListElement}>{#each episodes as video, index (video.id)}<div class="episode-card"><button class:selected={episode?.id === video.id} class="episode-row" style:--reveal-index={Math.min(index, 8)} onclick={() => openStreamScreen(video)}><span class="episode-art">{#if video.thumbnail}<img use:fadeIn src={video.thumbnail} alt="" loading="lazy" />{:else if selected?.background}<img use:fadeIn src={selected.background} alt="" loading="lazy" />{:else}<Film size={28} />{/if}<small>E{video.episode ?? '?'}</small></span><span class="episode-text"><small>SEASON {video.season} · EPISODE {video.episode}</small><strong>{video.title || `Episode ${video.episode}`}</strong>{#if video.description}<span>{video.description}</span>{/if}{#if video.runtime}<small>{video.runtime} min</small>{/if}</span><span class="episode-arrow"><Play size={18} fill="currentColor" /></span></button>{#if nuvioSession && nuvioProfileReady}<button class="episode-watching-action" aria-label={`Watching options for S${video.season}E${video.episode}`} onclick={() => selected && openWatchingOptions(selected, video)}>{episodeWatched(selected, video, nuvioProgress, nuvioWatched) ? '✓ Watched' : 'Watching options'}</button>{/if}</div>{/each}</div>{:else if loadingDetail}<div class="episode-list episode-skeletons" role="status" aria-label="Loading episodes">{#each [0, 1, 2, 3] as placeholder (placeholder)}<div class="episode-skeleton"><span class="episode-skeleton-art"></span><span class="episode-skeleton-text"><span class="skeleton-line short"></span><span class="skeleton-line"></span><span class="skeleton-line"></span></span></div>{/each}</div>{:else}<div class="row-empty">No episode list was returned by the metadata addon.</div>{/if}</section>
         {/if}
         {#if selected.cast?.length && !selected.people?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
-        <TmdbDetails meta={selected} onTrailer={(trailer) => activeTrailer = trailer} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
+        <TmdbDetails meta={selected} onPerson={(id) => openTmdbPage({ kind: 'person', id })} onOrganization={(kind, id) => openTmdbPage({ kind, id })} onTrailer={(trailer) => activeTrailer = trailer} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
         {#if detailIdentityReady && !selected.moreLikeThis?.length && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
         <div class="detail-end"><button class="detail-home" onclick={resetToHome}><Home size={18} /> Back to Home</button></div>
       </div>
