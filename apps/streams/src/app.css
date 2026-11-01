@@ -132,7 +132,7 @@ main{width:100%;min-height:100vh}
 .media-card{width:164px;min-width:164px}
 .media-card strong{font-size:13px}
 .detail-overlay{z-index:30;display:block;overflow:hidden;background:#090b0f;backdrop-filter:none}
-.detail-panel{overflow-anchor:none;width:100%;height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior:contain;background:#090b0f;box-shadow:none;scroll-behavior:smooth}
+.detail-panel{overflow-anchor:none;z-index:1;width:100%;height:100dvh;min-height:0;overflow-y:auto;overscroll-behavior:contain;background:transparent;box-shadow:none;scroll-behavior:smooth}
 .detail-back{position:fixed;top:24px;left:clamp(20px,4.3vw,76px);z-index:4;margin:0;padding:10px 15px;border:1px solid #ffffff47;border-radius:999px;background:#111719a8;color:#fff;backdrop-filter:blur(12px)}
 .detail-back:hover{background:#ffffff30}
 .detail-hero::before{content:'';position:absolute;top:0;left:0;right:0;height:var(--hero-pin,100%);background-image:var(--hero-bg,none);background-size:cover;background-position:center 30%;background-repeat:no-repeat;z-index:0;pointer-events:none}
@@ -735,10 +735,12 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
 .source-actions .watch-button,.stream-auto-actions .watch-button{min-height:44px}
 @media(max-width:700px){.detail-intro .playback-destination{text-align:center}.detail-intro .playback-destination button{text-align:center}}
 
-.detail-ambient{position:sticky;top:0;z-index:0;height:100dvh;margin-bottom:-100dvh;overflow:hidden;pointer-events:none}
+/* The blurred ambient sits behind the scrolling panel, not inside it. Pinned inside the scroller (position:sticky), Gecko
+   re-rendered the 42px blur on many scroll frames; outside it, the blur stays still and is drawn once. */
+.detail-ambient{position:absolute;inset:0;z-index:0;overflow:hidden;pointer-events:none}
 .detail-ambient::before{content:'';position:absolute;inset:-80px;background-image:var(--ambient-bg,none);background-size:cover;background-position:center;filter:blur(42px) saturate(1.15);transform:translateZ(0)}
 .detail-ambient::after{content:'';position:absolute;inset:0;background:#090b0fb8}
-.detail-panel>:not(.detail-ambient):not(.detail-back):not(.season-mobile-sheet){position:relative;z-index:1}
+.detail-panel>:not(.detail-back):not(.season-mobile-sheet){position:relative;z-index:1}
 /* Both layers reveal the same ambient/panel surface at the pinned artwork edge. */
 .detail-hero::before,.detail-hero::after{-webkit-mask-image:linear-gradient(#000 70%,transparent 100%);mask-image:linear-gradient(#000 70%,transparent 100%)}
 .detail-hero::after{content:'';position:absolute;top:0;left:0;right:0;height:var(--hero-pin,100%);background:linear-gradient(180deg,transparent 38%,#090b0f1a 52%,#090b0fc7 75%,#090b0fb8 100%);z-index:0;pointer-events:none}
@@ -764,8 +766,12 @@ img.fade-img.is-loaded{opacity:1}
 @keyframes skeleton-shimmer{to{background-position-x:-200%}}
 @media(prefers-reduced-motion:reduce){img.fade-img{transition:none}.episode-skeletons .episode-skeleton-art,.episode-skeletons .skeleton-line{animation:none}}
 
-/* Touch devices: full-screen backdrop blurs are costly on phone GPUs, so use a slightly more opaque scrim instead. */
+/* Touch devices: backdrop blurs over scrolling content are costly on phone GPUs (Gecko most of all), so use more opaque
+   fills instead. The detail-page selectors repeat the specificity of the rules that add their blur. */
 @media(pointer:coarse){
+  .detail-hero .detail-action-icon,.detail-intro .detail-read-more,.detail-intro .playback-destination button,.detail-intro .playback-destination>span,.detail-panel>.detail-back,.season-trigger{-webkit-backdrop-filter:none;backdrop-filter:none}
+  .detail-hero .detail-action-icon,.detail-intro .detail-read-more,.detail-intro .playback-destination button,.detail-intro .playback-destination>span,.detail-panel>.detail-back{background:rgba(0,0,0,.7)}
+  .season-trigger{background:#2a2f33e6}
   .overlay:not(.detail-overlay):not(.stream-overlay){-webkit-backdrop-filter:none;backdrop-filter:none;background:#02060be6}
   .discover-sheet-scrim{-webkit-backdrop-filter:none;backdrop-filter:none;background:#020508d6}
   .detail-facts-card{-webkit-backdrop-filter:none;backdrop-filter:none;background:#11161bdb}
