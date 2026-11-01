@@ -98,6 +98,7 @@
   .gate-manage { margin: 40px 0 0; color: #9aa1a9; font-size: 13px; text-align: center; }
   .gate-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 4px 10px; color: #9aa1a9; font-size: 13px; }
   @media (max-width: 640px) {
+    .profile-gate { padding-top: max(48px, calc(env(safe-area-inset-top, 0px) + 16px)); }
     .gate-profiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px 12px; width: 100%; margin-top: 36px; }
     .gate-profile { width: auto; }
     .gate-profile :global(.profile-avatar) { --avatar-size: 104px !important; }
