@@ -4235,8 +4235,8 @@
 
 {#if selected && !streamScreen}
   <div inert={!!opening} class:season-picker-open={seasonPickerOpen} class="overlay detail-overlay" role="presentation" in:screenTransition={{ direction: navigationMotion }} out:screenTransition={{ direction: navigationMotion, outgoing: true }} onclick={(event) => { if (event.target === event.currentTarget) closeDetail(); }}>
-    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'} style:--ambient-bg={detailBackdrop ? `url('${detailBackdrop.replaceAll("'", '%27')}')` : null}>
-      {#if detailBackdrop}<div class="detail-ambient" aria-hidden="true"></div>{/if}
+    {#if detailBackdrop}<div class="detail-ambient" aria-hidden="true" style:--ambient-bg={`url('${detailBackdrop.replaceAll("'", '%27')}')`}></div>{/if}
+    <div class="detail-panel" role="dialog" aria-modal="true" aria-label={detailIdentityReady ? selected.name : 'Title details'}>
       <button class="detail-back" onclick={closeDetail}><ArrowLeft size={20} /> <span>Back to browsing</span></button>
       <div class="detail-hero" style:min-height={heroMinHeight ? `${heroMinHeight}px` : null} style:--hero-pin={heroMinHeight ? `${heroPinHeight}px` : null} style:background-color={detailBackdrop ? 'transparent' : null} style:--hero-bg={detailBackdrop ? `url('${detailBackdrop.replaceAll("'", '%27')}')` : ''}>
         <div class="detail-intro">
