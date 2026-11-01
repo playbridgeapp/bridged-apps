@@ -270,7 +270,7 @@
   let pendingAutoAction: { type: MediaType; id: string; videoId?: string; destinationId?: string } | null = null;
   let streamActionRequest = 0;
   type HomeAnchor = { index: number; top: number };
-  const routePositions = new Map<string, { window: number; panel: number; episodes: number; anchor?: HomeAnchor }>();
+  const routePositions = new Map<string, { window: number; panel: number; episodes: number; anchor?: HomeAnchor; rails?: Record<string, number> }>();
   let homeScrollTarget = 0;
   let homeScrollAnchor: HomeAnchor | undefined;
   let navigationRequest = 0;
@@ -893,6 +893,8 @@
       adoptingLookup = false;
       const returningToTab = !isRootTab(currentRoute) && isRootTab(route) && route.tab === tab;
       rememberRoutePosition();
+      // Reaching Home ends a browsing trip: titles and pages opened again start from the top.
+      if (isRootTab(route) && route.tab === 'home') forgetContentPositions();
       currentRoute = route;
       void applyRoute(route, returningToTab);
     });
@@ -2605,12 +2607,70 @@
     // Remember browsing positions for returns from content, alongside content panel positions.
     routePositions.set(routePositionKey(currentRoute), { window: window.scrollY,
       panel: routePanel()?.scrollTop || 0,
-      episodes: episodeListElement?.scrollLeft || 0, anchor: homeAnchor() });
+      episodes: episodeListElement?.scrollLeft || 0, anchor: homeAnchor(), rails: detailRailOffsets() });
+  }
+
+  /** Horizontal rows on a details page (more like this, collection, cast, trailers). */
+  const DETAIL_RAILS = '.media-row, .people-rail, .trailers-rail, .cast-list';
+
+  function detailRails() {
+    const panel = selected && !streamScreen ? routePanel() : undefined;
+    const rails = new Map<string, HTMLElement>();
+    if (!panel) return rails;
+    panel.querySelectorAll<HTMLElement>(DETAIL_RAILS).forEach((rail, index) =>
+      rails.set(rail.closest('section')?.getAttribute('aria-label') || `rail:${index}`, rail));
+    return rails;
+  }
+
+  function detailRailOffsets() {
+    const offsets: Record<string, number> = {};
+    for (const [key, rail] of detailRails()) if (rail.scrollLeft > 0) offsets[key] = rail.scrollLeft;
+    return Object.keys(offsets).length ? offsets : undefined;
+  }
+
+  /** Restore a content panel's place without animating (panels may scroll smoothly by CSS).
+   * TMDB rows can render a little after the page, so keep trying for up to three seconds, until
+   * every offset sticks or the viewer scrolls. */
+  function restorePanelPlace(top: number, offsets: Record<string, number>, request: number) {
+    const pending = new Map(Object.entries(offsets));
+    let panelPending = top > 0;
+    const deadline = performance.now() + 3000;
+    // The viewer scrolling takes over. Positions alone can't tell: a page that briefly shrinks
+    // while its content swaps over clamps the offset too.
+    const inputs = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+    const stop = () => { panelPending = false; pending.clear(); };
+    const finish = () => inputs.forEach((type) => window.removeEventListener(type, stop, true));
+    inputs.forEach((type) => window.addEventListener(type, stop, { capture: true, passive: true }));
+    const apply = () => {
+      if (request !== routeRequest) { finish(); return; }
+      const panel = routePanel();
+      // Jump once the page is tall enough, rather than stepping down as its rows render.
+      const last = performance.now() >= deadline;
+      if (panel && panelPending && (last || panel.scrollHeight - panel.clientHeight >= top - 1)) {
+        panel.scrollTo({ top, behavior: 'instant' });
+        panelPending = false;
+      }
+      for (const [key, rail] of detailRails()) {
+        const left = pending.get(key);
+        if (left === undefined) continue;
+        rail.scrollTo({ left, behavior: 'instant' });
+        if (Math.abs(rail.scrollLeft - left) < 1) pending.delete(key);
+      }
+      if ((panelPending || pending.size) && !last) requestAnimationFrame(apply);
+      else finish();
+    };
+    if (top <= 0) routePanel()?.scrollTo({ top: 0, behavior: 'instant' });
+    apply();
   }
 
   function routePanel() {
     const selector = selected ? streamScreen ? '.stream-panel' : '.detail-panel' : tmdbPageRoute ? '.tmdb-page-panel' : '.catalog-page-panel';
     return [...document.querySelectorAll<HTMLElement>(selector)].at(-1);
+  }
+
+  /** Forget places on details, catalog and TMDB pages; tab places stay. */
+  function forgetContentPositions() {
+    for (const key of [...routePositions.keys()]) if (!key.startsWith('tab:')) routePositions.delete(key);
   }
 
   function replaceRoute(route: AppRoute) {
@@ -2781,8 +2841,7 @@
     }
     if (position) {
       window.scrollTo({ top: position.window, behavior: 'instant' });
-      const panel = routePanel();
-      if (panel) panel.scrollTop = position.panel;
+      restorePanelPlace(position.panel, position.rails || {}, request);
       if (episodeListElement) episodeListElement.scrollLeft = position.episodes;
     } else if (selected && !streamScreen) revealSelectedEpisode();
   }
