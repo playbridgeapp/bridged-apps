@@ -103,7 +103,8 @@
   }
   const initialStremioSession = savedSession();
   const initialNuvioSession = savedNuvioSession();
-  const initialLocalUrls = savedAddonUrls();
+  // Signed-in sources come from the account, so only a signed-out browser starts with the default addons.
+  const initialLocalUrls = savedAddonUrls(!initialStremioSession && !initialNuvioSession);
   const initialLocalAddons = (cachedAddons('local-addons', 'browser') || [])
     .filter((addon) => initialLocalUrls.includes(addon.manifestUrl)).map((addon) => configuredAddon(addon, 'local'));
   const initialAccountAddons = initialStremioSession
@@ -2954,6 +2955,16 @@
     loadingDetail = false;
   }
 
+  /** Leave every pushed screen (details, stream lists, catalogs) and start Home from the top. */
+  function resetToHome() {
+    routePositions.delete(routePositionKey({ kind: 'tab', tab: 'home' }));
+    void router?.selectRootTab({ kind: 'tab', tab: 'home' }).then(() => {
+      homeScrollTarget = 0;
+      homeScrollAnchor = undefined;
+      window.scrollTo({ top: 0, behavior: 'instant' });
+    });
+  }
+
   function navigate(next: Tab) {
     const target: AppRoute = { kind: 'tab', tab: next };
     // Tapping the current tab scrolls it to the top, as native bottom tabs do.
@@ -4265,6 +4276,7 @@
         {#if selected.cast?.length && !selected.people?.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">THE PEOPLE</span><h2>Cast</h2></div></div><div class="cast-list">{#each selected.cast.slice(0, 12) as name}<div class="cast-person"><span>{name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><strong>{name}</strong></div>{/each}</div></section>{/if}
         <TmdbDetails meta={selected} onTrailer={(trailer) => activeTrailer = trailer} onSelect={(item) => { openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />
         {#if detailIdentityReady && !selected.moreLikeThis?.length && relatedTitles.length}<section class="detail-section"><div class="section-heading"><div><span class="section-type">FROM YOUR ADDONS</span><h2>You might also like</h2></div></div><div class="media-row">{#each relatedTitles as item (item.type + item.id)}<MediaTile {item} onSelect={() => { void openDetail(item); document.querySelector('.detail-panel')?.scrollTo({ top: 0, behavior: 'smooth' }); }} />{/each}</div></section>{/if}
+        <div class="detail-end"><button class="detail-home" onclick={resetToHome}><Home size={18} /> Back to Home</button></div>
       </div>
       {#if seasonPickerOpen}
         <div class="season-mobile-sheet" role="dialog" aria-modal="true" aria-label="Choose season">

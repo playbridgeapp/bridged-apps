@@ -57,9 +57,14 @@ export async function installAddon(raw: string): Promise<InstalledAddon> {
   return { manifestUrl: url, manifest };
 }
 
-export function savedAddonUrls(): string[] {
+/** Installed for a signed-out browser that has never saved its own addon list. Removing it is remembered. */
+export const DEFAULT_ADDON_URLS = ['https://v3-cinemeta.strem.io/manifest.json'];
+
+export function savedAddonUrls(useDefaults = false): string[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    const stored = localStorage.getItem(STORAGE_KEY);
+    if (stored === null) return useDefaults ? [...DEFAULT_ADDON_URLS] : [];
+    const parsed: unknown = JSON.parse(stored);
     return Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : [];
   } catch {
     return [];

@@ -700,6 +700,10 @@ html::-webkit-scrollbar,body::-webkit-scrollbar,#app::-webkit-scrollbar,#app *::
   .player-top{height:auto;min-height:86px;padding-top:max(32px,env(safe-area-inset-top,0px));flex:none}
   .catalog-page-header{min-height:118px;padding: max(48px,calc(env(safe-area-inset-top,0px) + 16px)) 18px 17px;align-items:flex-end}
   .catalog-page-header h1{font-size:25px}
+  /* PlayBridge's GeckoView reports no safe-area insets, so top-anchored screens keep the same 48px floor as Back. */
+  .manage-panel{padding-top:max(48px,calc(env(safe-area-inset-top,0px) + 16px));padding-bottom:max(25px,calc(env(safe-area-inset-bottom,0px) + 16px))}
+  .season-mobile-head{top:max(32px,env(safe-area-inset-top,0px))}
+  .watching-overlay{padding-top:max(48px,calc(env(safe-area-inset-top,0px) + 16px));padding-bottom:max(22px,calc(env(safe-area-inset-bottom,0px) + 16px))}
   .catalog-page-content{padding:20px 17px max(65px,env(safe-area-inset-bottom,0px))}
   .catalog-page-grid,.catalog-page-skeletons{grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 13px}
   .catalog-page-grid .media-card{width:100%;min-width:0}
@@ -904,3 +908,8 @@ input[type="checkbox"][role="switch"]:disabled,.addon-master input[type="checkbo
 /* Compact detail controls remain readable over bright artwork. */
 .detail-intro .playback-destination{margin:0 0 8px;color:#fff;font-size:11px;line-height:1.3}
 .detail-intro .playback-destination button,.detail-intro .playback-destination>span{display:inline-flex;align-items:center;min-height:30px;padding:5px 10px;border-radius:999px;font-size:11px;line-height:1.3}
+
+/* End of a title's details: leave every pushed screen and start Home from the top. */
+.detail-end{display:flex;justify-content:center;margin-top:48px;padding-top:28px;border-top:1px solid #ffffff17}
+.detail-home{display:inline-flex;align-items:center;gap:9px;min-height:44px;padding:0 20px;border:1px solid #ffffff45;border-radius:999px;background:#ffffff12;color:#fff;font-size:14px;font-weight:800}
+.detail-home:hover{background:#ffffff26;border-color:#ffffff8c}
