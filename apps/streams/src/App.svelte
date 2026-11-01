@@ -2978,12 +2978,17 @@
     loadingDetail = false;
   }
 
-  /** Leave every pushed screen (details, stream lists, catalogs) and start Home from the top. */
+  /** Leave every pushed screen (details, stream lists, catalogs) and start Home from the top,
+   * forgetting every tab's place and every rail's offset. */
   function resetToHome() {
-    routePositions.delete(routePositionKey({ kind: 'tab', tab: 'home' }));
-    void router?.selectRootTab({ kind: 'tab', tab: 'home' }).then(() => {
+    forgetPositions();
+    void router?.selectRootTab({ kind: 'tab', tab: 'home' }).then(async () => {
+      forgetPositions();
       homeScrollTarget = 0;
       homeScrollAnchor = undefined;
+      await tick();
+      // Home stays mounted beneath details, so its rails keep their DOM offsets.
+      for (const row of document.querySelectorAll<HTMLElement>('.home-panel .media-row')) row.scrollLeft = 0;
       window.scrollTo({ top: 0, behavior: 'instant' });
     });
   }

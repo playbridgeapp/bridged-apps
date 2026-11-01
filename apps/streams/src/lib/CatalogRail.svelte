@@ -30,6 +30,8 @@
   let scrollLeft = pendingScroll;
   function applyPendingScroll() {
     if (!pendingScroll || !rail) return;
+    // Positions were forgotten (a reset to Home) before this rail came into view.
+    if (memoryKey && !railPosition(memoryKey)) { pendingScroll = 0; scrollLeft = 0; return; }
     rail.scrollLeft = pendingScroll;
     if (Math.abs(rail.scrollLeft - pendingScroll) < 1) { scrollLeft = rail.scrollLeft; pendingScroll = 0; }
   }
