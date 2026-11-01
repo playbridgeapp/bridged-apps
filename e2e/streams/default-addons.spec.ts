@@ -82,3 +82,39 @@ test('Back to Home at the end of details leaves every pushed screen', async ({ p
   await page.goBack();
   await expect(page).toHaveURL('about:blank');
 });
+
+test('Back to Home starts Home from the top, with every rail at its start', async ({ page }) => {
+  const rows = Array.from({ length: 6 }, (_, row) => ({ type: 'movie', id: `row${row}`, name: `Row ${row}` }));
+  await page.route('https://fonts.googleapis.com/**', (route) => route.fulfill({ contentType: 'text/css', body: '' }));
+  await page.route(`${cinemeta}/**`, (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const row = Number(path.match(/\/catalog\/movie\/row(\d+)/)?.[1] ?? 0);
+    const titles = Array.from({ length: 24 }, (_, index) => ({ id: `tt91${row}${String(index).padStart(4, '0')}`, type: 'movie',
+      name: `Row ${row} Film ${index}` }));
+    const json = path === '/manifest.json'
+      ? { id: 'com.linvo.cinemeta', name: 'Cinemeta', version: '3.0.0', types: ['movie'], idPrefixes: ['tt'],
+        resources: ['catalog', 'meta'], catalogs: rows }
+      : path.startsWith('/meta/') ? { meta: { id: path.match(/(tt\d+)/)?.[1], type: 'movie', name: 'Picked Film' } } : { metas: titles };
+    return route.fulfill({ json, headers: { 'access-control-allow-origin': '*' } });
+  });
+  await page.addInitScript((url) => {
+    localStorage.setItem('bridged-streams.addons.v1', JSON.stringify([`${url}/manifest.json`]));
+  }, cinemeta);
+  await page.goto('/');
+  const homeRails = page.locator('.home-panel .media-row');
+  await expect(homeRails).toHaveCount(6);
+  await homeRails.nth(0).evaluate((rail) => { rail.scrollLeft = 600; });
+  const lower = homeRails.nth(4);
+  await lower.scrollIntoViewIfNeeded();
+  await lower.evaluate((rail) => { rail.scrollLeft = 600; });
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+  await lower.locator('.media-card').nth(4).click();
+  await expect(page.getByRole('dialog', { name: 'Picked Film', exact: true })).toBeVisible();
+
+  const home = page.getByRole('button', { name: 'Back to Home', exact: true });
+  await home.scrollIntoViewIfNeeded();
+  await home.click();
+  await expect(page.getByRole('dialog', { name: 'Picked Film', exact: true })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect.poll(() => homeRails.evaluateAll((rails) => rails.map((rail) => rail.scrollLeft))).toEqual([0, 0, 0, 0, 0, 0]);
+});
