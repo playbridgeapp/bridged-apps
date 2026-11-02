@@ -14,6 +14,12 @@ Load `bridged-apps-streams` before changing Streams or its tests. Shared e2e
 configuration changes must consider both suites; the default e2e command runs
 only Jellyfin.
 
+Before adding an app, or changing how an app declares itself or plays through
+`window.playbridge`, also load PlayBridge's
+[`bridged-app-development`](https://github.com/playbridgeapp/playbridge/blob/main/.agents/skills/bridged-app-development/SKILL.md)
+skill. It lives with the host API and its spec, `docs/bridged-apps.md`; don't
+copy it here.
+
 ## Layout
 
 | Path | Notes |
