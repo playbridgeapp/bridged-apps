@@ -26,6 +26,7 @@ copy it here.
 |---|---|
 | `apps/jellyfin/` | Svelte 5 + Vite client, port 5180 |
 | `apps/streams/` | Svelte 5 + Vite client, port 5182; independent Stremio/Nuvio integrations |
+| `apps/invidious/` | Svelte 5 + Vite client, port 5184; self-hosted Invidious instance; see its README |
 | `e2e/jellyfin/` | Playwright; Chromium default, Obscura optional |
 | `e2e/streams/` | Playwright Chromium with mocked account/provider/bridge responses |
 
@@ -37,6 +38,7 @@ Always **pnpm**, from this repo root:
 pnpm install
 pnpm dev:jellyfin
 pnpm dev:streams
+pnpm dev:invidious
 pnpm --filter @bridged-apps/jellyfin check
 pnpm --filter @bridged-apps/streams check
 pnpm test:e2e                  # Jellyfin only

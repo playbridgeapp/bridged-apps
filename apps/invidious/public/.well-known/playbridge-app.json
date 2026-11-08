@@ -1,0 +1,7 @@
+{
+  "protocol": "playbridge-app-v1",
+  "name": "Bridged Invidious",
+  "start_url": "/",
+  "icon_url": "/bridged-invidious.svg",
+  "theme_color": "#0e1116"
+}
