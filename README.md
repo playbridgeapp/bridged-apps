@@ -12,6 +12,7 @@ This monorepo contains modern, fast, zero-telemetry web applications tailored fo
 | :--- | :--- | :--- | :--- |
 | **Jellyfin Web Client** | `apps/jellyfin` | Svelte 5 + Vite | Multi-server/multi-user Jellyfin client with direct & linked PlayBridge casting, hierarchical library navigation, and offline SWR caching. |
 | **Bridged Streams** | `apps/streams` | Svelte 5 + Vite | Cinematic web browsing, MoviPlayer playback, Stremio and Nuvio account sync, browser-compatible Nuvio plugins, and optional PlayBridge casting. |
+| **Bridged Invidious** | `apps/invidious` | Svelte 5 + Vite | Client for a self-hosted Invidious instance: browsing, search, pasted YouTube links, account sign-in, and PlayBridge playback relayed through the instance. |
 
 ---
 

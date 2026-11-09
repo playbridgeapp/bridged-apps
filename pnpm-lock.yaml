@@ -12,6 +12,28 @@ importers:
         specifier: ^1.62.1
         version: 1.62.1
 
+  apps/invidious:
+    dependencies:
+      lucide-svelte:
+        specifier: ^0.460.0
+        version: 0.460.1(svelte@5.56.9)
+    devDependencies:
+      '@sveltejs/vite-plugin-svelte':
+        specifier: ^4.0.0
+        version: 4.0.4(svelte@5.56.9)(vite@5.4.21)
+      svelte:
+        specifier: ^5.1.0
+        version: 5.56.9
+      svelte-check:
+        specifier: ^4.0.0
+        version: 4.7.6(svelte@5.56.9)(typescript@5.9.3)
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vite:
+        specifier: ^5.4.0
+        version: 5.4.21
+
   apps/jellyfin:
     dependencies:
       lucide-svelte:
@@ -716,7 +738,6 @@ packages:
 
   shaka-player@4.16.45:
     resolution: {integrity: sha512-RthUzEXH3rG8gf5hrubp5T5pZ+3VuqyzOh6SIas2LAUJ2agP3AoXdOiwCh46CwqM84kwyiDHHlWpKuecr3iNuQ==}
-    engines: {node: '>=18'}
 
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}

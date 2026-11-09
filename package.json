@@ -6,8 +6,10 @@
   "scripts": {
     "dev:jellyfin": "pnpm --filter @bridged-apps/jellyfin dev",
     "dev:streams": "pnpm --filter @bridged-apps/streams dev",
+    "dev:invidious": "pnpm --filter @bridged-apps/invidious dev",
     "build:jellyfin": "pnpm --filter @bridged-apps/jellyfin build",
     "build:streams": "pnpm --filter @bridged-apps/streams build",
+    "build:invidious": "pnpm --filter @bridged-apps/invidious build",
     "check": "pnpm -r check",
     "build": "pnpm -r build",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
