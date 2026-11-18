@@ -1,6 +1,7 @@
 import { CastItemIds } from './cast-item-ids.ts';
 import { fetchAddonSubtitles } from './subtitles.ts';
 import { castMetadata as metadata } from './cast-metadata.ts';
+import { streamContentType } from './stream-content-type.ts';
 import { fetchStreams, playableStream } from './addons.ts';
 import { savedStreamSelection, selectionContext, selectNextStream } from './stream-selection.ts';
 import type { StreamSelectionContext } from './stream-selection.ts';
@@ -42,24 +43,16 @@ export function bridgeAvailable(): boolean {
   return typeof bridge?.cast === 'function' || typeof bridge?.play === 'function';
 }
 
-function contentType(url: string): string {
-  const pathname = new URL(url).pathname.toLowerCase();
-  if (pathname.endsWith('.m3u8')) return 'application/vnd.apple.mpegurl';
-  if (pathname.endsWith('.mpd')) return 'application/dash+xml';
-  if (pathname.endsWith('.mkv')) return 'video/x-matroska';
-  if (pathname.endsWith('.webm')) return 'video/webm';
-  return 'video/mp4';
-}
-
 function castItem(meta: Meta, stream: Stream & { url: string }, ids: CastItemIds, video?: Video, startPositionMs = 0): CastItem {
   const title = video
     ? `${meta.name} · S${video.season ?? 0}E${video.episode ?? 0}${video.title ? ` · ${video.title}` : ''}`
     : meta.name;
+  const contentType = streamContentType(stream);
   return {
     id: ids.bridgeId(video?.id || meta.id),
     url: stream.url,
     title,
-    contentType: contentType(stream.url),
+    ...(contentType ? { contentType } : {}),
     metadata: metadata(meta, video),
     ...(stream.headers ? { headers: stream.headers } : {}),
     ...(Number.isFinite(startPositionMs) && startPositionMs > 0
