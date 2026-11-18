@@ -119,6 +119,8 @@ export interface Stream {
     bingeGroup?: string;
     notWebReady?: boolean;
     proxyHeaders?: { request?: Record<string, string> };
+    /** The file's name, from Stremio addons; links without an extension use it for the type. */
+    filename?: string;
   };
 }
 
@@ -126,7 +128,8 @@ export interface CastItem {
   id: string;
   url: string;
   title: string;
-  contentType: string;
+  /** Omitted when neither the URL nor the addon's file name says what the file is. */
+  contentType?: string;
   metadata: Record<string, unknown>;
   headers?: Record<string, string>;
   startPositionMs?: number;
